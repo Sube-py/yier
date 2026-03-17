@@ -24,6 +24,7 @@ body,
 
 body {
   margin: 0;
+  overflow: hidden;
   background:
     radial-gradient(circle at top left, rgba(49, 139, 142, 0.12), transparent 28rem),
     radial-gradient(circle at bottom right, rgba(150, 110, 67, 0.14), transparent 26rem),
@@ -64,14 +65,17 @@ select {
   display: grid;
   grid-template-columns: minmax(17rem, 20rem) minmax(0, 1fr);
   gap: 1.5rem;
-  min-height: 100vh;
+  height: 100vh;
   padding: 1.5rem;
+  overflow: hidden;
 }
 
 .side-rail {
   display: flex;
   flex-direction: column;
   gap: 1rem;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .brand-panel,
@@ -172,7 +176,8 @@ select {
   display: flex;
   flex-direction: column;
   gap: 1rem;
-  min-height: calc(100vh - 3rem);
+  min-height: 0;
+  overflow: hidden;
   padding: 1.15rem;
   border-radius: 1.8rem;
 }
@@ -219,8 +224,19 @@ select {
   flex-direction: column;
   gap: 1rem;
   min-height: 0;
+  overflow: hidden;
   padding: 1.1rem;
   border-radius: 1.5rem;
+}
+
+.timeline-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 1rem;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 0.35rem;
 }
 
 .timeline-meta,
@@ -302,6 +318,71 @@ select {
   line-height: 1.65;
 }
 
+.message-content--markdown {
+  white-space: normal;
+}
+
+.message-content--markdown > :first-child {
+  margin-top: 0;
+}
+
+.message-content--markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.message-content--markdown p,
+.message-content--markdown ul,
+.message-content--markdown ol,
+.message-content--markdown pre,
+.message-content--markdown blockquote {
+  margin: 0.7rem 0;
+}
+
+.message-content--markdown ul,
+.message-content--markdown ol {
+  padding-left: 1.3rem;
+}
+
+.message-content--markdown li + li {
+  margin-top: 0.3rem;
+}
+
+.message-content--markdown a {
+  color: var(--app-accent);
+  text-decoration: underline;
+  text-decoration-color: rgba(21, 94, 99, 0.35);
+  text-underline-offset: 0.18rem;
+}
+
+.message-content--markdown code {
+  padding: 0.14rem 0.38rem;
+  border-radius: 0.45rem;
+  background: rgba(21, 94, 99, 0.1);
+  color: var(--app-accent-deep);
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.92em;
+}
+
+.message-content--markdown pre {
+  overflow-x: auto;
+  padding: 0.9rem 1rem;
+  border-radius: 0.9rem;
+  background: rgba(17, 38, 42, 0.92);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+.message-content--markdown pre code {
+  padding: 0;
+  background: transparent;
+  color: #f2f5f6;
+}
+
+.message-content--markdown blockquote {
+  padding-left: 0.9rem;
+  border-left: 3px solid rgba(21, 94, 99, 0.32);
+  color: var(--app-text-soft);
+}
+
 .activity-panel {
   padding-top: 0.4rem;
   border-top: 1px solid var(--app-border);
@@ -368,6 +449,7 @@ select {
 .composer-shell {
   position: sticky;
   bottom: 0;
+  flex-shrink: 0;
 }
 
 .composer-panel {
@@ -464,16 +546,24 @@ select {
 }
 
 @media (max-width: 960px) {
+  body {
+    overflow: auto;
+  }
+
   .app-shell {
     grid-template-columns: 1fr;
+    height: auto;
+    overflow: visible;
   }
 
   .side-rail {
     order: 2;
+    overflow: visible;
   }
 
   .workspace-panel {
     min-height: auto;
+    overflow: visible;
   }
 
   .message-bubble {

@@ -9,6 +9,7 @@ export class ApiError extends Error {
 const JSON_HEADERS = {
   'Content-Type': 'application/json',
 }
+const SSE_FRAME_DELIMITER = /\r?\n\r?\n/
 
 export async function apiGet<T>(path: string): Promise<T> {
   const response = await fetch(path)
@@ -54,7 +55,7 @@ export async function streamChat(
   while (true) {
     const { done, value } = await reader.read()
     buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done })
-    const frames = buffer.split('\n\n')
+    const frames = buffer.split(SSE_FRAME_DELIMITER)
     buffer = frames.pop() ?? ''
 
     for (const frame of frames) {

@@ -172,12 +172,12 @@ describe('App', () => {
               'data: {"session_id":"session-1"}',
               '',
               'event: assistant_message',
-              'data: {"session_id":"session-1","content":"I found the project files.","iteration":1}',
+              'data: {"session_id":"session-1","content":"I found the **project files**.\\n\\n```ts\\nconsole.log(1)\\n```","iteration":1}',
               '',
               'event: done',
               'data: {"session_id":"session-1","finish_reason":"stop"}',
               '',
-            ].join('\n'),
+            ].join('\r\n'),
           )
         }
         throw new Error(`Unexpected request: ${path}`)
@@ -196,6 +196,7 @@ describe('App', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('List the project files')
-    expect(wrapper.text()).toContain('I found the project files.')
+    expect(wrapper.html()).toContain('<strong>project files</strong>')
+    expect(wrapper.html()).toContain('<pre><code class="language-ts">')
   })
 })

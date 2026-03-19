@@ -4,6 +4,7 @@ import { definePreset } from '@primeuix/themes'
 import Aura from '@primeuix/themes/aura'
 
 import App from './App.vue'
+import router from './router'
 import 'primeicons/primeicons.css'
 import './style.css'
 
@@ -55,5 +56,6 @@ app.use(PrimeVue, {
     },
   },
 })
+app.use(router)
 
 app.mount('#app')

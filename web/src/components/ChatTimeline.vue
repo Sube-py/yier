@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { nextTick, onMounted, ref, watch } from 'vue'
 import MarkdownIt from 'markdown-it'
 import ProgressSpinner from 'primevue/progressspinner'
 import Tag from 'primevue/tag'
@@ -11,16 +12,51 @@ const markdown = new MarkdownIt({
   linkify: true,
 })
 
-defineProps<{
+const props = defineProps<{
   messages: UiChatMessage[]
   activities: ChatActivity[]
   isSending: boolean
   sessionLabel: string
 }>()
 
+const timelineBody = ref<HTMLElement | null>(null)
+const shouldStickToBottom = ref(true)
+const bottomThreshold = 72
+
 function renderAssistantMessage(content: string) {
   return markdown.render(content)
 }
+
+function isNearBottom(element: HTMLElement) {
+  return element.scrollHeight - element.scrollTop - element.clientHeight <= bottomThreshold
+}
+
+function onTimelineScroll() {
+  if (!timelineBody.value) {
+    return
+  }
+  shouldStickToBottom.value = isNearBottom(timelineBody.value)
+}
+
+async function scrollToBottomIfNeeded() {
+  await nextTick()
+  if (!timelineBody.value || !shouldStickToBottom.value) {
+    return
+  }
+  timelineBody.value.scrollTop = timelineBody.value.scrollHeight
+}
+
+onMounted(async () => {
+  await scrollToBottomIfNeeded()
+})
+
+watch(
+  () => [props.messages.length, props.activities.length, props.isSending],
+  async () => {
+    await scrollToBottomIfNeeded()
+  },
+  { flush: 'post' },
+)
 </script>
 
 <template>
@@ -48,7 +84,7 @@ function renderAssistantMessage(content: string) {
       </p>
     </div>
 
-    <div v-else class="timeline-body">
+    <div v-else ref="timelineBody" class="timeline-body" @scroll="onTimelineScroll">
       <div class="message-stack">
         <article
           v-for="message in messages"

@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
+import { nextTick } from 'vue'
 import PrimeVue from 'primevue/config'
 import Aura from '@primeuix/themes/aura'
 
 import App from '../App.vue'
+import { createTestRouter } from '../router'
 
 function jsonResponse(payload: unknown, status = 200) {
   return Promise.resolve(
@@ -31,12 +33,18 @@ function sseResponse(frames: string) {
   )
 }
 
-function mountApp() {
-  return mount(App, {
+async function mountApp(initialPath = '/chat') {
+  const router = createTestRouter()
+  await router.push(initialPath)
+  await router.isReady()
+
+  const wrapper = mount(App, {
     global: {
-      plugins: [[PrimeVue, { theme: { preset: Aura } }]],
+      plugins: [router, [PrimeVue, { theme: { preset: Aura } }]],
     },
   })
+  await nextTick()
+  return wrapper
 }
 
 describe('App', () => {
@@ -83,7 +91,7 @@ describe('App', () => {
       }),
     )
 
-    const wrapper = mountApp()
+    const wrapper = await mountApp()
     await flushPromises()
 
     expect(wrapper.text()).toContain('Configure the LLM connection before sending messages.')
@@ -123,7 +131,7 @@ describe('App', () => {
     })
     vi.stubGlobal('fetch', fetchMock)
 
-    const wrapper = mountApp()
+    const wrapper = await mountApp()
     await flushPromises()
 
     const buttons = wrapper.findAll('button')
@@ -184,7 +192,7 @@ describe('App', () => {
       }),
     )
 
-    const wrapper = mountApp()
+    const wrapper = await mountApp()
     await flushPromises()
 
     const textarea = wrapper.get('textarea')
@@ -198,5 +206,43 @@ describe('App', () => {
     expect(wrapper.text()).toContain('List the project files')
     expect(wrapper.html()).toContain('<strong>project files</strong>')
     expect(wrapper.html()).toContain('<pre><code class="language-ts">')
+  })
+
+  it('renders settings in the shared workspace via routing', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const path = input.toString()
+        if (path.endsWith('/api/health')) {
+          return jsonResponse({
+            frontend: { ready: true, mode: 'static' },
+            llm: { ready: true },
+            mcp: { ready: true, runtime: {} },
+            allowed_roots: ['/tmp/project'],
+          })
+        }
+        if (path.endsWith('/api/config')) {
+          return jsonResponse({
+            llm: { base_url: 'https://example.test', model: 'demo', has_api_key: true },
+            allowed_roots: ['/tmp/project'],
+            mcp_runtime: {},
+          })
+        }
+        if (path.endsWith('/api/config/mcp')) {
+          return jsonResponse({ mcp_servers: {}, runtime: {} })
+        }
+        if (path.endsWith('/api/chat/sessions')) {
+          return jsonResponse({ session_id: 'session-1' }, 201)
+        }
+        throw new Error(`Unexpected request: ${path}`)
+      }),
+    )
+
+    const wrapper = await mountApp('/settings')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Local console settings')
+    expect(wrapper.text()).toContain('Save LLM Settings')
+    expect(wrapper.text()).toContain('Adjust the assistant without leaving the main console')
   })
 })

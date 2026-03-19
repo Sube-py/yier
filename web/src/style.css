@@ -142,6 +142,11 @@ select {
   background: rgba(247, 243, 232, 0.88);
 }
 
+.side-card--nav {
+  display: grid;
+  gap: 0.75rem;
+}
+
 .side-card-row {
   display: flex;
   align-items: center;
@@ -180,6 +185,14 @@ select {
   overflow: hidden;
   padding: 1.15rem;
   border-radius: 1.8rem;
+}
+
+.workspace-content {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .workspace-header {
@@ -468,8 +481,33 @@ select {
   font-weight: 700;
 }
 
-.settings-drawer {
-  width: min(42rem, 100vw);
+.settings-page {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 0.35rem;
+}
+
+.settings-page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--app-border);
+}
+
+.settings-page-copy {
+  max-width: 42rem;
+  margin: 0.65rem 0 0;
+  color: var(--app-text-soft);
+  line-height: 1.6;
+}
+
+.settings-tabs {
+  margin-top: 1rem;
 }
 
 .settings-section {
@@ -570,8 +608,8 @@ select {
     max-width: 100%;
   }
 
-  .settings-drawer {
-    width: 100vw !important;
+  .workspace-content {
+    overflow: visible;
   }
 
   .runtime-grid {

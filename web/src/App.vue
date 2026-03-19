@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 
 import Button from 'primevue/button'
 import Message from 'primevue/message'
@@ -8,7 +9,7 @@ import Tag from 'primevue/tag'
 
 import ChatComposer from './components/ChatComposer.vue'
 import ChatTimeline from './components/ChatTimeline.vue'
-import SettingsDrawer from './components/SettingsDrawer.vue'
+import SettingsPanel from './components/SettingsPanel.vue'
 import { ApiError, apiGet, apiPost, apiPut, streamChat } from './lib/api'
 import type {
   ChatActivity,
@@ -25,9 +26,9 @@ import type {
 } from './types/api'
 
 const SESSION_STORAGE_KEY = 'yier.active-session-id'
-const SETTINGS_STORAGE_KEY = 'yier.settings-visible'
 
-const settingsVisible = ref(localStorage.getItem(SETTINGS_STORAGE_KEY) === 'true')
+const route = useRoute()
+const router = useRouter()
 const isBooting = ref(true)
 const isSending = ref(false)
 const errorMessage = ref('')
@@ -50,6 +51,8 @@ const llmForm = reactive({
   apiKey: '',
 })
 const mcpDraft = ref<EditableMcpServer[]>([])
+const isSettingsRoute = computed(() => route.name === 'settings')
+const isChatRoute = computed(() => route.name !== 'settings')
 
 const sessionLabel = computed(() => {
   if (!activeSessionId.value) {
@@ -61,10 +64,14 @@ const sessionLabel = computed(() => {
 const llmReady = computed(() => health.value?.llm.ready ?? false)
 const frontendMode = computed(() => health.value?.frontend.mode ?? 'missing')
 const canSend = computed(() => llmReady.value && !isSending.value && Boolean(activeSessionId.value))
-
-watch(settingsVisible, (value) => {
-  localStorage.setItem(SETTINGS_STORAGE_KEY, String(value))
-})
+const workspaceEyebrow = computed(() =>
+  isSettingsRoute.value ? 'Configuration workspace' : 'Chat workspace',
+)
+const workspaceTitle = computed(() =>
+  isSettingsRoute.value
+    ? 'Adjust the assistant without leaving the main console'
+    : 'One calm surface for code, files, and config',
+)
 
 watch(activeSessionId, (value) => {
   if (!value) {
@@ -120,15 +127,22 @@ async function ensureSession() {
     }
   }
 
-  await startNewSession()
+  await startNewSession(false)
 }
 
-async function startNewSession() {
+async function startNewSession(navigateToChat = true) {
   const payload = await apiPost<{ session_id: string }>('/api/chat/sessions', {})
   activeSessionId.value = payload.session_id
   chatMessages.value = []
   activities.value = []
   successMessage.value = 'Started a fresh session.'
+  if (navigateToChat && !isChatRoute.value) {
+    await router.push({ name: 'chat' })
+  }
+}
+
+function handleNewChatClick() {
+  void startNewSession()
 }
 
 async function submitMessage() {
@@ -311,7 +325,11 @@ function removeMcpServer(serverId: string) {
 }
 
 function openSettings() {
-  settingsVisible.value = true
+  void router.push({ name: 'settings' })
+}
+
+function openChat() {
+  void router.push({ name: 'chat' })
 }
 
 function toUiMessages(messages: StoredMessage[]): UiChatMessage[] {
@@ -436,13 +454,24 @@ function toErrorMessage(error: unknown) {
       </div>
 
       <div class="rail-actions">
-        <Button label="New Chat" icon="pi pi-plus" fluid @click="startNewSession" />
+        <Button label="New Chat" icon="pi pi-plus" fluid @click="handleNewChatClick" />
+      </div>
+
+      <div class="side-card side-card--nav">
+        <Button
+          label="Chat"
+          icon="pi pi-comment"
+          fluid
+          :outlined="!isChatRoute"
+          :severity="isChatRoute ? undefined : 'secondary'"
+          @click="openChat"
+        />
         <Button
           label="Settings"
-          icon="pi pi-cog"
+          icon="pi pi-sliders-h"
           fluid
-          severity="secondary"
-          outlined
+          :outlined="!isSettingsRoute"
+          :severity="isSettingsRoute ? undefined : 'secondary'"
           @click="openSettings"
         />
       </div>
@@ -458,15 +487,15 @@ function toErrorMessage(error: unknown) {
     <main class="workspace-panel">
       <header class="workspace-header">
         <div>
-          <p class="eyebrow">Chat workspace</p>
-          <h2>One calm surface for code, files, and config</h2>
+          <p class="eyebrow">{{ workspaceEyebrow }}</p>
+          <h2>{{ workspaceTitle }}</h2>
         </div>
         <Button
-          label="Settings"
-          icon="pi pi-sliders-h"
+          :label="isChatRoute ? 'Settings' : 'Back to Chat'"
+          :icon="isChatRoute ? 'pi pi-sliders-h' : 'pi pi-comments'"
           severity="secondary"
           text
-          @click="openSettings"
+          @click="isChatRoute ? openSettings() : openChat()"
         />
       </header>
 
@@ -481,7 +510,7 @@ function toErrorMessage(error: unknown) {
       </section>
 
       <template v-else>
-        <section v-if="!llmReady" class="empty-state">
+        <section v-if="!llmReady && isChatRoute" class="empty-state">
           <p class="eyebrow">Setup needed</p>
           <h3>Configure the LLM connection before sending messages.</h3>
           <p>
@@ -491,7 +520,8 @@ function toErrorMessage(error: unknown) {
           <Button label="Open Settings" icon="pi pi-cog" @click="openSettings" />
         </section>
 
-        <template v-else>
+        <section v-else class="workspace-content">
+          <template v-if="isChatRoute">
           <ChatTimeline
             :messages="chatMessages"
             :activities="activities"
@@ -504,26 +534,25 @@ function toErrorMessage(error: unknown) {
             :is-sending="isSending"
             @submit="submitMessage"
           />
-        </template>
+          </template>
+          <SettingsPanel
+            v-else
+            :health="health"
+            :config="config"
+            :mcp-config="mcpConfig"
+            :llm-form="llmForm"
+            :mcp-draft="mcpDraft"
+            :saving-llm="savingState.llm"
+            :saving-mcp="savingState.mcp"
+            :reloading-mcp="savingState.reloadingMcp"
+            @save-llm="saveLlmSettings"
+            @save-mcp="saveMcpSettings"
+            @reload-mcp="reloadMcpSettings"
+            @add-mcp="addMcpServer"
+            @remove-mcp="removeMcpServer"
+          />
+        </section>
       </template>
     </main>
-
-    <SettingsDrawer
-      :visible="settingsVisible"
-      :health="health"
-      :config="config"
-      :mcp-config="mcpConfig"
-      :llm-form="llmForm"
-      :mcp-draft="mcpDraft"
-      :saving-llm="savingState.llm"
-      :saving-mcp="savingState.mcp"
-      :reloading-mcp="savingState.reloadingMcp"
-      @close="settingsVisible = false"
-      @save-llm="saveLlmSettings"
-      @save-mcp="saveMcpSettings"
-      @reload-mcp="reloadMcpSettings"
-      @add-mcp="addMcpServer"
-      @remove-mcp="removeMcpServer"
-    />
   </div>
 </template>

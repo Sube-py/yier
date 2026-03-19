@@ -1,6 +1,7 @@
 <script setup lang="ts">
+import { ref } from 'vue'
+
 import Button from 'primevue/button'
-import Drawer from 'primevue/drawer'
 import InputText from 'primevue/inputtext'
 import Password from 'primevue/password'
 import Tag from 'primevue/tag'
@@ -14,7 +15,6 @@ import Textarea from 'primevue/textarea'
 import type { ConfigResponse, EditableMcpServer, HealthResponse, McpConfigResponse } from '../types/api'
 
 defineProps<{
-  visible: boolean
   health: HealthResponse | null
   config: ConfigResponse | null
   mcpConfig: McpConfigResponse | null
@@ -29,10 +29,9 @@ defineProps<{
   reloadingMcp: boolean
 }>()
 
-const activeTab = defineModel<string>('activeTab', { default: 'llm' })
+const activeTab = ref('llm')
 
 const emit = defineEmits<{
-  close: []
   saveLlm: []
   saveMcp: []
   reloadMcp: []
@@ -42,23 +41,23 @@ const emit = defineEmits<{
 </script>
 
 <template>
-  <Drawer
-    :visible="visible"
-    position="right"
-    class="settings-drawer"
-    @update:visible="emit('close')"
-  >
-    <template #header>
-      <div class="drawer-header">
-        <div>
-          <p class="eyebrow">Configuration</p>
-          <h3>Local console settings</h3>
-        </div>
-        <Tag :value="health?.llm.ready ? 'Configured' : 'Needs setup'" :severity="health?.llm.ready ? 'success' : 'warn'" />
+  <section class="settings-page">
+    <div class="settings-page-header">
+      <div>
+        <p class="eyebrow">Configuration</p>
+        <h3>Local console settings</h3>
+        <p class="settings-page-copy">
+          Tune the local model connection, maintain MCP servers, and inspect runtime status without
+          leaving the main workspace.
+        </p>
       </div>
-    </template>
+      <Tag
+        :value="health?.llm.ready ? 'Configured' : 'Needs setup'"
+        :severity="health?.llm.ready ? 'success' : 'warn'"
+      />
+    </div>
 
-    <Tabs v-model:value="activeTab">
+    <Tabs v-model:value="activeTab" class="settings-tabs">
       <TabList>
         <Tab value="llm">LLM</Tab>
         <Tab value="mcp">MCP</Tab>
@@ -99,7 +98,13 @@ const emit = defineEmits<{
                 <p class="eyebrow">MCP servers</p>
                 <h4>Edit the same `~/.yier/.yier.json` registry.</h4>
               </div>
-              <Button label="Add Server" icon="pi pi-plus" severity="secondary" outlined @click="emit('addMcp')" />
+              <Button
+                label="Add Server"
+                icon="pi pi-plus"
+                severity="secondary"
+                outlined
+                @click="emit('addMcp')"
+              />
             </div>
 
             <article v-for="server in mcpDraft" :key="server.id" class="mcp-card">
@@ -202,5 +207,5 @@ const emit = defineEmits<{
         </TabPanel>
       </TabPanels>
     </Tabs>
-  </Drawer>
+  </section>
 </template>

@@ -404,19 +404,32 @@ select {
 .activity-list {
   display: grid;
   gap: 0.7rem;
-  margin: 0.75rem 0 0;
-  padding: 0;
-  list-style: none;
+  margin-top: 0.75rem;
 }
 
 .activity-item {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 0.7rem;
-  padding: 0.8rem 0.9rem;
   border-radius: 1rem;
   background: rgba(255, 250, 242, 0.8);
   border: 1px solid rgba(34, 66, 72, 0.08);
+  overflow: hidden;
+}
+
+.activity-summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.7rem;
+  align-items: start;
+  padding: 0.8rem 0.9rem;
+  cursor: pointer;
+  list-style: none;
+}
+
+.activity-summary::-webkit-details-marker {
+  display: none;
+}
+
+.activity-summary-copy {
+  min-width: 0;
 }
 
 .activity-state {
@@ -457,6 +470,56 @@ select {
   color: var(--app-text-soft);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.activity-body {
+  display: grid;
+  gap: 0.55rem;
+  padding: 0 0.9rem 0.9rem 2.35rem;
+  border-top: 1px solid rgba(34, 66, 72, 0.08);
+}
+
+.activity-command,
+.activity-meta,
+.activity-stream-label {
+  margin: 0;
+}
+
+.activity-command {
+  color: var(--app-accent-deep);
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.9rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.activity-meta,
+.activity-stream-label {
+  color: var(--app-text-soft);
+  font-size: 0.84rem;
+}
+
+.activity-stream {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.activity-stream-output {
+  margin: 0;
+  overflow-x: auto;
+  padding: 0.8rem 0.9rem;
+  border-radius: 0.85rem;
+  background: rgba(17, 38, 42, 0.94);
+  color: #f2f5f6;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.86rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.activity-stream--stderr .activity-stream-output {
+  background: rgba(78, 31, 24, 0.92);
 }
 
 .composer-shell {

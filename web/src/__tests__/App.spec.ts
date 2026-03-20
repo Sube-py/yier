@@ -179,6 +179,18 @@ describe('App', () => {
               'event: run_started',
               'data: {"session_id":"session-1"}',
               '',
+              'event: tool_call_start',
+              'data: {"session_id":"session-1","tool_name":"run_command","tool_call_id":"call-1","arguments":{"command":"printf \\"hello\\"","cwd":"."},"iteration":1}',
+              '',
+              'event: command_start',
+              'data: {"session_id":"session-1","tool_call_id":"call-1","tool_name":"run_command","command":"printf \\"hello\\"","cwd":"/tmp/project","is_background":false}',
+              '',
+              'event: command_output',
+              'data: {"session_id":"session-1","tool_call_id":"call-1","tool_name":"run_command","stream":"stdout","content":"hello","is_background":false}',
+              '',
+              'event: command_end',
+              'data: {"session_id":"session-1","tool_call_id":"call-1","tool_name":"run_command","command":"printf \\"hello\\"","cwd":"/tmp/project","exit_code":0,"timed_out":false,"is_background":false}',
+              '',
               'event: assistant_message',
               'data: {"session_id":"session-1","content":"I found the **project files**.\\n\\n```ts\\nconsole.log(1)\\n```","iteration":1}',
               '',
@@ -206,6 +218,9 @@ describe('App', () => {
     expect(wrapper.text()).toContain('List the project files')
     expect(wrapper.html()).toContain('<strong>project files</strong>')
     expect(wrapper.html()).toContain('<pre><code class="language-ts">')
+    expect(wrapper.text()).toContain('Shell command')
+    expect(wrapper.text()).toContain('printf "hello"')
+    expect(wrapper.text()).toContain('hello')
   })
 
   it('renders settings in the shared workspace via routing', async () => {

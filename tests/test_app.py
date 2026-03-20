@@ -13,6 +13,7 @@ from yier_web.chat import ChatService
 from yier_web.config import AppConfigService, MCPValidationError
 from yier_web.frontend import FrontendService
 from yier_web.schemas import MCPRuntimeEntry, SaveLLMRequest
+from yier_web.tool_events import reset_tool_event_emitter, set_tool_event_emitter
 
 
 class FakeChatService:
@@ -327,3 +328,88 @@ def test_chat_service_run_command_tool_supports_shell_pipes(
     assert "[stdout]" in result.content
     assert "5" in result.content
     assert result.metadata["allow_shell"] is True
+
+
+def test_chat_service_workspace_tools_include_background_tools(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog())
+
+    project_root = tmp_path / "project"
+    project_root.mkdir(parents=True)
+    service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
+    chat_service = ChatService(
+        project_root=project_root,
+        config_service=service,
+        mcp_manager=FakeMCPManager(),  # type: ignore[arg-type]
+    )
+
+    assistant_settings = service.build_assistant_settings()
+    tool_names = {
+        tool.name
+        for tool in chat_service._build_workspace_tools(assistant_settings)
+    }
+
+    assert "start_background_command" in tool_names
+    assert "list_background_commands" in tool_names
+    assert "queue_background_followup" in tool_names
+
+
+def test_chat_service_run_command_tool_emits_stream_events(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog())
+
+    project_root = tmp_path / "project"
+    project_root.mkdir(parents=True)
+    service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
+    chat_service = ChatService(
+        project_root=project_root,
+        config_service=service,
+        mcp_manager=FakeMCPManager(),  # type: ignore[arg-type]
+    )
+    assistant_settings = service.build_assistant_settings()
+    run_command_tool = next(
+        tool
+        for tool in chat_service._build_workspace_tools(assistant_settings)
+        if tool.name == "run_command"
+    )
+
+    emitted_events: list[tuple[str, dict[str, Any]]] = []
+
+    async def emit(event: str, data: dict[str, Any]) -> None:
+        emitted_events.append((event, data))
+
+    token = set_tool_event_emitter(emit)
+
+    import asyncio
+
+    try:
+        asyncio.run(
+            run_command_tool.execute(
+                run_command_tool.parameters(
+                    command="printf 'hello'; printf 'oops' >&2",
+                    cwd=".",
+                ),
+                ToolContext(session_id="session-1", message_id="message-1", call_id="call-2"),
+            )
+        )
+    finally:
+        reset_tool_event_emitter(token)
+
+    event_names = [event_name for event_name, _payload in emitted_events]
+    assert "command_start" in event_names
+    assert "command_output" in event_names
+    assert "command_end" in event_names
+    assert any(
+        payload["stream"] == "stdout" and "hello" in payload["content"]
+        for event_name, payload in emitted_events
+        if event_name == "command_output"
+    )
+    assert any(
+        payload["stream"] == "stderr" and "oops" in payload["content"]
+        for event_name, payload in emitted_events
+        if event_name == "command_output"
+    )

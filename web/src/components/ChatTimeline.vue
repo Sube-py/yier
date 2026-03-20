@@ -51,7 +51,15 @@ onMounted(async () => {
 })
 
 watch(
-  () => [props.messages.length, props.activities.length, props.isSending],
+  () => props.activities,
+  async () => {
+    await scrollToBottomIfNeeded()
+  },
+  { deep: true, flush: 'post' },
+)
+
+watch(
+  () => [props.messages.length, props.isSending],
   async () => {
     await scrollToBottomIfNeeded()
   },
@@ -104,15 +112,40 @@ watch(
 
       <div v-if="activities.length" class="activity-panel">
         <p class="eyebrow">Run activity</p>
-        <ul class="activity-list">
-          <li v-for="activity in activities" :key="activity.id" class="activity-item">
-            <span class="activity-state" :class="`activity-state--${activity.state}`"></span>
-            <div>
-              <p class="activity-title">{{ activity.title }}</p>
-              <p class="activity-detail">{{ activity.detail }}</p>
+        <div class="activity-list">
+          <details
+            v-for="activity in activities"
+            :key="activity.id"
+            class="activity-item"
+            :open="activity.state === 'running' || Boolean(activity.stdout || activity.stderr)"
+          >
+            <summary class="activity-summary">
+              <span class="activity-state" :class="`activity-state--${activity.state}`"></span>
+              <div class="activity-summary-copy">
+                <p class="activity-title">{{ activity.title }}</p>
+                <p class="activity-detail">{{ activity.detail }}</p>
+              </div>
+            </summary>
+
+            <div class="activity-body">
+              <p v-if="activity.command" class="activity-command">{{ activity.command }}</p>
+              <p v-if="activity.cwd" class="activity-meta">cwd {{ activity.cwd }}</p>
+              <p v-for="note in activity.meta" :key="`${activity.id}-${note}`" class="activity-meta">
+                {{ note }}
+              </p>
+
+              <div v-if="activity.stdout" class="activity-stream">
+                <p class="activity-stream-label">stdout</p>
+                <pre class="activity-stream-output">{{ activity.stdout }}</pre>
+              </div>
+
+              <div v-if="activity.stderr" class="activity-stream activity-stream--stderr">
+                <p class="activity-stream-label">stderr</p>
+                <pre class="activity-stream-output">{{ activity.stderr }}</pre>
+              </div>
             </div>
-          </li>
-        </ul>
+          </details>
+        </div>
       </div>
     </div>
   </section>

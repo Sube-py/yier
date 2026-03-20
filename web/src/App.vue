@@ -172,12 +172,14 @@ async function submitMessage() {
     await streamChat(body, handleStreamEvent)
   } catch (error) {
     errorMessage.value = toErrorMessage(error)
-    activities.value.push({
-      id: crypto.randomUUID(),
-      title: 'Run failed',
-      detail: toErrorMessage(error),
-      state: 'error',
-    })
+    activities.value.push(
+      makeActivity({
+        title: 'Run failed',
+        detail: toErrorMessage(error),
+        state: 'error',
+        kind: 'status',
+      }),
+    )
   } finally {
     isSending.value = false
   }
@@ -185,49 +187,184 @@ async function submitMessage() {
 
 function handleStreamEvent(event: ChatStreamEvent) {
   if (event.event === 'run_started') {
-    activities.value.push({
-      id: crypto.randomUUID(),
-      title: 'Thinking',
-      detail: 'Yier is preparing the next response.',
-      state: 'running',
-    })
+    activities.value.push(
+      makeActivity({
+        title: 'Thinking',
+        detail: 'Yier is preparing the next response.',
+        state: 'running',
+        kind: 'status',
+      }),
+    )
     return
   }
 
   if (event.event === 'tool_call_start') {
-    activities.value.push({
+    upsertActivity(event.data.tool_call_id, {
       id: event.data.tool_call_id,
+      kind: 'tool',
       title: event.data.tool_name,
-      detail: JSON.stringify(event.data.arguments),
+      detail: formatToolArguments(event.data.arguments),
       state: 'running',
+      command: '',
+      cwd: '',
+      stdout: '',
+      stderr: '',
+      meta: [`Iteration ${event.data.iteration}`],
     })
     return
   }
 
   if (event.event === 'tool_call_end') {
-    const target = activities.value.find((item) => item.id === event.data.tool_call_id)
-    if (target) {
-      target.detail = event.data.result
-      target.state = event.data.is_error ? 'error' : 'done'
-      return
-    }
-
-    activities.value.push({
+    upsertActivity(event.data.tool_call_id, {
       id: event.data.tool_call_id,
+      kind: 'tool',
       title: event.data.tool_name,
       detail: event.data.result,
       state: event.data.is_error ? 'error' : 'done',
+      command: '',
+      cwd: '',
+      stdout: '',
+      stderr: '',
+      meta: [`Iteration ${event.data.iteration}`],
+    })
+    return
+  }
+
+  if (event.event === 'command_start') {
+    upsertActivity(event.data.tool_call_id, {
+      id: event.data.tool_call_id,
+      kind: 'command',
+      title: 'Shell command',
+      detail: 'Streaming command output.',
+      state: 'running',
+      command: event.data.command,
+      cwd: event.data.cwd,
+      stdout: '',
+      stderr: '',
+      meta: [event.data.tool_name],
+    })
+    return
+  }
+
+  if (event.event === 'command_output') {
+    appendActivityOutput(event.data.tool_call_id, event.data.stream, event.data.content)
+    return
+  }
+
+  if (event.event === 'command_end') {
+    upsertActivity(event.data.tool_call_id, {
+      id: event.data.tool_call_id,
+      kind: 'command',
+      title: 'Shell command',
+      detail: event.data.timed_out
+        ? `Timed out with exit code ${event.data.exit_code}.`
+        : `Finished with exit code ${event.data.exit_code}.`,
+      state: event.data.exit_code === 0 && !event.data.timed_out ? 'done' : 'error',
+      command: event.data.command,
+      cwd: event.data.cwd,
+      stdout: '',
+      stderr: '',
+      meta: [event.data.tool_name],
+    })
+    return
+  }
+
+  if (event.event === 'background_command_started') {
+    upsertActivity(`bg:${event.data.background_session_id}`, {
+      id: `bg:${event.data.background_session_id}`,
+      kind: 'background',
+      title: `Background ${event.data.background_session_id}`,
+      detail: 'Background task is running.',
+      state: 'running',
+      command: event.data.command,
+      cwd: event.data.cwd,
+      stdout: '',
+      stderr: '',
+      meta: [event.data.tool_name],
+    })
+    return
+  }
+
+  if (event.event === 'background_command_output') {
+    appendActivityOutput(
+      `bg:${event.data.background_session_id}`,
+      event.data.stream,
+      event.data.content,
+    )
+    return
+  }
+
+  if (event.event === 'background_command_end') {
+    upsertActivity(`bg:${event.data.background_session_id}`, {
+      id: `bg:${event.data.background_session_id}`,
+      kind: 'background',
+      title: `Background ${event.data.background_session_id}`,
+      detail:
+        event.data.exit_code === null
+          ? `Finished with state ${event.data.state}.`
+          : `Finished with state ${event.data.state} and exit code ${event.data.exit_code}.`,
+      state:
+        event.data.state === 'completed'
+          ? 'done'
+          : event.data.state === 'running'
+            ? 'running'
+            : 'error',
+      command: event.data.command,
+      cwd: event.data.cwd,
+      stdout: '',
+      stderr: '',
+      meta: [],
+    })
+    return
+  }
+
+  if (event.event === 'background_followup_queued') {
+    appendActivityMeta(
+      `bg:${event.data.background_session_id}`,
+      `Queued ${event.data.queue_id}: ${event.data.prompt}`,
+    )
+    return
+  }
+
+  if (event.event === 'background_followup_started') {
+    activities.value.push(
+      makeActivity({
+        id: `followup:${event.data.queue_id}`,
+        title: `Follow-up ${event.data.queue_id}`,
+        detail: event.data.prompt,
+        state: 'running',
+        kind: 'status',
+        meta: [`Waiting on ${event.data.background_session_id}`],
+      }),
+    )
+    return
+  }
+
+  if (event.event === 'background_followup_finished') {
+    upsertActivity(`followup:${event.data.queue_id}`, {
+      id: `followup:${event.data.queue_id}`,
+      kind: 'status',
+      title: `Follow-up ${event.data.queue_id}`,
+      detail: `Completed with finish reason ${event.data.finish_reason}.`,
+      state: event.data.finish_reason === 'stop' ? 'done' : 'error',
+      command: '',
+      cwd: '',
+      stdout: '',
+      stderr: '',
+      meta: [`Triggered by ${event.data.background_session_id}`],
     })
     return
   }
 
   if (event.event === 'reasoning') {
-    activities.value.push({
-      id: crypto.randomUUID(),
-      title: 'Reasoning',
-      detail: event.data.content,
-      state: 'info',
-    })
+    activities.value.push(
+      makeActivity({
+        title: 'Reasoning',
+        detail: event.data.content,
+        state: 'info',
+        kind: 'reasoning',
+      }),
+    )
     return
   }
 
@@ -238,12 +375,14 @@ function handleStreamEvent(event: ChatStreamEvent) {
 
   if (event.event === 'error') {
     errorMessage.value = event.data.message
-    activities.value.push({
-      id: crypto.randomUUID(),
-      title: 'Error',
-      detail: event.data.message,
-      state: 'error',
-    })
+    activities.value.push(
+      makeActivity({
+        title: 'Error',
+        detail: event.data.message,
+        state: 'error',
+        kind: 'status',
+      }),
+    )
     return
   }
 
@@ -384,6 +523,70 @@ function makeUiMessage(role: 'user' | 'assistant', content: string): UiChatMessa
     role,
     content,
   }
+}
+
+function makeActivity(
+  overrides: Partial<ChatActivity> & Pick<ChatActivity, 'title' | 'detail' | 'state' | 'kind'>,
+): ChatActivity {
+  return {
+    id: overrides.id ?? crypto.randomUUID(),
+    kind: overrides.kind,
+    title: overrides.title,
+    detail: overrides.detail,
+    state: overrides.state,
+    command: overrides.command ?? '',
+    cwd: overrides.cwd ?? '',
+    stdout: overrides.stdout ?? '',
+    stderr: overrides.stderr ?? '',
+    meta: overrides.meta ?? [],
+  }
+}
+
+function upsertActivity(activityId: string, nextValue: ChatActivity) {
+  const target = activities.value.find((item) => item.id === activityId)
+  if (!target) {
+    activities.value.push(nextValue)
+    return
+  }
+
+  target.kind = nextValue.kind
+  target.title = nextValue.title
+  target.detail = nextValue.detail
+  target.state = nextValue.state
+  target.command = nextValue.command || target.command
+  target.cwd = nextValue.cwd || target.cwd
+  if (nextValue.meta.length) {
+    target.meta = dedupeMeta([...target.meta, ...nextValue.meta])
+  }
+}
+
+function appendActivityOutput(activityId: string, stream: 'stdout' | 'stderr', content: string) {
+  const target = activities.value.find((item) => item.id === activityId)
+  if (!target) {
+    return
+  }
+
+  if (stream === 'stdout') {
+    target.stdout += content
+    return
+  }
+  target.stderr += content
+}
+
+function appendActivityMeta(activityId: string, note: string) {
+  const target = activities.value.find((item) => item.id === activityId)
+  if (!target) {
+    return
+  }
+  target.meta = dedupeMeta([...target.meta, note])
+}
+
+function dedupeMeta(values: string[]) {
+  return [...new Set(values.filter((value) => value.trim()))]
+}
+
+function formatToolArguments(argumentsValue: Record<string, unknown>) {
+  return JSON.stringify(argumentsValue, null, 2)
 }
 
 function toEditableAllowedRoots(paths: string[]): EditableAllowedRoot[] {

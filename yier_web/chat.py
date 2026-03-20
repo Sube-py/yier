@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Awaitable, Callable
 from uuid import uuid4
 
 from yier_agents import (
     Agent,
+    AgentEndEvent,
+    BackgroundCommandManager,
     CompactionConfig,
     ErrorEvent,
     JSONSessionStore,
@@ -19,17 +22,29 @@ from yier_agents import (
     Tool,
     ToolCallEndEvent,
     ToolCallStartEvent,
+    create_list_background_commands_tool,
     create_list_files_tool,
+    create_read_background_command_tool,
     create_read_file_tool,
     create_replace_in_file_tool,
-    create_run_command_tool,
     create_search_files_tool,
+    create_send_background_command_input_tool,
+    create_stop_background_command_tool,
+    create_wait_background_command_tool,
     create_write_file_tool,
 )
 from yier_agents.src.config import AssistantSettings
 
+from yier_web.background_followups import FollowupQueueManager, create_queue_background_followup_tool
 from yier_web.config import AppConfigService
 from yier_web.schemas import MCPRuntimeEntry, StoredLLMSettings
+from yier_web.streaming_tools import (
+    create_streaming_run_command_tool,
+    create_streaming_start_background_command_tool,
+)
+from yier_web.tool_events import reset_tool_event_emitter, set_tool_event_emitter
+
+StreamEmitter = Callable[[str, dict[str, Any]], Awaitable[None]]
 
 
 class ChatService:
@@ -44,6 +59,12 @@ class ChatService:
         self.mcp_manager = mcp_manager or MCPManager(config_dir=self.config_service.yier_root)
         self.skill_catalog: SkillCatalog | None = None
         self.session_store = JSONSessionStore(self.config_service.sessions_path)
+        self.background_manager = BackgroundCommandManager(
+            default_root=self.project_root,
+            allow_shell=True,
+            shell_program="/bin/bash",
+        )
+        self.followup_queue = FollowupQueueManager()
         self._agent: Agent | None = None
         self._agent_signature: tuple[Any, ...] | None = None
         self._lock = asyncio.Lock()
@@ -59,6 +80,7 @@ class ChatService:
     async def stop(self) -> None:
         if not self._started:
             return
+        await self.background_manager.close()
         await self.mcp_manager.stop()
         self._started = False
         self._agent = None
@@ -114,93 +136,299 @@ class ChatService:
             yield {"event": "done", "data": {"session_id": session_id, "finish_reason": "error"}}
             return
 
-        yield {"event": "run_started", "data": {"session_id": session_id}}
+        event_queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+        producer = asyncio.create_task(
+            self._produce_stream_events(
+                agent=agent,
+                session_id=session_id,
+                user_message=user_message,
+                event_queue=event_queue,
+            )
+        )
+
+        try:
+            while True:
+                item = await event_queue.get()
+                if item is None:
+                    break
+                yield item
+        finally:
+            if not producer.done():
+                producer.cancel()
+            with suppress(asyncio.CancelledError):
+                await producer
+
+    async def _produce_stream_events(
+        self,
+        agent: Agent,
+        session_id: str,
+        user_message: str,
+        event_queue: asyncio.Queue[dict[str, Any] | None],
+    ) -> None:
+        async def emit(event: str, data: dict[str, Any]) -> None:
+            await event_queue.put({"event": event, "data": data})
 
         finish_reason = "stop"
+        token = set_tool_event_emitter(emit)
+
         try:
-            async for event in agent.run_stream(user_message, session_id):
-                if isinstance(event, ToolCallStartEvent):
-                    yield {
-                        "event": "tool_call_start",
-                        "data": {
-                            "session_id": session_id,
-                            "tool_name": event.tool_name,
-                            "tool_call_id": event.tool_call_id,
-                            "arguments": event.arguments,
-                            "iteration": event.iteration,
-                        },
-                    }
-                elif isinstance(event, ToolCallEndEvent):
-                    yield {
-                        "event": "tool_call_end",
-                        "data": {
-                            "session_id": session_id,
-                            "tool_name": event.tool_name,
-                            "tool_call_id": event.tool_call_id,
-                            "result": event.result,
-                            "is_error": event.is_error,
-                            "iteration": event.iteration,
-                        },
-                    }
-                elif isinstance(event, LLMEndEvent):
-                    finish_reason = event.finish_reason
-                    if event.message.reasoning_content:
-                        yield {
-                            "event": "reasoning",
-                            "data": {
-                                "session_id": session_id,
-                                "content": event.message.reasoning_content,
-                                "iteration": event.iteration,
-                            },
-                        }
-                    if event.finish_reason == "stop" and event.message.content:
-                        yield {
-                            "event": "assistant_message",
-                            "data": {
-                                "session_id": session_id,
-                                "content": event.message.content,
-                                "iteration": event.iteration,
-                            },
-                        }
-                elif isinstance(event, MessageCompactEvent):
-                    yield {
-                        "event": "reasoning",
-                        "data": {
-                            "session_id": session_id,
-                            "content": (
-                                f"Conversation memory compacted from "
-                                f"{event.original_count} to {event.compacted_count} messages."
-                            ),
-                            "iteration": event.iteration,
-                        },
-                    }
-                elif isinstance(event, ErrorEvent):
-                    finish_reason = "error"
-                    yield {
-                        "event": "error",
-                        "data": {
-                            "session_id": session_id,
-                            "message": f"{event.error_type}: {event.error_message}",
-                            "iteration": event.iteration,
-                        },
-                    }
+            await emit("run_started", {"session_id": session_id})
+            finish_reason = await self._stream_agent_prompt(
+                agent=agent,
+                session_id=session_id,
+                prompt=user_message,
+                emit=emit,
+            )
+            if self.followup_queue.count():
+                finish_reason = await self._process_queued_followups(
+                    agent=agent,
+                    session_id=session_id,
+                    emit=emit,
+                    default_finish_reason=finish_reason,
+                )
         except Exception as exc:
             finish_reason = "error"
-            yield {
-                "event": "error",
-                "data": {
+            await emit(
+                "error",
+                {
                     "session_id": session_id,
                     "message": str(exc),
                 },
-            }
+            )
+        finally:
+            reset_tool_event_emitter(token)
+            await emit(
+                "done",
+                {
+                    "session_id": session_id,
+                    "finish_reason": finish_reason,
+                },
+            )
+            await event_queue.put(None)
 
-        yield {
-            "event": "done",
-            "data": {
-                "session_id": session_id,
-                "finish_reason": finish_reason,
-            },
-        }
+    async def _stream_agent_prompt(
+        self,
+        agent: Agent,
+        session_id: str,
+        prompt: str,
+        emit: StreamEmitter,
+    ) -> str:
+        finish_reason = "stop"
+
+        async for event in agent.run_stream(prompt, session_id):
+            if isinstance(event, ToolCallStartEvent):
+                await emit(
+                    "tool_call_start",
+                    {
+                        "session_id": session_id,
+                        "tool_name": event.tool_name,
+                        "tool_call_id": event.tool_call_id,
+                        "arguments": event.arguments,
+                        "iteration": event.iteration,
+                    },
+                )
+                continue
+
+            if isinstance(event, ToolCallEndEvent):
+                await emit(
+                    "tool_call_end",
+                    {
+                        "session_id": session_id,
+                        "tool_name": event.tool_name,
+                        "tool_call_id": event.tool_call_id,
+                        "result": event.result,
+                        "is_error": event.is_error,
+                        "iteration": event.iteration,
+                    },
+                )
+                continue
+
+            if isinstance(event, LLMEndEvent):
+                finish_reason = event.finish_reason
+                if event.message.reasoning_content:
+                    await emit(
+                        "reasoning",
+                        {
+                            "session_id": session_id,
+                            "content": event.message.reasoning_content,
+                            "iteration": event.iteration,
+                        },
+                    )
+                if event.finish_reason == "stop" and event.message.content:
+                    await emit(
+                        "assistant_message",
+                        {
+                            "session_id": session_id,
+                            "content": event.message.content,
+                            "iteration": event.iteration,
+                        },
+                    )
+                continue
+
+            if isinstance(event, MessageCompactEvent):
+                await emit(
+                    "reasoning",
+                    {
+                        "session_id": session_id,
+                        "content": (
+                            f"Conversation memory compacted from "
+                            f"{event.original_count} to {event.compacted_count} messages."
+                        ),
+                        "iteration": event.iteration,
+                    },
+                )
+                continue
+
+            if isinstance(event, ErrorEvent):
+                finish_reason = "error"
+                await emit(
+                    "error",
+                    {
+                        "session_id": session_id,
+                        "message": f"{event.error_type}: {event.error_message}",
+                        "iteration": event.iteration,
+                    },
+                )
+                continue
+
+            if isinstance(event, AgentEndEvent):
+                finish_reason = event.finish_reason
+
+        return finish_reason
+
+    async def _process_queued_followups(
+        self,
+        agent: Agent,
+        session_id: str,
+        emit: StreamEmitter,
+        default_finish_reason: str,
+    ) -> str:
+        finish_reason = default_finish_reason
+        cursors: dict[str, dict[str, Any]] = {}
+
+        while self.followup_queue.count():
+            tracked_session_ids = {
+                item.trigger_session_id
+                for item in self.followup_queue.list_items()
+            }
+            completed_session_ids = await self._emit_background_session_updates(
+                tracked_session_ids=tracked_session_ids,
+                emit=emit,
+                cursors=cursors,
+            )
+            ready_items = self.followup_queue.pop_ready(completed_session_ids)
+            if ready_items:
+                for item in ready_items:
+                    await emit(
+                        "background_followup_started",
+                        {
+                            "session_id": session_id,
+                            "background_session_id": item.trigger_session_id,
+                            "queue_id": item.queue_id,
+                            "prompt": item.prompt,
+                        },
+                    )
+                    finish_reason = await self._stream_agent_prompt(
+                        agent=agent,
+                        session_id=session_id,
+                        prompt=item.prompt,
+                        emit=emit,
+                    )
+                    await emit(
+                        "background_followup_finished",
+                        {
+                            "session_id": session_id,
+                            "background_session_id": item.trigger_session_id,
+                            "queue_id": item.queue_id,
+                            "finish_reason": finish_reason,
+                        },
+                    )
+                continue
+
+            await asyncio.sleep(0.35)
+
+        return finish_reason
+
+    async def _emit_background_session_updates(
+        self,
+        tracked_session_ids: set[str],
+        emit: StreamEmitter,
+        cursors: dict[str, dict[str, Any]],
+    ) -> set[str]:
+        completed_session_ids: set[str] = set()
+
+        for background_session_id in tracked_session_ids:
+            try:
+                session = self.background_manager.require_session(background_session_id)
+            except (KeyError, ValueError):
+                completed_session_ids.add(background_session_id)
+                continue
+
+            cursor = cursors.setdefault(
+                session.session_id,
+                {
+                    "stdout_chars": 0,
+                    "stderr_chars": 0,
+                    "started_emitted": False,
+                    "end_emitted": False,
+                },
+            )
+            if not cursor["started_emitted"]:
+                await emit(
+                    "background_command_started",
+                    {
+                        "session_id": session.session_id,
+                        "tool_call_id": session.session_id,
+                        "tool_name": "start_background_command",
+                        "background_session_id": session.session_id,
+                        "command": session.command,
+                        "cwd": str(session.cwd),
+                        "state": session.state,
+                    },
+                )
+                cursor["started_emitted"] = True
+
+            for stream_name, buffer_name in (("stdout", "stdout_buffer"), ("stderr", "stderr_buffer")):
+                output_text = getattr(session, buffer_name).render()
+                chars_key = f"{stream_name}_chars"
+                previous_chars = int(cursor[chars_key])
+                if len(output_text) < previous_chars:
+                    previous_chars = 0
+                if len(output_text) == previous_chars:
+                    continue
+
+                new_content = output_text[previous_chars:]
+                cursor[chars_key] = len(output_text)
+                await emit(
+                    "background_command_output",
+                    {
+                        "session_id": session.session_id,
+                        "background_session_id": session.session_id,
+                        "command": session.command,
+                        "cwd": str(session.cwd),
+                        "stream": stream_name,
+                        "content": new_content,
+                    },
+                )
+
+            if session.is_running() or cursor["end_emitted"]:
+                continue
+
+            cursor["end_emitted"] = True
+            completed_session_ids.add(session.session_id)
+            await emit(
+                "background_command_end",
+                {
+                    "session_id": session.session_id,
+                    "background_session_id": session.session_id,
+                    "command": session.command,
+                    "cwd": str(session.cwd),
+                    "state": session.state,
+                    "exit_code": session.exit_code,
+                },
+            )
+
+        return completed_session_ids
 
     async def _get_agent(self) -> Agent | None:
         if not self._started:
@@ -222,6 +450,7 @@ class ChatService:
             return
 
         assistant_settings = self.config_service.build_assistant_settings()
+        self._configure_background_manager(assistant_settings)
         workspace_tools = self._build_workspace_tools(assistant_settings)
         mcp_tools = await self.mcp_manager.get_tools()
         llm = self._build_llm(settings.llm)
@@ -253,7 +482,39 @@ class ChatService:
             self.mcp_manager.version,
         )
 
+    def _configure_background_manager(self, assistant_settings: AssistantSettings) -> None:
+        allowed_roots = tuple(self._normalized_allowed_roots(assistant_settings))
+        self.background_manager.access.allowed_roots = allowed_roots
+        self.background_manager.access.default_root = assistant_settings.workspace_root.resolve()
+        self.background_manager.allow_shell = assistant_settings.run_command.allow_shell
+        self.background_manager.shell_program = assistant_settings.run_command.shell_program
+
     def _build_workspace_tools(self, assistant_settings: AssistantSettings) -> list[Tool]:
+        normalized_roots = self._normalized_allowed_roots(assistant_settings)
+        workspace_root = assistant_settings.workspace_root
+
+        return [
+            create_list_files_tool(normalized_roots, default_root=workspace_root),
+            create_read_file_tool(normalized_roots, default_root=workspace_root),
+            create_replace_in_file_tool(normalized_roots, default_root=workspace_root),
+            create_streaming_run_command_tool(
+                normalized_roots,
+                default_root=workspace_root,
+                allow_shell=assistant_settings.run_command.allow_shell,
+                shell_program=assistant_settings.run_command.shell_program,
+            ),
+            create_streaming_start_background_command_tool(self.background_manager),
+            create_list_background_commands_tool(self.background_manager),
+            create_read_background_command_tool(self.background_manager),
+            create_wait_background_command_tool(self.background_manager),
+            create_stop_background_command_tool(self.background_manager),
+            create_send_background_command_input_tool(self.background_manager),
+            create_queue_background_followup_tool(self.background_manager, self.followup_queue),
+            create_write_file_tool(normalized_roots, default_root=workspace_root),
+            create_search_files_tool(normalized_roots, default_root=workspace_root),
+        ]
+
+    def _normalized_allowed_roots(self, assistant_settings: AssistantSettings) -> list[Path]:
         roots = list(assistant_settings.allowed_roots)
         if assistant_settings.include_skill_directories_in_allowed_roots:
             roots.extend(self._get_skill_catalog().dirs())
@@ -266,20 +527,7 @@ class ChatService:
                 continue
             seen.add(resolved)
             normalized_roots.append(resolved)
-
-        return [
-            create_list_files_tool(normalized_roots, default_root=assistant_settings.workspace_root),
-            create_read_file_tool(normalized_roots, default_root=assistant_settings.workspace_root),
-            create_replace_in_file_tool(normalized_roots, default_root=assistant_settings.workspace_root),
-            create_run_command_tool(
-                normalized_roots,
-                default_root=assistant_settings.workspace_root,
-                allow_shell=assistant_settings.run_command.allow_shell,
-                shell_program=assistant_settings.run_command.shell_program,
-            ),
-            create_write_file_tool(normalized_roots, default_root=assistant_settings.workspace_root),
-            create_search_files_tool(normalized_roots, default_root=assistant_settings.workspace_root),
-        ]
+        return normalized_roots
 
     def _get_skill_catalog(self) -> SkillCatalog:
         if self.skill_catalog is None:

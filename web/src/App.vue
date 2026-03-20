@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import Button from 'primevue/button'
@@ -10,7 +10,7 @@ import Tag from 'primevue/tag'
 import ChatComposer from './components/ChatComposer.vue'
 import ChatTimeline from './components/ChatTimeline.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
-import { ApiError, apiGet, apiPost, apiPut, streamChat } from './lib/api'
+import { ApiError, apiGet, apiPost, apiPut, openPersistentEventStream, streamChat } from './lib/api'
 import type {
   ChatActivity,
   ChatStreamDoneEvent,
@@ -57,6 +57,7 @@ const mcpDraft = ref<EditableMcpServer[]>([])
 const isSettingsRoute = computed(() => route.name === 'settings')
 const isChatRoute = computed(() => route.name !== 'settings')
 const defaultAllowedRoots = computed(() => health.value?.allowed_roots ?? [])
+let closePersistentEventStream: (() => void) | null = null
 
 const sessionLabel = computed(() => {
   if (!activeSessionId.value) {
@@ -86,7 +87,13 @@ watch(activeSessionId, (value) => {
 })
 
 onMounted(async () => {
+  startPersistentEvents()
   await bootstrap()
+})
+
+onBeforeUnmount(() => {
+  closePersistentEventStream?.()
+  closePersistentEventStream = null
 })
 
 async function bootstrap() {
@@ -159,7 +166,7 @@ async function submitMessage() {
   errorMessage.value = ''
   successMessage.value = ''
   isSending.value = true
-  activities.value = []
+  activities.value = activities.value.filter((item) => item.kind === 'background' && item.state === 'running')
   composerText.value = ''
   chatMessages.value.push(makeUiMessage('user', content))
 
@@ -183,6 +190,24 @@ async function submitMessage() {
   } finally {
     isSending.value = false
   }
+}
+
+function startPersistentEvents() {
+  closePersistentEventStream?.()
+  closePersistentEventStream = openPersistentEventStream((event) => {
+    if (!isRelevantPersistentEvent(event)) {
+      return
+    }
+    handleStreamEvent(event)
+  })
+}
+
+function isRelevantPersistentEvent(event: ChatStreamEvent) {
+  const eventSessionId = 'session_id' in event.data ? event.data.session_id : ''
+  if (!eventSessionId) {
+    return false
+  }
+  return eventSessionId === activeSessionId.value
 }
 
 function handleStreamEvent(event: ChatStreamEvent) {

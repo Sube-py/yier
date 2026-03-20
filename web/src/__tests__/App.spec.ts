@@ -7,6 +7,34 @@ import Aura from '@primeuix/themes/aura'
 import App from '../App.vue'
 import { createTestRouter } from '../router'
 
+class MockEventSource {
+  static instances: MockEventSource[] = []
+
+  readonly listeners = new Map<string, Set<(event: MessageEvent<string>) => void>>()
+  onerror: ((event: Event) => void) | null = null
+
+  constructor(readonly url: string) {
+    MockEventSource.instances.push(this)
+  }
+
+  addEventListener(type: string, listener: (event: MessageEvent<string>) => void) {
+    const bucket = this.listeners.get(type) ?? new Set<(event: MessageEvent<string>) => void>()
+    bucket.add(listener)
+    this.listeners.set(type, bucket)
+  }
+
+  close() {}
+
+  emit(type: string, data: unknown) {
+    const event = { data: JSON.stringify(data) } as MessageEvent<string>
+    this.listeners.get(type)?.forEach((listener) => listener(event))
+  }
+
+  static reset() {
+    MockEventSource.instances = []
+  }
+}
+
 function jsonResponse(payload: unknown, status = 200) {
   return Promise.resolve(
     new Response(JSON.stringify(payload), {
@@ -51,6 +79,7 @@ describe('App', () => {
   beforeEach(() => {
     localStorage.clear()
     vi.restoreAllMocks()
+    MockEventSource.reset()
     vi.stubGlobal(
       'ResizeObserver',
       class ResizeObserver {
@@ -59,6 +88,7 @@ describe('App', () => {
         disconnect() {}
       },
     )
+    vi.stubGlobal('EventSource', MockEventSource)
   })
 
   it('shows the setup empty state when the llm is not configured', async () => {
@@ -259,6 +289,80 @@ describe('App', () => {
     expect(wrapper.text()).toContain('Local console settings')
     expect(wrapper.text()).toContain('Save LLM Settings')
     expect(wrapper.text()).toContain('Adjust the assistant without leaving the main console')
+  })
+
+  it('renders background updates from the persistent event stream', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const path = input.toString()
+        if (path.endsWith('/api/health')) {
+          return jsonResponse({
+            frontend: { ready: true, mode: 'static' },
+            llm: { ready: true },
+            mcp: { ready: true, runtime: {} },
+            allowed_roots: ['/tmp/project'],
+          })
+        }
+        if (path.endsWith('/api/config')) {
+          return jsonResponse({
+            llm: { base_url: 'https://example.test', model: 'demo', has_api_key: true },
+            allowed_roots: ['/tmp/project'],
+            mcp_runtime: {},
+          })
+        }
+        if (path.endsWith('/api/config/mcp')) {
+          return jsonResponse({ mcp_servers: {}, runtime: {} })
+        }
+        if (path.endsWith('/api/chat/sessions')) {
+          return jsonResponse({ session_id: 'session-1' }, 201)
+        }
+        if (path.includes('/api/chat/sessions/')) {
+          return jsonResponse({ session_id: 'session-1', messages: [] })
+        }
+        throw new Error(`Unexpected request: ${path}`)
+      }),
+    )
+
+    const wrapper = await mountApp()
+    await flushPromises()
+
+    const eventSource = MockEventSource.instances[0]
+    expect(eventSource).toBeTruthy()
+    if (!eventSource) {
+      throw new Error('Expected persistent EventSource connection.')
+    }
+
+    eventSource.emit('background_command_started', {
+      session_id: 'session-1',
+      background_session_id: 'bg-1',
+      tool_call_id: 'call-1',
+      tool_name: 'start_background_command',
+      command: 'npm run dev',
+      cwd: '/tmp/project',
+      state: 'running',
+    })
+    eventSource.emit('background_command_output', {
+      session_id: 'session-1',
+      background_session_id: 'bg-1',
+      command: 'npm run dev',
+      cwd: '/tmp/project',
+      stream: 'stdout',
+      content: 'ready on http://localhost:3000',
+    })
+    eventSource.emit('background_command_end', {
+      session_id: 'session-1',
+      background_session_id: 'bg-1',
+      command: 'npm run dev',
+      cwd: '/tmp/project',
+      state: 'completed',
+      exit_code: 0,
+    })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Background bg-1')
+    expect(wrapper.text()).toContain('npm run dev')
+    expect(wrapper.text()).toContain('ready on http://localhost:3000')
   })
 
   it('saves allowed roots from the settings workspace', async () => {

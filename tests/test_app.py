@@ -11,6 +11,7 @@ from yier_agents.src.skill import SkillCatalog
 from yier_web.app import AppServices, create_app
 from yier_web.chat import ChatService
 from yier_web.config import AppConfigService, MCPValidationError
+from yier_web.event_stream import EventStreamBroker
 from yier_web.frontend import FrontendService
 from yier_web.schemas import MCPRuntimeEntry, SaveLLMRequest
 from yier_web.tool_events import reset_tool_event_emitter, set_tool_event_emitter
@@ -125,6 +126,7 @@ def build_test_client(tmp_path: Path) -> TestClient[Any]:
         services=AppServices(
             config_service=config_service,
             chat_service=chat_service,  # type: ignore[arg-type]
+            event_broker=EventStreamBroker(),
             frontend_service=frontend_service,
         ),
     )

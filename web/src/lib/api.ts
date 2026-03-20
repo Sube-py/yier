@@ -10,6 +10,24 @@ const JSON_HEADERS = {
   'Content-Type': 'application/json',
 }
 const SSE_FRAME_DELIMITER = /\r?\n\r?\n/
+const STREAM_EVENT_NAMES = [
+  'run_started',
+  'tool_call_start',
+  'tool_call_end',
+  'command_start',
+  'command_output',
+  'command_end',
+  'background_command_started',
+  'background_command_output',
+  'background_command_end',
+  'background_followup_queued',
+  'background_followup_started',
+  'background_followup_finished',
+  'reasoning',
+  'assistant_message',
+  'error',
+  'done',
+] as const
 
 export async function apiGet<T>(path: string): Promise<T> {
   const response = await fetch(path)
@@ -75,6 +93,33 @@ export async function streamChat(
     if (event) {
       onEvent(event)
     }
+  }
+}
+
+export function openPersistentEventStream(
+  onEvent: (event: ChatStreamEvent) => void,
+  onError?: () => void,
+) {
+  const eventSource = new EventSource('/api/events/stream')
+
+  for (const eventName of STREAM_EVENT_NAMES) {
+    eventSource.addEventListener(eventName, (message) => {
+      const payload = message as MessageEvent<string>
+      onEvent({
+        event: eventName,
+        data: JSON.parse(payload.data),
+      } as ChatStreamEvent)
+    })
+  }
+
+  if (onError) {
+    eventSource.onerror = () => {
+      onError()
+    }
+  }
+
+  return () => {
+    eventSource.close()
   }
 }
 

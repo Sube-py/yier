@@ -83,7 +83,7 @@ watch(
       </div>
     </div>
 
-    <div v-if="!messages.length" class="timeline-empty">
+    <div v-if="!messages.length && !activities.length" class="timeline-empty">
       <p class="eyebrow">Ready</p>
       <h4>Start with a local task.</h4>
       <p>

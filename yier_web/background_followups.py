@@ -12,6 +12,7 @@ from yier_web.tool_events import emit_tool_event
 @dataclass(frozen=True, slots=True)
 class QueuedFollowup:
     queue_id: str
+    owner_session_id: str
     trigger_session_id: str
     prompt: str
     source: str
@@ -29,6 +30,7 @@ class FollowupQueueManager:
 
     def add(
         self,
+        owner_session_id: str,
         session_id: str,
         prompt: str,
         *,
@@ -37,6 +39,7 @@ class FollowupQueueManager:
         self._counter += 1
         item = QueuedFollowup(
             queue_id=f"q-{self._counter}",
+            owner_session_id=owner_session_id,
             trigger_session_id=session_id,
             prompt=prompt,
             source=source,
@@ -85,6 +88,7 @@ def create_queue_background_followup_tool(
             )
 
         item = followup_queue.add(
+            ctx.session_id,
             session.session_id,
             params.prompt,
             source="agent",

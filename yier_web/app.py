@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 import json
@@ -15,6 +16,7 @@ from litestar.status_codes import HTTP_400_BAD_REQUEST, HTTP_404_NOT_FOUND
 
 from yier_web.chat import ChatService
 from yier_web.config import AppConfigService, MCPValidationError
+from yier_web.event_stream import EventStreamBroker
 from yier_web.frontend import FrontendService
 from yier_web.schemas import (
     ChatStreamRequest,
@@ -34,15 +36,22 @@ from yier_web.schemas import (
 class AppServices:
     config_service: AppConfigService
     chat_service: ChatService
+    event_broker: EventStreamBroker
     frontend_service: FrontendService
 
 
 def build_services(project_root: Path | None = None, home_dir: Path | None = None) -> AppServices:
     resolved_root = (project_root or Path.cwd()).resolve()
     config_service = AppConfigService(project_root=resolved_root, home_dir=home_dir)
+    event_broker = EventStreamBroker()
     return AppServices(
         config_service=config_service,
-        chat_service=ChatService(project_root=resolved_root, config_service=config_service),
+        chat_service=ChatService(
+            project_root=resolved_root,
+            config_service=config_service,
+            event_broker=event_broker,
+        ),
+        event_broker=event_broker,
         frontend_service=FrontendService(project_root=resolved_root),
     )
 
@@ -51,6 +60,7 @@ def get_services(state: State) -> AppServices:
     return AppServices(
         config_service=state.config_service,
         chat_service=state.chat_service,
+        event_broker=state.event_broker,
         frontend_service=state.frontend_service,
     )
 
@@ -169,6 +179,37 @@ async def stream_chat(data: ChatStreamRequest, state: State) -> ServerSentEvent:
     return ServerSentEvent(event_stream())
 
 
+@get("/events/stream")
+async def stream_events(state: State) -> ServerSentEvent:
+    services = get_services(state)
+
+    async def event_stream() -> AsyncIterator[ServerSentEventMessage]:
+        subscriber = services.event_broker.subscribe()
+        try:
+            yield ServerSentEventMessage(
+                event="connected",
+                data=json.dumps({"status": "ok"}, ensure_ascii=False),
+            )
+            while True:
+                try:
+                    item = await asyncio.wait_for(subscriber.get(), timeout=15)
+                except TimeoutError:
+                    yield ServerSentEventMessage(
+                        event="ping",
+                        data=json.dumps({"status": "alive"}, ensure_ascii=False),
+                    )
+                    continue
+
+                yield ServerSentEventMessage(
+                    event=item.event,
+                    data=json.dumps(item.data, ensure_ascii=False),
+                )
+        finally:
+            services.event_broker.unsubscribe(subscriber)
+
+    return ServerSentEvent(event_stream())
+
+
 api_router = Router(
     path="/api",
     route_handlers=[
@@ -182,6 +223,7 @@ api_router = Router(
         create_session,
         get_session,
         stream_chat,
+        stream_events,
     ],
 )
 
@@ -206,6 +248,7 @@ def create_app(
     async def lifespan(app: Litestar) -> AsyncIterator[None]:
         app.state.config_service = app_services.config_service
         app.state.chat_service = app_services.chat_service
+        app.state.event_broker = app_services.event_broker
         app.state.frontend_service = app_services.frontend_service
         await app_services.chat_service.start()
         try:

@@ -37,6 +37,7 @@ from yier_agents.src.config import AssistantSettings
 
 from yier_web.background_followups import FollowupQueueManager, create_queue_background_followup_tool
 from yier_web.config import AppConfigService
+from yier_web.event_stream import EventStreamBroker
 from yier_web.schemas import MCPRuntimeEntry, StoredLLMSettings
 from yier_web.streaming_tools import (
     create_streaming_run_command_tool,
@@ -53,6 +54,7 @@ class ChatService:
         project_root: Path,
         config_service: AppConfigService,
         mcp_manager: MCPManager | None = None,
+        event_broker: EventStreamBroker | None = None,
     ) -> None:
         self.project_root = project_root.resolve()
         self.config_service = config_service
@@ -65,9 +67,14 @@ class ChatService:
             shell_program="/bin/bash",
         )
         self.followup_queue = FollowupQueueManager()
+        self.event_broker = event_broker or EventStreamBroker()
         self._agent: Agent | None = None
         self._agent_signature: tuple[Any, ...] | None = None
         self._lock = asyncio.Lock()
+        self._session_run_locks: dict[str, asyncio.Lock] = {}
+        self._background_owner_sessions: dict[str, str] = {}
+        self._background_cursors: dict[str, dict[str, Any]] = {}
+        self._background_supervisor_task: asyncio.Task[None] | None = None
         self._started = False
 
     async def start(self) -> None:
@@ -76,15 +83,23 @@ class ChatService:
         await self.mcp_manager.start()
         self._started = True
         await self.reload_agent(force_mcp_reconnect=False)
+        self._background_supervisor_task = asyncio.create_task(self._background_supervisor_loop())
 
     async def stop(self) -> None:
         if not self._started:
             return
+        if self._background_supervisor_task is not None:
+            self._background_supervisor_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._background_supervisor_task
+            self._background_supervisor_task = None
         await self.background_manager.close()
         await self.mcp_manager.stop()
         self._started = False
         self._agent = None
         self._agent_signature = None
+        self._background_owner_sessions.clear()
+        self._background_cursors.clear()
 
     async def reload_agent(self, force_mcp_reconnect: bool = False) -> None:
         async with self._lock:
@@ -166,6 +181,7 @@ class ChatService:
         event_queue: asyncio.Queue[dict[str, Any] | None],
     ) -> None:
         async def emit(event: str, data: dict[str, Any]) -> None:
+            self._handle_internal_event(event, data)
             await event_queue.put({"event": event, "data": data})
 
         finish_reason = "stop"
@@ -173,19 +189,12 @@ class ChatService:
 
         try:
             await emit("run_started", {"session_id": session_id})
-            finish_reason = await self._stream_agent_prompt(
+            finish_reason = await self._run_agent_prompt(
                 agent=agent,
                 session_id=session_id,
                 prompt=user_message,
                 emit=emit,
             )
-            if self.followup_queue.count():
-                finish_reason = await self._process_queued_followups(
-                    agent=agent,
-                    session_id=session_id,
-                    emit=emit,
-                    default_finish_reason=finish_reason,
-                )
         except Exception as exc:
             finish_reason = "error"
             await emit(
@@ -205,6 +214,25 @@ class ChatService:
                 },
             )
             await event_queue.put(None)
+
+    async def _run_agent_prompt(
+        self,
+        agent: Agent,
+        session_id: str,
+        prompt: str,
+        emit: StreamEmitter,
+    ) -> str:
+        async with self._session_lock(session_id):
+            token = set_tool_event_emitter(emit)
+            try:
+                return await self._stream_agent_prompt(
+                    agent=agent,
+                    session_id=session_id,
+                    prompt=prompt,
+                    emit=emit,
+                )
+            finally:
+                reset_tool_event_emitter(token)
 
     async def _stream_agent_prompt(
         self,
@@ -296,97 +324,67 @@ class ChatService:
 
         return finish_reason
 
-    async def _process_queued_followups(
-        self,
-        agent: Agent,
-        session_id: str,
-        emit: StreamEmitter,
-        default_finish_reason: str,
-    ) -> str:
-        finish_reason = default_finish_reason
-        cursors: dict[str, dict[str, Any]] = {}
+    def _handle_internal_event(self, event: str, data: dict[str, Any]) -> None:
+        if event != "background_command_started":
+            return
 
-        while self.followup_queue.count():
-            tracked_session_ids = {
-                item.trigger_session_id
-                for item in self.followup_queue.list_items()
-            }
-            completed_session_ids = await self._emit_background_session_updates(
-                tracked_session_ids=tracked_session_ids,
-                emit=emit,
-                cursors=cursors,
-            )
-            ready_items = self.followup_queue.pop_ready(completed_session_ids)
-            if ready_items:
-                for item in ready_items:
-                    await emit(
-                        "background_followup_started",
-                        {
-                            "session_id": session_id,
-                            "background_session_id": item.trigger_session_id,
-                            "queue_id": item.queue_id,
-                            "prompt": item.prompt,
-                        },
-                    )
-                    finish_reason = await self._stream_agent_prompt(
-                        agent=agent,
-                        session_id=session_id,
-                        prompt=item.prompt,
-                        emit=emit,
-                    )
-                    await emit(
-                        "background_followup_finished",
-                        {
-                            "session_id": session_id,
-                            "background_session_id": item.trigger_session_id,
-                            "queue_id": item.queue_id,
-                            "finish_reason": finish_reason,
-                        },
-                    )
-                continue
+        background_session_id = data.get("background_session_id")
+        owner_session_id = data.get("session_id")
+        if not isinstance(background_session_id, str) or not isinstance(owner_session_id, str):
+            return
 
+        self._background_owner_sessions[background_session_id] = owner_session_id
+        self._background_cursors.setdefault(
+            background_session_id,
+            {
+                "stdout_chars": 0,
+                "stderr_chars": 0,
+                "end_emitted": False,
+            },
+        )
+
+    def _session_lock(self, session_id: str) -> asyncio.Lock:
+        lock = self._session_run_locks.get(session_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._session_run_locks[session_id] = lock
+        return lock
+
+    async def _background_supervisor_loop(self) -> None:
+        while self._started:
+            try:
+                completed_session_ids = await self._publish_background_updates()
+                await self._process_ready_followups(completed_session_ids)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                await self.event_broker.publish(
+                    "error",
+                    {
+                        "session_id": "",
+                        "message": f"Background supervisor error: {exc}",
+                    },
+                )
             await asyncio.sleep(0.35)
 
-        return finish_reason
-
-    async def _emit_background_session_updates(
-        self,
-        tracked_session_ids: set[str],
-        emit: StreamEmitter,
-        cursors: dict[str, dict[str, Any]],
-    ) -> set[str]:
+    async def _publish_background_updates(self) -> set[str]:
         completed_session_ids: set[str] = set()
 
-        for background_session_id in tracked_session_ids:
+        for background_session_id, owner_session_id in list(self._background_owner_sessions.items()):
             try:
                 session = self.background_manager.require_session(background_session_id)
             except (KeyError, ValueError):
                 completed_session_ids.add(background_session_id)
                 continue
 
-            cursor = cursors.setdefault(
+            cursor = self._background_cursors.setdefault(
                 session.session_id,
                 {
                     "stdout_chars": 0,
                     "stderr_chars": 0,
-                    "started_emitted": False,
                     "end_emitted": False,
                 },
             )
-            if not cursor["started_emitted"]:
-                await emit(
-                    "background_command_started",
-                    {
-                        "session_id": session.session_id,
-                        "tool_call_id": session.session_id,
-                        "tool_name": "start_background_command",
-                        "background_session_id": session.session_id,
-                        "command": session.command,
-                        "cwd": str(session.cwd),
-                        "state": session.state,
-                    },
-                )
-                cursor["started_emitted"] = True
 
             for stream_name, buffer_name in (("stdout", "stdout_buffer"), ("stderr", "stderr_buffer")):
                 output_text = getattr(session, buffer_name).render()
@@ -399,10 +397,10 @@ class ChatService:
 
                 new_content = output_text[previous_chars:]
                 cursor[chars_key] = len(output_text)
-                await emit(
+                await self.event_broker.publish(
                     "background_command_output",
                     {
-                        "session_id": session.session_id,
+                        "session_id": owner_session_id,
                         "background_session_id": session.session_id,
                         "command": session.command,
                         "cwd": str(session.cwd),
@@ -416,10 +414,10 @@ class ChatService:
 
             cursor["end_emitted"] = True
             completed_session_ids.add(session.session_id)
-            await emit(
+            await self.event_broker.publish(
                 "background_command_end",
                 {
-                    "session_id": session.session_id,
+                    "session_id": owner_session_id,
                     "background_session_id": session.session_id,
                     "command": session.command,
                     "cwd": str(session.cwd),
@@ -429,6 +427,55 @@ class ChatService:
             )
 
         return completed_session_ids
+
+    async def _process_ready_followups(
+        self,
+        completed_session_ids: set[str],
+    ) -> None:
+        if not completed_session_ids:
+            return
+
+        ready_items = self.followup_queue.pop_ready(completed_session_ids)
+        if not ready_items:
+            return
+
+        agent = await self._get_agent()
+        if agent is None:
+            return
+
+        for item in ready_items:
+            await self.event_broker.publish(
+                "background_followup_started",
+                {
+                    "session_id": item.owner_session_id,
+                    "background_session_id": item.trigger_session_id,
+                    "queue_id": item.queue_id,
+                    "prompt": item.prompt,
+                },
+            )
+
+            async def emit(event: str, data: dict[str, Any]) -> None:
+                self._handle_internal_event(event, data)
+                await self.event_broker.publish(event, data)
+
+            finish_reason = await self._run_agent_prompt(
+                agent=agent,
+                session_id=item.owner_session_id,
+                prompt=item.prompt,
+                emit=emit,
+            )
+            await self.event_broker.publish(
+                "background_followup_finished",
+                {
+                    "session_id": item.owner_session_id,
+                    "background_session_id": item.trigger_session_id,
+                    "queue_id": item.queue_id,
+                    "finish_reason": finish_reason,
+                },
+            )
+
+        for background_session_id in completed_session_ids:
+            self._background_owner_sessions.pop(background_session_id, None)
 
     async def _get_agent(self) -> Agent | None:
         if not self._started:

@@ -529,6 +529,17 @@ select {
   border-radius: 1.2rem;
 }
 
+.root-editor-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.65rem;
+  align-items: center;
+  padding: 0.85rem 0.9rem;
+  border: 1px solid var(--app-border);
+  border-radius: 1.05rem;
+  background: rgba(255, 250, 242, 0.82);
+}
+
 .mcp-select {
   min-width: 7rem;
   padding: 0.7rem 0.8rem;
@@ -543,6 +554,13 @@ select {
   gap: 0.4rem;
   color: var(--app-text-soft);
   font-size: 0.92rem;
+}
+
+.settings-hint {
+  margin: 0;
+  color: var(--app-text-soft);
+  font-size: 0.92rem;
+  line-height: 1.6;
 }
 
 .settings-actions {
@@ -619,5 +637,9 @@ select {
   .mcp-card-header {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .root-editor-card {
+    grid-template-columns: 1fr;
   }
 }

@@ -85,6 +85,15 @@ class SaveLLMRequest(BaseModel):
         return value.strip()
 
 
+class SaveAllowedRootsRequest(BaseModel):
+    allowed_roots: list[str]
+
+    @field_validator("allowed_roots")
+    @classmethod
+    def validate_allowed_roots(cls, value: list[str]) -> list[str]:
+        return [item.strip() for item in value if item.strip()]
+
+
 class MCPConfigResponse(BaseModel):
     mcp_servers: dict[str, dict[str, Any]] = Field(default_factory=dict)
     runtime: dict[str, MCPRuntimeEntry] = Field(default_factory=dict)

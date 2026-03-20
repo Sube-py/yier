@@ -245,4 +245,79 @@ describe('App', () => {
     expect(wrapper.text()).toContain('Save LLM Settings')
     expect(wrapper.text()).toContain('Adjust the assistant without leaving the main console')
   })
+
+  it('saves allowed roots from the settings workspace', async () => {
+    let savedRoots: string[] = ['/tmp/project', '/tmp/docs']
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const path = input.toString()
+        if (path.endsWith('/api/health')) {
+          return jsonResponse({
+            frontend: { ready: true, mode: 'static' },
+            llm: { ready: true },
+            mcp: { ready: true, runtime: {} },
+            allowed_roots: ['/tmp/project'],
+          })
+        }
+        if (path.endsWith('/api/config') && (!init || init.method === 'GET')) {
+          return jsonResponse({
+            llm: { base_url: 'https://example.test', model: 'demo', has_api_key: true },
+            allowed_roots: savedRoots,
+            mcp_runtime: {},
+          })
+        }
+        if (path.endsWith('/api/config/roots') && init?.method === 'PUT') {
+          const payload = JSON.parse(String(init.body)) as { allowed_roots: string[] }
+          savedRoots = payload.allowed_roots
+          return jsonResponse({
+            llm: { base_url: 'https://example.test', model: 'demo', has_api_key: true },
+            allowed_roots: savedRoots,
+            mcp_runtime: {},
+          })
+        }
+        if (path.endsWith('/api/config/mcp')) {
+          return jsonResponse({ mcp_servers: {}, runtime: {} })
+        }
+        if (path.endsWith('/api/chat/sessions')) {
+          return jsonResponse({ session_id: 'session-1' }, 201)
+        }
+        throw new Error(`Unexpected request: ${path}`)
+      }),
+    )
+
+    const wrapper = await mountApp('/settings')
+    await flushPromises()
+
+    const workspaceTab = wrapper.findAll('[role="tab"]').find((item) => item.text().includes('Workspace'))
+    expect(workspaceTab).toBeTruthy()
+    await workspaceTab!.trigger('click')
+    await flushPromises()
+
+    const addDirectoryButton = wrapper
+      .findAll('button')
+      .find((item) => item.text().includes('Add Directory'))
+    expect(addDirectoryButton).toBeTruthy()
+    await addDirectoryButton!.trigger('click')
+    await flushPromises()
+
+    const inputs = wrapper.findAll('input')
+    const directoryInput = inputs.find((item) =>
+      (item.attributes('placeholder') ?? '').includes('/absolute/path'),
+    )
+    expect(directoryInput).toBeTruthy()
+    await directoryInput!.setValue('/tmp/new-root')
+
+    const saveDirectoriesButton = wrapper
+      .findAll('button')
+      .find((item) => item.text().includes('Save Directories'))
+    expect(saveDirectoriesButton).toBeTruthy()
+    await saveDirectoriesButton!.trigger('click')
+    await flushPromises()
+
+    expect(savedRoots).toContain('/tmp/new-root')
+    expect(wrapper.text()).toContain('Allowed directories updated.')
+    expect(wrapper.text()).toContain('/tmp/new-root')
+  })
 })

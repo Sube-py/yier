@@ -170,3 +170,8 @@ export interface EditableMcpServer {
   envText: string
   headersText: string
 }
+
+export interface EditableAllowedRoot {
+  id: string
+  path: string
+}

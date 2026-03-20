@@ -23,6 +23,7 @@ from yier_web.schemas import (
     LLMHealth,
     MCPConfigResponse,
     MCPHealth,
+    SaveAllowedRootsRequest,
     SaveLLMRequest,
     SaveMCPConfigRequest,
     SessionTranscriptResponse,
@@ -91,6 +92,15 @@ async def get_config(state: State) -> Response:
 async def save_llm_config(data: SaveLLMRequest, state: State) -> Response:
     services = get_services(state)
     services.config_service.save_llm_settings(data)
+    await services.chat_service.reload_agent()
+    runtime = await services.chat_service.get_mcp_status()
+    return Response(content=services.config_service.build_public_config(runtime).model_dump())
+
+
+@put("/config/roots")
+async def save_allowed_roots_config(data: SaveAllowedRootsRequest, state: State) -> Response:
+    services = get_services(state)
+    services.config_service.save_allowed_roots(data.allowed_roots)
     await services.chat_service.reload_agent()
     runtime = await services.chat_service.get_mcp_status()
     return Response(content=services.config_service.build_public_config(runtime).model_dump())
@@ -165,6 +175,7 @@ api_router = Router(
         health,
         get_config,
         save_llm_config,
+        save_allowed_roots_config,
         get_mcp_config,
         save_mcp_config,
         reload_mcp_config,

@@ -12,7 +12,13 @@ import TabPanel from 'primevue/tabpanel'
 import TabPanels from 'primevue/tabpanels'
 import Textarea from 'primevue/textarea'
 
-import type { ConfigResponse, EditableMcpServer, HealthResponse, McpConfigResponse } from '../types/api'
+import type {
+  ConfigResponse,
+  EditableAllowedRoot,
+  EditableMcpServer,
+  HealthResponse,
+  McpConfigResponse,
+} from '../types/api'
 
 defineProps<{
   health: HealthResponse | null
@@ -23,8 +29,10 @@ defineProps<{
     model: string
     apiKey: string
   }
+  rootsDraft: EditableAllowedRoot[]
   mcpDraft: EditableMcpServer[]
   savingLlm: boolean
+  savingRoots: boolean
   savingMcp: boolean
   reloadingMcp: boolean
 }>()
@@ -33,6 +41,10 @@ const activeTab = ref('llm')
 
 const emit = defineEmits<{
   saveLlm: []
+  saveRoots: []
+  resetRoots: []
+  addRoot: []
+  removeRoot: [rootId: string]
   saveMcp: []
   reloadMcp: []
   addMcp: []
@@ -60,6 +72,7 @@ const emit = defineEmits<{
     <Tabs v-model:value="activeTab" class="settings-tabs">
       <TabList>
         <Tab value="llm">LLM</Tab>
+        <Tab value="workspace">Workspace</Tab>
         <Tab value="mcp">MCP</Tab>
         <Tab value="runtime">Runtime</Tab>
       </TabList>
@@ -88,6 +101,55 @@ const emit = defineEmits<{
               :loading="savingLlm"
               @click="emit('saveLlm')"
             />
+          </section>
+        </TabPanel>
+
+        <TabPanel value="workspace">
+          <section class="settings-section">
+            <div class="section-header-row">
+              <div>
+                <p class="eyebrow">Allowed roots</p>
+                <h4>Choose which directories chat tools can access.</h4>
+              </div>
+              <Button
+                label="Add Directory"
+                icon="pi pi-plus"
+                severity="secondary"
+                outlined
+                @click="emit('addRoot')"
+              />
+            </div>
+
+            <article v-for="root in rootsDraft" :key="root.id" class="root-editor-card">
+              <InputText v-model="root.path" fluid placeholder="~/Documents or /absolute/path" />
+              <Button
+                icon="pi pi-trash"
+                text
+                severity="danger"
+                @click="emit('removeRoot', root.id)"
+              />
+            </article>
+
+            <p class="settings-hint">
+              Relative paths are resolved from the project root. `~` expands to the current home
+              directory.
+            </p>
+
+            <div class="settings-actions">
+              <Button
+                label="Save Directories"
+                icon="pi pi-folder-open"
+                :loading="savingRoots"
+                @click="emit('saveRoots')"
+              />
+              <Button
+                label="Restore Defaults"
+                icon="pi pi-refresh"
+                severity="secondary"
+                outlined
+                @click="emit('resetRoots')"
+              />
+            </div>
           </section>
         </TabPanel>
 

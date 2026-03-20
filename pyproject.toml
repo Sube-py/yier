@@ -10,5 +10,5 @@ dependencies = [
     "litestar>=2.21.1",
     "pydantic>=2.12.5",
     "pytest>=9.0.2",
-    "yier-agents>=0.1.1",
+    "yier-agents>=0.1.2",
 ]

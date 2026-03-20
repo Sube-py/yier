@@ -17,6 +17,7 @@ import type {
   ChatStreamEvent,
   ChatStreamRequest,
   ConfigResponse,
+  EditableAllowedRoot,
   EditableMcpServer,
   HealthResponse,
   McpConfigResponse,
@@ -42,6 +43,7 @@ const activities = ref<ChatActivity[]>([])
 const composerText = ref('')
 const savingState = reactive({
   llm: false,
+  roots: false,
   mcp: false,
   reloadingMcp: false,
 })
@@ -50,9 +52,11 @@ const llmForm = reactive({
   model: '',
   apiKey: '',
 })
+const rootsDraft = ref<EditableAllowedRoot[]>([])
 const mcpDraft = ref<EditableMcpServer[]>([])
 const isSettingsRoute = computed(() => route.name === 'settings')
 const isChatRoute = computed(() => route.name !== 'settings')
+const defaultAllowedRoots = computed(() => health.value?.allowed_roots ?? [])
 
 const sessionLabel = computed(() => {
   if (!activeSessionId.value) {
@@ -111,6 +115,7 @@ async function refreshDashboard() {
   llmForm.baseUrl = configPayload.llm.base_url
   llmForm.model = configPayload.llm.model
   llmForm.apiKey = ''
+  rootsDraft.value = toEditableAllowedRoots(configPayload.allowed_roots)
   mcpDraft.value = toEditableMcpServers(mcpPayload)
 }
 
@@ -268,6 +273,24 @@ async function saveLlmSettings() {
   }
 }
 
+async function saveAllowedRoots() {
+  savingState.roots = true
+  errorMessage.value = ''
+  successMessage.value = ''
+  try {
+    config.value = await apiPut<ConfigResponse>('/api/config/roots', {
+      allowed_roots: rootsDraft.value.map((root) => root.path),
+    })
+    health.value = await apiGet<HealthResponse>('/api/health')
+    rootsDraft.value = toEditableAllowedRoots(config.value.allowed_roots)
+    successMessage.value = 'Allowed directories updated.'
+  } catch (error) {
+    errorMessage.value = toErrorMessage(error)
+  } finally {
+    savingState.roots = false
+  }
+}
+
 async function saveMcpSettings() {
   savingState.mcp = true
   errorMessage.value = ''
@@ -320,6 +343,21 @@ function addMcpServer() {
   })
 }
 
+function addAllowedRoot() {
+  rootsDraft.value.push({
+    id: crypto.randomUUID(),
+    path: '',
+  })
+}
+
+function removeAllowedRoot(rootId: string) {
+  rootsDraft.value = rootsDraft.value.filter((item) => item.id !== rootId)
+}
+
+function resetAllowedRoots() {
+  rootsDraft.value = toEditableAllowedRoots(defaultAllowedRoots.value)
+}
+
 function removeMcpServer(serverId: string) {
   mcpDraft.value = mcpDraft.value.filter((item) => item.id !== serverId)
 }
@@ -346,6 +384,13 @@ function makeUiMessage(role: 'user' | 'assistant', content: string): UiChatMessa
     role,
     content,
   }
+}
+
+function toEditableAllowedRoots(paths: string[]): EditableAllowedRoot[] {
+  return paths.map((path) => ({
+    id: crypto.randomUUID(),
+    path,
+  }))
 }
 
 function toEditableMcpServers(payload: McpConfigResponse): EditableMcpServer[] {
@@ -479,7 +524,7 @@ function toErrorMessage(error: unknown) {
       <div class="side-card side-card--muted">
         <p class="side-card-label">Allowed roots</p>
         <ul class="root-list">
-          <li v-for="root in health?.allowed_roots ?? []" :key="root">{{ root }}</li>
+          <li v-for="root in config?.allowed_roots ?? []" :key="root">{{ root }}</li>
         </ul>
       </div>
     </aside>
@@ -541,11 +586,17 @@ function toErrorMessage(error: unknown) {
             :config="config"
             :mcp-config="mcpConfig"
             :llm-form="llmForm"
+            :roots-draft="rootsDraft"
             :mcp-draft="mcpDraft"
             :saving-llm="savingState.llm"
+            :saving-roots="savingState.roots"
             :saving-mcp="savingState.mcp"
             :reloading-mcp="savingState.reloadingMcp"
             @save-llm="saveLlmSettings"
+            @save-roots="saveAllowedRoots"
+            @reset-roots="resetAllowedRoots"
+            @add-root="addAllowedRoot"
+            @remove-root="removeAllowedRoot"
             @save-mcp="saveMcpSettings"
             @reload-mcp="reloadMcpSettings"
             @add-mcp="addMcpServer"

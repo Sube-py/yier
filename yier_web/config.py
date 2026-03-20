@@ -7,7 +7,11 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from yier_agents.src.config import YIERConfig
+from yier_agents.src.config import (
+    AssistantRunCommandSettings,
+    AssistantSettings,
+    YIERConfig,
+)
 
 from yier_web.schemas import ConfigResponse, LLMConfigPayload, MCPRuntimeEntry, SaveLLMRequest, WebSettings
 
@@ -33,6 +37,7 @@ class AppConfigService:
         self.web_root = self.yier_root / "web"
         self.settings_path = self.web_root / "settings.json"
         self.sessions_path = self.web_root / "sessions"
+        self.prompt_history_path = self.web_root / "prompt_history.txt"
         self.mcp_config_path = self.yier_root / ".yier.json"
         self.ensure_storage()
 
@@ -70,6 +75,7 @@ class AppConfigService:
         except (json.JSONDecodeError, ValidationError):
             return WebSettings(allowed_roots=self.default_allowed_roots())
 
+        settings.allowed_roots = self._normalize_allowed_roots(settings.allowed_roots)
         if not settings.allowed_roots:
             settings.allowed_roots = self.default_allowed_roots()
         return settings
@@ -81,11 +87,43 @@ class AppConfigService:
         if payload.api_key is not None and payload.api_key != "":
             settings.llm.api_key = payload.api_key
 
+        settings.allowed_roots = self._normalize_allowed_roots(settings.allowed_roots)
         if not settings.allowed_roots:
             settings.allowed_roots = self.default_allowed_roots()
 
         self._write_json(self.settings_path, settings.model_dump())
         return settings
+
+    def save_allowed_roots(self, allowed_roots: list[str]) -> WebSettings:
+        settings = self.load_web_settings()
+        normalized_roots = self._normalize_allowed_roots(allowed_roots)
+        settings.allowed_roots = normalized_roots or self.default_allowed_roots()
+        self._write_json(self.settings_path, settings.model_dump())
+        return settings
+
+    def build_assistant_settings(self) -> AssistantSettings:
+        settings = self.load_web_settings()
+        return AssistantSettings(
+            workspace_root=self.project_root,
+            session_storage_path=self.sessions_path,
+            prompt_history_path=self.prompt_history_path,
+            allowed_roots=tuple(
+                Path(root).expanduser().resolve()
+                for root in self._normalize_allowed_roots(settings.allowed_roots)
+            ),
+            include_skill_directories_in_allowed_roots=True,
+            max_iterations=100,
+            system_prompt=(
+                "You are Yier, a lightweight local-first desktop assistant. "
+                "Help the user manage files, inspect code, write code, and operate "
+                "carefully inside the allowed filesystem roots. Be concise, practical, "
+                "and explicit about actions you take."
+            ),
+            run_command=AssistantRunCommandSettings(
+                allow_shell=True,
+                shell_program="/bin/bash",
+            ),
+        )
 
     def load_mcp_root_config(self) -> dict[str, Any]:
         return YIERConfig.load_config(self.yier_root)
@@ -197,6 +235,30 @@ class AppConfigService:
                 )
             normalized[key] = item
         return normalized
+
+    def _normalize_allowed_roots(self, allowed_roots: list[str]) -> list[str]:
+        normalized_roots: list[str] = []
+        seen: set[str] = set()
+        for root in allowed_roots:
+            candidate = str(root).strip()
+            if not candidate:
+                continue
+            resolved = str(self._resolve_user_path(candidate))
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            normalized_roots.append(resolved)
+        return normalized_roots
+
+    def _resolve_user_path(self, raw_path: str) -> Path:
+        if raw_path == "~":
+            return self.home_dir.resolve()
+        if raw_path.startswith("~/"):
+            return (self.home_dir / raw_path[2:]).resolve()
+        candidate = Path(raw_path).expanduser()
+        if candidate.is_absolute():
+            return candidate.resolve()
+        return (self.project_root / candidate).resolve()
 
     def _write_json(self, path: Path, payload: dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

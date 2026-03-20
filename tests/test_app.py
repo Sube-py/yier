@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 from litestar.testing import TestClient
 
-from yier_agents import Message
+from yier_agents import Message, ToolContext
 from yier_agents.src.skill import SkillCatalog
 from yier_web.app import AppServices, create_app
 from yier_web.chat import ChatService
@@ -157,6 +157,52 @@ def test_llm_settings_are_saved_and_masked(tmp_path: Path) -> None:
     assert "api_key" not in public.model_dump()["llm"]
 
 
+def test_allowed_roots_are_saved_normalized_and_defaulted(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir(parents=True)
+    service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
+
+    saved = service.save_allowed_roots(["~/Desktop", "./workspace", "", "~/Desktop"])
+
+    assert saved.allowed_roots == [
+        str((tmp_path / "home" / "Desktop").resolve()),
+        str((project_root / "workspace").resolve()),
+    ]
+
+    reset = service.save_allowed_roots([])
+    assert reset.allowed_roots == service.default_allowed_roots()
+
+
+def test_assistant_settings_enable_shell_and_normalize_allowed_roots(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir(parents=True)
+    service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
+    service.settings_path.write_text(
+        """
+        {
+          "allowed_roots": [
+            "  ~/Downloads  ",
+            "~/Downloads",
+            "",
+            "./relative-root"
+          ]
+        }
+        """.strip(),
+        encoding="utf-8",
+    )
+
+    assistant_settings = service.build_assistant_settings()
+
+    expected_downloads = (tmp_path / "home" / "Downloads").resolve()
+    expected_relative_root = (project_root / "relative-root").resolve()
+    assert assistant_settings.workspace_root == project_root.resolve()
+    assert assistant_settings.session_storage_path == service.sessions_path
+    assert assistant_settings.prompt_history_path == service.prompt_history_path
+    assert assistant_settings.run_command.allow_shell is True
+    assert assistant_settings.run_command.shell_program == "/bin/bash"
+    assert assistant_settings.allowed_roots == (expected_downloads, expected_relative_root)
+
+
 def test_mcp_config_is_validated_and_written(tmp_path: Path) -> None:
     service = AppConfigService(project_root=tmp_path / "project", home_dir=tmp_path / "home")
     saved = service.save_mcp_servers(
@@ -192,6 +238,15 @@ def test_api_endpoints_cover_config_session_and_stream(tmp_path: Path) -> None:
         )
         assert save_response.status_code == 200
         assert save_response.json()["llm"]["has_api_key"] is True
+
+        roots_response = client.put(
+            "/api/config/roots",
+            json={
+                "allowed_roots": ["~/Desktop", "./workspace"],
+            },
+        )
+        assert roots_response.status_code == 200
+        assert roots_response.json()["allowed_roots"]
 
         session_response = client.post("/api/chat/sessions")
         assert session_response.status_code == 201
@@ -234,3 +289,41 @@ def test_chat_service_skips_llm_construction_without_saved_credentials(
 
     asyncio.run(chat_service.start())
     assert chat_service._agent is None
+
+
+def test_chat_service_run_command_tool_supports_shell_pipes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog())
+
+    project_root = tmp_path / "project"
+    project_root.mkdir(parents=True)
+    service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
+    chat_service = ChatService(
+        project_root=project_root,
+        config_service=service,
+        mcp_manager=FakeMCPManager(),  # type: ignore[arg-type]
+    )
+    assistant_settings = service.build_assistant_settings()
+    run_command_tool = next(
+        tool for tool in chat_service._build_workspace_tools(assistant_settings) if tool.name == "run_command"
+    )
+
+    import asyncio
+
+    result = asyncio.run(
+        run_command_tool.execute(
+            run_command_tool.parameters(
+                command="printf 'hello' | wc -c",
+                cwd=".",
+            ),
+            ToolContext(session_id="session-1", message_id="message-1", call_id="call-1"),
+        )
+    )
+
+    assert "Command: printf 'hello' | wc -c" in result.content
+    assert "Exit code: 0" in result.content
+    assert "[stdout]" in result.content
+    assert "5" in result.content
+    assert result.metadata["allow_shell"] is True

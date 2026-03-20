@@ -26,6 +26,7 @@ from yier_agents import (
     create_search_files_tool,
     create_write_file_tool,
 )
+from yier_agents.src.config import AssistantSettings
 
 from yier_web.config import AppConfigService
 from yier_web.schemas import MCPRuntimeEntry, StoredLLMSettings
@@ -220,29 +221,25 @@ class ChatService:
             self._agent_signature = signature
             return
 
-        workspace_tools = self._build_workspace_tools(settings.allowed_roots)
+        assistant_settings = self.config_service.build_assistant_settings()
+        workspace_tools = self._build_workspace_tools(assistant_settings)
         mcp_tools = await self.mcp_manager.get_tools()
         llm = self._build_llm(settings.llm)
         skill_catalog = self._get_skill_catalog()
         self._agent = Agent(
             llm=llm,
             tools=[*workspace_tools, *mcp_tools],
-            system_prompt=(
-                "You are Yier, a lightweight local-first desktop assistant. "
-                "Help the user manage files, inspect code, write code, and operate "
-                "carefully inside the allowed filesystem roots. Be concise, practical, "
-                "and explicit about actions you take."
-            ),
+            system_prompt=assistant_settings.system_prompt,
             verbose=False,
-            max_iterations=100,
+            max_iterations=assistant_settings.max_iterations,
             enable_memory=True,
             skill_catalog=skill_catalog,
             session_store=self.session_store,
             compaction_config=CompactionConfig(
-                enabled=True,
-                trigger_message_count=24,
-                preserve_recent_messages=8,
-                summary_max_tokens=512,
+                enabled=assistant_settings.compaction.enabled,
+                trigger_message_count=assistant_settings.compaction.trigger_message_count,
+                preserve_recent_messages=assistant_settings.compaction.preserve_recent_messages,
+                summary_max_tokens=assistant_settings.compaction.summary_max_tokens,
             ),
         )
         self._agent_signature = signature
@@ -256,15 +253,32 @@ class ChatService:
             self.mcp_manager.version,
         )
 
-    def _build_workspace_tools(self, allowed_roots: list[str]) -> list[Tool]:
-        roots = [Path(item).expanduser().resolve() for item in allowed_roots]
+    def _build_workspace_tools(self, assistant_settings: AssistantSettings) -> list[Tool]:
+        roots = list(assistant_settings.allowed_roots)
+        if assistant_settings.include_skill_directories_in_allowed_roots:
+            roots.extend(self._get_skill_catalog().dirs())
+
+        normalized_roots: list[Path] = []
+        seen: set[Path] = set()
+        for root in roots:
+            resolved = Path(root).expanduser().resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            normalized_roots.append(resolved)
+
         return [
-            create_list_files_tool(roots),
-            create_read_file_tool(roots),
-            create_replace_in_file_tool(roots),
-            create_run_command_tool(roots),
-            create_write_file_tool(roots),
-            create_search_files_tool(roots),
+            create_list_files_tool(normalized_roots, default_root=assistant_settings.workspace_root),
+            create_read_file_tool(normalized_roots, default_root=assistant_settings.workspace_root),
+            create_replace_in_file_tool(normalized_roots, default_root=assistant_settings.workspace_root),
+            create_run_command_tool(
+                normalized_roots,
+                default_root=assistant_settings.workspace_root,
+                allow_shell=assistant_settings.run_command.allow_shell,
+                shell_program=assistant_settings.run_command.shell_program,
+            ),
+            create_write_file_tool(normalized_roots, default_root=assistant_settings.workspace_root),
+            create_search_files_tool(normalized_roots, default_root=assistant_settings.workspace_root),
         ]
 
     def _get_skill_catalog(self) -> SkillCatalog:

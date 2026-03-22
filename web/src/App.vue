@@ -5,12 +5,21 @@ import { useRoute, useRouter } from 'vue-router'
 import Button from 'primevue/button'
 import Message from 'primevue/message'
 import ProgressSpinner from 'primevue/progressspinner'
+import ScrollPanel from 'primevue/scrollpanel'
 import Tag from 'primevue/tag'
 
 import ChatComposer from './components/ChatComposer.vue'
 import ChatTimeline from './components/ChatTimeline.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
-import { ApiError, apiDelete, apiGet, apiPost, apiPut, openPersistentEventStream, streamChat } from './lib/api'
+import {
+  ApiError,
+  apiDelete,
+  apiGet,
+  apiPost,
+  apiPut,
+  openPersistentEventStream,
+  streamChat,
+} from './lib/api'
 import type {
   ChatActivity,
   ChatStreamDoneEvent,
@@ -202,7 +211,9 @@ async function submitMessage() {
   errorMessage.value = ''
   successMessage.value = ''
   isSending.value = true
-  activities.value = activities.value.filter((item) => item.kind === 'background' && item.state === 'running')
+  activities.value = activities.value.filter(
+    (item) => item.kind === 'background' && item.state === 'running',
+  )
   composerText.value = ''
   chatMessages.value.push(makeUiMessage('user', content))
 
@@ -495,7 +506,11 @@ function handleStreamEvent(event: ChatStreamEvent) {
   }
 
   if (event.event === 'background_command_output') {
-    appendActivityOutput(getBackgroundActivityId(event.data.background_session_id), event.data.stream, event.data.content)
+    appendActivityOutput(
+      getBackgroundActivityId(event.data.background_session_id),
+      event.data.stream,
+      event.data.content,
+    )
     return
   }
 
@@ -745,7 +760,9 @@ function openChat() {
 
 function toUiMessages(messages: StoredMessage[]): UiChatMessage[] {
   return messages
-    .filter((message) => (message.role === 'user' || message.role === 'assistant') && message.content)
+    .filter(
+      (message) => (message.role === 'user' || message.role === 'assistant') && message.content,
+    )
     .map((message) =>
       makeUiMessage(message.role === 'user' ? 'user' : 'assistant', message.content ?? ''),
     )
@@ -832,7 +849,12 @@ function isShellRawPayload(value: unknown): value is ShellRawPayload {
     return false
   }
 
-  return isRecord(value.request) && isRecord(value.process) && isRecord(value.streams) && Array.isArray(value.events)
+  return (
+    isRecord(value.request) &&
+    isRecord(value.process) &&
+    isRecord(value.streams) &&
+    Array.isArray(value.events)
+  )
 }
 
 function makeShellState(options: {
@@ -1033,7 +1055,10 @@ function formatToolArguments(argumentsValue: Record<string, unknown>) {
   return JSON.stringify(argumentsValue, null, 2)
 }
 
-function activityStateFromShell(process: ShellProcessSnapshot | null, isError = false): ChatActivity['state'] {
+function activityStateFromShell(
+  process: ShellProcessSnapshot | null,
+  isError = false,
+): ChatActivity['state'] {
   if (!process) {
     return isError ? 'error' : 'running'
   }
@@ -1119,7 +1144,7 @@ function handleShellToolEnd(
   const activityId =
     raw.kind === 'background_command' && raw.process.session_id
       ? getBackgroundActivityId(raw.process.session_id)
-      : backgroundActivityIdsByToolCallId.get(toolCallId) ?? toolCallId
+      : (backgroundActivityIdsByToolCallId.get(toolCallId) ?? toolCallId)
 
   if (raw.kind === 'background_command' && raw.process.session_id) {
     backgroundActivityIdsByToolCallId.set(toolCallId, activityId)
@@ -1248,13 +1273,19 @@ function toErrorMessage(error: unknown) {
           <span class="side-card-label">Frontend</span>
           <Tag
             :value="frontendMode"
-            :severity="frontendMode === 'proxy' ? 'info' : frontendMode === 'static' ? 'success' : 'warn'"
+            :severity="
+              frontendMode === 'proxy' ? 'info' : frontendMode === 'static' ? 'success' : 'warn'
+            "
             rounded
           />
         </div>
         <div class="side-card-row">
           <span class="side-card-label">LLM</span>
-          <Tag :value="llmReady ? 'Ready' : 'Needs setup'" :severity="llmReady ? 'success' : 'warn'" rounded />
+          <Tag
+            :value="llmReady ? 'Ready' : 'Needs setup'"
+            :severity="llmReady ? 'success' : 'warn'"
+            rounded
+          />
         </div>
       </div>
 
@@ -1268,39 +1299,43 @@ function toErrorMessage(error: unknown) {
           <Tag :value="String(sessionHistoryCount)" severity="secondary" rounded />
         </div>
 
-        <div v-if="sessionHistory.length" class="session-history-list">
-          <div
-            v-for="session in sessionHistory"
-            :key="session.session_id"
-            class="session-history-item"
-            :class="{ 'session-history-item--active': session.session_id === activeSessionId }"
-          >
-            <button
-              type="button"
-              class="session-history-main"
-              @click="openSessionFromHistory(session.session_id)"
+        <ScrollPanel v-if="sessionHistory.length" class="session-history-scroll">
+          <div class="session-history-list">
+            <div
+              v-for="session in sessionHistory"
+              :key="session.session_id"
+              class="session-history-item"
+              :class="{ 'session-history-item--active': session.session_id === activeSessionId }"
             >
-              <div class="session-history-copy">
-                <p class="session-history-title">{{ session.title }}</p>
-                <p v-if="session.preview" class="session-history-preview">{{ session.preview }}</p>
-                <p class="session-history-meta">
-                  {{ formatSessionUpdatedAt(session.updated_at) }}
-                  <span v-if="session.message_count"> · {{ session.message_count }} msgs</span>
-                </p>
-              </div>
-            </button>
-            <Button
-              icon="pi pi-trash"
-              class="session-history-delete"
-              text
-              rounded
-              severity="secondary"
-              size="small"
-              :loading="deletingSessionId === session.session_id"
-              @click.stop="deleteSessionFromHistory(session.session_id)"
-            />
+              <button
+                type="button"
+                class="session-history-main"
+                @click="openSessionFromHistory(session.session_id)"
+              >
+                <div class="session-history-copy">
+                  <p class="session-history-title">{{ session.title }}</p>
+                  <p v-if="session.preview" class="session-history-preview">
+                    {{ session.preview }}
+                  </p>
+                  <p class="session-history-meta">
+                    {{ formatSessionUpdatedAt(session.updated_at) }}
+                    <span v-if="session.message_count"> · {{ session.message_count }} msgs</span>
+                  </p>
+                </div>
+              </button>
+              <Button
+                icon="pi pi-trash"
+                class="session-history-delete"
+                text
+                rounded
+                severity="secondary"
+                size="small"
+                :loading="deletingSessionId === session.session_id"
+                @click.stop="deleteSessionFromHistory(session.session_id)"
+              />
+            </div>
           </div>
-        </div>
+        </ScrollPanel>
 
         <p v-else class="side-card-empty">No saved sessions yet.</p>
       </div>
@@ -1347,7 +1382,9 @@ function toErrorMessage(error: unknown) {
         />
       </header>
 
-      <Message v-if="errorMessage" severity="error" class="status-banner">{{ errorMessage }}</Message>
+      <Message v-if="errorMessage" severity="error" class="status-banner">{{
+        errorMessage
+      }}</Message>
       <Message v-else-if="successMessage" severity="success" class="status-banner">
         {{ successMessage }}
       </Message>
@@ -1370,18 +1407,18 @@ function toErrorMessage(error: unknown) {
 
         <section v-else class="workspace-content">
           <template v-if="isChatRoute">
-          <ChatTimeline
-            :messages="chatMessages"
-            :activities="activities"
-            :is-sending="isSending"
-            :session-label="sessionLabel"
-          />
-          <ChatComposer
-            v-model="composerText"
-            :disabled="!canSend"
-            :is-sending="isSending"
-            @submit="submitMessage"
-          />
+            <ChatTimeline
+              :messages="chatMessages"
+              :activities="activities"
+              :is-sending="isSending"
+              :session-label="sessionLabel"
+            />
+            <ChatComposer
+              v-model="composerText"
+              :disabled="!canSend"
+              :is-sending="isSending"
+              @submit="submitMessage"
+            />
           </template>
           <SettingsPanel
             v-else

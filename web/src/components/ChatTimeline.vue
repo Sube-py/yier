@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import MarkdownIt from 'markdown-it'
 import ProgressSpinner from 'primevue/progressspinner'
+import ScrollPanel from 'primevue/scrollpanel'
 import Tag from 'primevue/tag'
 import Timeline from 'primevue/timeline'
 
@@ -32,6 +33,18 @@ const HIDDEN_TOOL_TITLES = new Set([
 const timelineBody = ref<HTMLElement | null>(null)
 const shouldStickToBottom = ref(true)
 const bottomThreshold = 72
+const timelineScrollPt = {
+  contentContainer: {
+    class: 'timeline-body-scrollpanel__container',
+  },
+  content: {
+    class: 'timeline-body',
+    ref: (element: HTMLElement | null) => {
+      timelineBody.value = element
+    },
+    onScroll: onTimelineScroll,
+  },
+}
 
 function renderAssistantMessage(content: string) {
   return markdown.render(content)
@@ -80,7 +93,9 @@ function isHiddenActivity(activity: ChatActivity) {
   return false
 }
 
-const visibleActivities = computed(() => props.activities.filter((activity) => !isHiddenActivity(activity)))
+const visibleActivities = computed(() =>
+  props.activities.filter((activity) => !isHiddenActivity(activity)),
+)
 
 const trailingAssistantMessage = computed(() => {
   if (!visibleActivities.value.length) {
@@ -149,7 +164,11 @@ watch(
         <p class="eyebrow">Current session</p>
         <div class="timeline-title-row">
           <h3>Session {{ sessionLabel }}</h3>
-          <Tag :value="messages.length ? `${messages.length} msgs` : 'New'" rounded severity="secondary" />
+          <Tag
+            :value="messages.length ? `${messages.length} msgs` : 'New'"
+            rounded
+            severity="secondary"
+          />
         </div>
       </div>
       <div v-if="isSending" class="timeline-processing">
@@ -167,7 +186,7 @@ watch(
       </p>
     </div>
 
-    <div v-else ref="timelineBody" class="timeline-body" @scroll="onTimelineScroll">
+    <ScrollPanel v-else class="timeline-body-scrollpanel" :pt="timelineScrollPt">
       <div class="message-stack">
         <article
           v-for="message in leadingMessages"
@@ -196,7 +215,10 @@ watch(
           <template #content="slotProps">
             <details
               class="activity-item"
-              :open="slotProps.item.state === 'running' || Boolean(slotProps.item.stdout || slotProps.item.stderr)"
+              :open="
+                slotProps.item.state === 'running' ||
+                Boolean(slotProps.item.stdout || slotProps.item.stderr)
+              "
             >
               <summary class="activity-summary">
                 <div class="activity-summary-copy">
@@ -225,7 +247,9 @@ watch(
                 </p>
 
                 <div v-if="slotProps.item.stdout" class="activity-stream activity-stream--terminal">
-                  <pre class="activity-stream-output">{{ slotProps.item.stdout }}</pre>
+                  <ScrollPanel class="activity-stream-panel activity-stream-panel--terminal">
+                    <pre class="activity-stream-output">{{ slotProps.item.stdout }}</pre>
+                  </ScrollPanel>
                   <span v-if="shellRuntime(slotProps.item)" class="activity-runtime">
                     {{ shellRuntime(slotProps.item) }}
                   </span>
@@ -235,7 +259,9 @@ watch(
                   v-if="slotProps.item.stderr"
                   class="activity-stream activity-stream--stderr activity-stream--terminal"
                 >
-                  <pre class="activity-stream-output">{{ slotProps.item.stderr }}</pre>
+                  <ScrollPanel class="activity-stream-panel activity-stream-panel--terminal">
+                    <pre class="activity-stream-output">{{ slotProps.item.stderr }}</pre>
+                  </ScrollPanel>
                 </div>
               </div>
 
@@ -254,12 +280,16 @@ watch(
 
                 <div v-if="slotProps.item.stdout" class="activity-stream">
                   <p class="activity-stream-label">stdout</p>
-                  <pre class="activity-stream-output">{{ slotProps.item.stdout }}</pre>
+                  <ScrollPanel class="activity-stream-panel">
+                    <pre class="activity-stream-output">{{ slotProps.item.stdout }}</pre>
+                  </ScrollPanel>
                 </div>
 
                 <div v-if="slotProps.item.stderr" class="activity-stream activity-stream--stderr">
                   <p class="activity-stream-label">stderr</p>
-                  <pre class="activity-stream-output">{{ slotProps.item.stderr }}</pre>
+                  <ScrollPanel class="activity-stream-panel">
+                    <pre class="activity-stream-output">{{ slotProps.item.stderr }}</pre>
+                  </ScrollPanel>
                 </div>
               </div>
             </details>
@@ -279,6 +309,6 @@ watch(
           ></div>
         </article>
       </div>
-    </div>
+    </ScrollPanel>
   </section>
 </template>

@@ -52,6 +52,13 @@ export async function apiPut<T>(path: string, payload: unknown): Promise<T> {
   return parseJsonResponse<T>(response)
 }
 
+export async function apiDelete<T>(path: string): Promise<T> {
+  const response = await fetch(path, {
+    method: 'DELETE',
+  })
+  return parseJsonResponse<T>(response)
+}
+
 export async function streamChat(
   payload: ChatStreamRequest,
   onEvent: (event: ChatStreamEvent) => void,

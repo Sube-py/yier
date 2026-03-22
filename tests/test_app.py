@@ -6,7 +6,14 @@ from typing import Any
 import pytest
 from litestar.testing import TestClient
 
-from yier_agents import Message, ToolContext
+from yier_agents import (
+    AgentEndEvent,
+    LLMEndEvent,
+    Message,
+    ToolCallEndEvent,
+    ToolCallStartEvent,
+    ToolContext,
+)
 from yier_agents.src.skill import SkillCatalog
 from yier_web.app import AppServices, create_app
 from yier_web.chat import ChatService
@@ -30,6 +37,31 @@ class FakeChatService:
         }
         self.started = False
         self.reloaded = 0
+        self.activity_events = {
+            "session-a": [
+                {
+                    "event": "tool_call_start",
+                    "data": {
+                        "session_id": "session-a",
+                        "tool_name": "run_command",
+                        "tool_call_id": "call-1",
+                        "arguments": {
+                            "command": "printf 'hello'",
+                        },
+                        "iteration": 1,
+                    },
+                }
+            ]
+        }
+        self.session_summaries = [
+            {
+                "session_id": "session-a",
+                "title": "hello",
+                "preview": "hi there",
+                "updated_at": 123.0,
+                "message_count": 2,
+            }
+        ]
 
     async def start(self) -> None:
         self.started = True
@@ -59,6 +91,20 @@ class FakeChatService:
 
     def get_session_messages(self, session_id: str) -> list[Message]:
         return self.sessions.get(session_id, [])
+
+    def get_session_activity_events(self, session_id: str) -> list[dict[str, Any]]:
+        return self.activity_events.get(session_id, [])
+
+    def list_session_summaries(self) -> list[dict[str, Any]]:
+        return self.session_summaries
+
+    def delete_session(self, session_id: str) -> bool:
+        self.sessions.pop(session_id, None)
+        self.activity_events.pop(session_id, None)
+        self.session_summaries = [
+            item for item in self.session_summaries if item["session_id"] != session_id
+        ]
+        return True
 
     async def stream_chat(self, session_id: str, user_message: str):
         yield {"event": "run_started", "data": {"session_id": session_id}}
@@ -137,6 +183,8 @@ def test_config_service_creates_storage_under_home(tmp_path: Path) -> None:
     service = AppConfigService(project_root=tmp_path / "project", home_dir=tmp_path / "home")
     assert service.web_root.exists()
     assert service.sessions_path.exists()
+    assert service.transcripts_path.exists()
+    assert service.session_ui_path.exists()
     assert service.settings_path.parent == service.web_root
 
 
@@ -255,9 +303,18 @@ def test_api_endpoints_cover_config_session_and_stream(tmp_path: Path) -> None:
         assert session_response.status_code == 201
         assert session_response.json()["session_id"] == "session-created"
 
+        list_response = client.get("/api/chat/sessions")
+        assert list_response.status_code == 200
+        assert list_response.json()["sessions"][0]["session_id"] == "session-a"
+
         transcript_response = client.get("/api/chat/sessions/session-a")
         assert transcript_response.status_code == 200
         assert transcript_response.json()["messages"][0]["content"] == "hello"
+        assert transcript_response.json()["activity_events"][0]["event"] == "tool_call_start"
+
+        delete_response = client.delete("/api/chat/sessions/session-a")
+        assert delete_response.status_code == 200
+        assert delete_response.json()["deleted"] is True
 
         stream_response = client.post(
             "/api/chat/stream",
@@ -415,3 +472,226 @@ def test_chat_service_run_command_tool_emits_stream_events(
         for event_name, payload in emitted_events
         if event_name == "command_output"
     )
+
+
+def test_chat_service_stream_chat_includes_tool_metadata_and_raw_payloads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog())
+
+    project_root = tmp_path / "project"
+    project_root.mkdir(parents=True)
+    service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
+    chat_service = ChatService(
+        project_root=project_root,
+        config_service=service,
+        mcp_manager=FakeMCPManager(),  # type: ignore[arg-type]
+    )
+
+    raw_payload = {
+        "kind": "shell_command",
+        "request": {
+            "command": "printf 'hello'",
+            "cwd": str(project_root),
+        },
+        "process": {
+            "session_id": None,
+            "state": "completed",
+            "exit_code": 0,
+            "started_at": 1.0,
+            "finished_at": 2.0,
+            "runtime_seconds": 1,
+            "timed_out": False,
+        },
+        "events": [
+            {
+                "index": 0,
+                "timestamp": 1.0,
+                "type": "started",
+                "command": "printf 'hello'",
+                "cwd": str(project_root),
+            },
+            {
+                "index": 1,
+                "timestamp": 2.0,
+                "type": "stdout",
+                "text": "hello",
+                "stream": "stdout",
+            },
+        ],
+        "latest_event_index": 1,
+        "streams": {
+            "stdout": {
+                "text": "hello",
+                "truncated": False,
+            },
+            "stderr": {
+                "text": "",
+                "truncated": False,
+            },
+        },
+        "events_truncated": False,
+        "dropped_event_count": 0,
+    }
+
+    class FakeAgent:
+        async def run_stream(self, prompt: str, session_id: str):
+            yield ToolCallStartEvent(
+                session_id=session_id,
+                timestamp=1.0,
+                iteration=1,
+                tool_name="run_command",
+                tool_call_id="call-1",
+                arguments={
+                    "command": "printf 'hello'",
+                    "cwd": ".",
+                },
+            )
+            yield ToolCallEndEvent(
+                session_id=session_id,
+                timestamp=2.0,
+                iteration=1,
+                tool_name="run_command",
+                tool_call_id="call-1",
+                result="Command finished successfully.",
+                is_error=False,
+                metadata={
+                    "command": "printf 'hello'",
+                    "cwd": str(project_root),
+                    "exit_code": 0,
+                },
+                raw=raw_payload,
+            )
+            yield AgentEndEvent(
+                session_id=session_id,
+                timestamp=3.0,
+                finish_reason="stop",
+                total_iterations=1,
+            )
+
+    async def fake_get_agent() -> FakeAgent:
+        return FakeAgent()
+
+    monkeypatch.setattr(chat_service, "_get_agent", fake_get_agent)
+
+    import asyncio
+
+    async def collect_events() -> list[dict[str, Any]]:
+        return [event async for event in chat_service.stream_chat("session-1", "run it")]
+
+    streamed_events = asyncio.run(collect_events())
+    tool_end_event = next(event for event in streamed_events if event["event"] == "tool_call_end")
+
+    assert tool_end_event["data"]["metadata"]["exit_code"] == 0
+    assert tool_end_event["data"]["raw"]["kind"] == "shell_command"
+    assert tool_end_event["data"]["raw"]["streams"]["stdout"]["text"] == "hello"
+
+
+def test_chat_service_transcript_preserves_full_chat_history_for_refresh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog())
+
+    project_root = tmp_path / "project"
+    project_root.mkdir(parents=True)
+    service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
+    chat_service = ChatService(
+        project_root=project_root,
+        config_service=service,
+        mcp_manager=FakeMCPManager(),  # type: ignore[arg-type]
+    )
+
+    class FakeAgent:
+        async def run_stream(self, prompt: str, session_id: str):
+            yield LLMEndEvent(
+                session_id=session_id,
+                timestamp=1.0,
+                iteration=1,
+                message=Message(role="assistant", content=f"Answer for {prompt}"),
+                finish_reason="stop",
+                usage=None,
+            )
+            yield AgentEndEvent(
+                session_id=session_id,
+                timestamp=2.0,
+                finish_reason="stop",
+                total_iterations=1,
+            )
+
+    async def fake_get_agent() -> FakeAgent:
+        return FakeAgent()
+
+    monkeypatch.setattr(chat_service, "_get_agent", fake_get_agent)
+
+    import asyncio
+
+    async def drain_stream() -> None:
+        async for _event in chat_service.stream_chat("session-1", "first question"):
+            pass
+
+    asyncio.run(drain_stream())
+
+    chat_service.session_store.save(
+        "session-1",
+        [Message(role="assistant", content="Compacted memory only keeps this")],
+    )
+
+    transcript = chat_service.get_session_messages("session-1")
+
+    assert [message.role for message in transcript] == ["user", "assistant"]
+    assert transcript[0].content == "first question"
+    assert transcript[1].content == "Answer for first question"
+
+
+def test_chat_service_persists_activity_events_under_session_id_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog())
+
+    project_root = tmp_path / "project"
+    project_root.mkdir(parents=True)
+    service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
+    chat_service = ChatService(
+        project_root=project_root,
+        config_service=service,
+        mcp_manager=FakeMCPManager(),  # type: ignore[arg-type]
+    )
+
+    class FakeAgent:
+        async def run_stream(self, prompt: str, session_id: str):
+            yield ToolCallStartEvent(
+                session_id=session_id,
+                timestamp=1.0,
+                iteration=1,
+                tool_name="run_command",
+                tool_call_id="call-1",
+                arguments={
+                    "command": "printf 'hello'",
+                },
+            )
+            yield AgentEndEvent(
+                session_id=session_id,
+                timestamp=2.0,
+                finish_reason="stop",
+                total_iterations=1,
+            )
+
+    async def fake_get_agent() -> FakeAgent:
+        return FakeAgent()
+
+    monkeypatch.setattr(chat_service, "_get_agent", fake_get_agent)
+
+    import asyncio
+
+    async def drain_stream() -> None:
+        async for _event in chat_service.stream_chat("session-1", "run it"):
+            pass
+
+    asyncio.run(drain_stream())
+
+    session_ui_file = service.session_ui_path / "session-1.json"
+    assert session_ui_file.exists()
+    assert chat_service.get_session_activity_events("session-1")[0]["event"] == "tool_call_start"

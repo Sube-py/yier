@@ -61,9 +61,32 @@ export interface StoredMessage {
   tool_call_id?: string | null
 }
 
+export interface StoredActivityEvent {
+  event: ChatStreamEvent['event']
+  data: Record<string, unknown>
+}
+
 export interface SessionTranscriptResponse {
   session_id: string
   messages: StoredMessage[]
+  activity_events: StoredActivityEvent[]
+}
+
+export interface SessionSummary {
+  session_id: string
+  title: string
+  preview: string
+  updated_at: number
+  message_count: number
+}
+
+export interface SessionListResponse {
+  sessions: SessionSummary[]
+}
+
+export interface DeleteSessionResponse {
+  session_id: string
+  deleted: boolean
 }
 
 export interface ChatStreamRequest {
@@ -98,7 +121,71 @@ export interface ChatToolEndEvent {
     result: string
     is_error: boolean
     iteration: number
+    metadata?: Record<string, unknown>
+    raw?: Record<string, unknown>
   }
+}
+
+export interface ShellStreamSnapshot {
+  text: string
+  truncated: boolean
+}
+
+export interface ShellProcessSnapshot {
+  session_id: string | null
+  state: string
+  exit_code: number | null
+  started_at: number
+  finished_at: number | null
+  runtime_seconds: number
+  timed_out: boolean
+}
+
+export interface ShellEventEntry {
+  index: number
+  timestamp: number
+  type: string
+  command?: string
+  cwd?: string
+  text?: string
+  stream?: 'stdout' | 'stderr'
+  state?: string
+  exit_code?: number
+  timed_out?: boolean
+  allow_shell?: boolean
+  shell_program?: string | null
+  append_newline?: boolean
+}
+
+export interface ShellRawPayload {
+  kind: 'shell_command' | 'background_command'
+  request: Record<string, unknown>
+  process: ShellProcessSnapshot
+  events: ShellEventEntry[]
+  latest_event_index: number | null
+  streams: {
+    stdout: ShellStreamSnapshot
+    stderr: ShellStreamSnapshot
+  }
+  events_truncated: boolean
+  dropped_event_count: number
+}
+
+export interface ShellActivityState {
+  kind: 'shell_command' | 'background_command'
+  tool_name: string
+  tool_call_id: string
+  session_id: string | null
+  request: Record<string, unknown>
+  process: ShellProcessSnapshot | null
+  events: ShellEventEntry[]
+  latest_event_index: number | null
+  streams: {
+    stdout: ShellStreamSnapshot
+    stderr: ShellStreamSnapshot
+  }
+  events_truncated: boolean
+  dropped_event_count: number
 }
 
 export interface ChatCommandStartEvent {
@@ -277,6 +364,7 @@ export interface ChatActivity {
   stdout: string
   stderr: string
   meta: string[]
+  shell: ShellActivityState | null
 }
 
 export interface EditableMcpServer {

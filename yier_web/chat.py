@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import suppress
+import json
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable
 from uuid import uuid4
@@ -38,7 +39,8 @@ from yier_agents.src.config import AssistantSettings
 from yier_web.background_followups import FollowupQueueManager, create_queue_background_followup_tool
 from yier_web.config import AppConfigService
 from yier_web.event_stream import EventStreamBroker
-from yier_web.schemas import MCPRuntimeEntry, StoredLLMSettings
+from yier_web.session_ui_store import SessionUIStore
+from yier_web.schemas import MCPRuntimeEntry, SessionSummary, StoredLLMSettings
 from yier_web.streaming_tools import (
     create_streaming_run_command_tool,
     create_streaming_start_background_command_tool,
@@ -61,6 +63,8 @@ class ChatService:
         self.mcp_manager = mcp_manager or MCPManager(config_dir=self.config_service.yier_root)
         self.skill_catalog: SkillCatalog | None = None
         self.session_store = JSONSessionStore(self.config_service.sessions_path)
+        self.transcript_store = JSONSessionStore(self.config_service.transcripts_path)
+        self.session_ui_store = SessionUIStore(self.config_service.session_ui_path)
         self.background_manager = BackgroundCommandManager(
             default_root=self.project_root,
             allow_shell=True,
@@ -136,7 +140,81 @@ class ChatService:
         return str(uuid4())
 
     def get_session_messages(self, session_id: str) -> list[Message]:
+        transcript_messages = self.transcript_store.get_session_messages(session_id)
+        if transcript_messages:
+            return transcript_messages
         return self.session_store.get_session_messages(session_id) or []
+
+    def get_session_activity_events(self, session_id: str) -> list[dict[str, Any]]:
+        return self.session_ui_store.load_activity_events(session_id)
+
+    def list_session_summaries(self) -> list[SessionSummary]:
+        session_entries: dict[str, dict[str, Any]] = {}
+
+        for directory in (
+            self.config_service.transcripts_path,
+            self.config_service.sessions_path,
+            self.config_service.session_ui_path,
+        ):
+            for session_file in directory.glob("*.json"):
+                try:
+                    payload = json.loads(session_file.read_text(encoding="utf-8"))
+                except json.JSONDecodeError:
+                    continue
+
+                session_id = payload.get("session_id")
+                if not isinstance(session_id, str) or not session_id.strip():
+                    continue
+
+                entry = session_entries.setdefault(
+                    session_id,
+                    {
+                        "updated_at": 0.0,
+                        "messages": [],
+                    },
+                )
+                entry["updated_at"] = max(entry["updated_at"], session_file.stat().st_mtime)
+                if not entry["messages"] and isinstance(payload.get("messages"), list):
+                    entry["messages"] = payload["messages"]
+
+        summaries: list[SessionSummary] = []
+        for session_id, entry in session_entries.items():
+            messages = entry["messages"] if isinstance(entry["messages"], list) else []
+            title = self._session_title(messages)
+            preview = self._session_preview(messages)
+            summaries.append(
+                SessionSummary(
+                    session_id=session_id,
+                    title=title,
+                    preview=preview,
+                    updated_at=float(entry["updated_at"]),
+                    message_count=self._message_count(messages),
+                )
+            )
+
+        return sorted(summaries, key=lambda item: item.updated_at, reverse=True)
+
+    def delete_session(self, session_id: str) -> bool:
+        deleted = False
+        deleted = self.session_store.clear_session(session_id) or deleted
+        deleted = self.transcript_store.clear_session(session_id) or deleted
+
+        session_ui_file = self.config_service.session_ui_path / f"{session_id.replace('/', '_')}.json"
+        if session_ui_file.exists():
+            session_ui_file.unlink()
+            deleted = True
+
+        owned_background_ids = [
+            background_session_id
+            for background_session_id, owner_session_id in self._background_owner_sessions.items()
+            if owner_session_id == session_id
+        ]
+        for background_session_id in owned_background_ids:
+            self._background_owner_sessions.pop(background_session_id, None)
+            self._background_cursors.pop(background_session_id, None)
+
+        self._session_run_locks.pop(session_id, None)
+        return deleted
 
     async def stream_chat(self, session_id: str, user_message: str) -> AsyncIterator[dict[str, Any]]:
         agent = await self._get_agent()
@@ -182,12 +260,17 @@ class ChatService:
     ) -> None:
         async def emit(event: str, data: dict[str, Any]) -> None:
             self._handle_internal_event(event, data)
+            self._persist_ui_event(event, data)
             await event_queue.put({"event": event, "data": data})
 
         finish_reason = "stop"
         token = set_tool_event_emitter(emit)
 
         try:
+            self._append_transcript_message(
+                session_id,
+                Message(role="user", content=user_message),
+            )
             await emit("run_started", {"session_id": session_id})
             finish_reason = await self._run_agent_prompt(
                 agent=agent,
@@ -266,6 +349,8 @@ class ChatService:
                         "tool_call_id": event.tool_call_id,
                         "result": event.result,
                         "is_error": event.is_error,
+                        "metadata": event.metadata,
+                        "raw": event.raw,
                         "iteration": event.iteration,
                     },
                 )
@@ -283,6 +368,10 @@ class ChatService:
                         },
                     )
                 if event.finish_reason == "stop" and event.message.content:
+                    self._append_transcript_message(
+                        session_id,
+                        Message(role="assistant", content=event.message.content),
+                    )
                     await emit(
                         "assistant_message",
                         {
@@ -323,6 +412,67 @@ class ChatService:
                 finish_reason = event.finish_reason
 
         return finish_reason
+
+    def _append_transcript_message(self, session_id: str, message: Message) -> None:
+        messages = self.transcript_store.get_session_messages(session_id) or []
+        messages.append(message)
+        self.transcript_store.save(session_id, messages)
+
+    def _session_title(self, messages: list[dict[str, Any]]) -> str:
+        for message in messages:
+            if message.get("role") != "user":
+                continue
+            content = self._normalized_message_content(message)
+            if content:
+                return self._truncate_text(content, 48)
+        return "New session"
+
+    def _session_preview(self, messages: list[dict[str, Any]]) -> str:
+        for message in reversed(messages):
+            content = self._normalized_message_content(message)
+            if content:
+                return self._truncate_text(content, 72)
+        return ""
+
+    def _message_count(self, messages: list[dict[str, Any]]) -> int:
+        return sum(
+            1
+            for message in messages
+            if message.get("role") in {"user", "assistant"} and self._normalized_message_content(message)
+        )
+
+    def _normalized_message_content(self, message: dict[str, Any]) -> str:
+        content = message.get("content")
+        if not isinstance(content, str):
+            return ""
+        return " ".join(content.strip().split())
+
+    def _truncate_text(self, value: str, limit: int) -> str:
+        if len(value) <= limit:
+            return value
+        return f"{value[: limit - 1].rstrip()}…"
+
+    def _persist_ui_event(self, event: str, data: dict[str, Any]) -> None:
+        session_id = data.get("session_id")
+        if not isinstance(session_id, str) or not session_id:
+            return
+
+        if event not in {
+            "tool_call_start",
+            "tool_call_end",
+            "command_start",
+            "command_output",
+            "command_end",
+            "background_command_started",
+            "background_command_output",
+            "background_command_end",
+            "background_followup_queued",
+            "background_followup_started",
+            "background_followup_finished",
+        }:
+            return
+
+        self.session_ui_store.append_activity_event(session_id, event, data)
 
     def _handle_internal_event(self, event: str, data: dict[str, Any]) -> None:
         if event != "background_command_started":
@@ -397,34 +547,32 @@ class ChatService:
 
                 new_content = output_text[previous_chars:]
                 cursor[chars_key] = len(output_text)
-                await self.event_broker.publish(
-                    "background_command_output",
-                    {
-                        "session_id": owner_session_id,
-                        "background_session_id": session.session_id,
-                        "command": session.command,
-                        "cwd": str(session.cwd),
-                        "stream": stream_name,
-                        "content": new_content,
-                    },
-                )
+                payload = {
+                    "session_id": owner_session_id,
+                    "background_session_id": session.session_id,
+                    "command": session.command,
+                    "cwd": str(session.cwd),
+                    "stream": stream_name,
+                    "content": new_content,
+                }
+                self._persist_ui_event("background_command_output", payload)
+                await self.event_broker.publish("background_command_output", payload)
 
             if session.is_running() or cursor["end_emitted"]:
                 continue
 
             cursor["end_emitted"] = True
             completed_session_ids.add(session.session_id)
-            await self.event_broker.publish(
-                "background_command_end",
-                {
-                    "session_id": owner_session_id,
-                    "background_session_id": session.session_id,
-                    "command": session.command,
-                    "cwd": str(session.cwd),
-                    "state": session.state,
-                    "exit_code": session.exit_code,
-                },
-            )
+            payload = {
+                "session_id": owner_session_id,
+                "background_session_id": session.session_id,
+                "command": session.command,
+                "cwd": str(session.cwd),
+                "state": session.state,
+                "exit_code": session.exit_code,
+            }
+            self._persist_ui_event("background_command_end", payload)
+            await self.event_broker.publish("background_command_end", payload)
 
         return completed_session_ids
 
@@ -444,18 +592,18 @@ class ChatService:
             return
 
         for item in ready_items:
-            await self.event_broker.publish(
-                "background_followup_started",
-                {
-                    "session_id": item.owner_session_id,
-                    "background_session_id": item.trigger_session_id,
-                    "queue_id": item.queue_id,
-                    "prompt": item.prompt,
-                },
-            )
+            started_payload = {
+                "session_id": item.owner_session_id,
+                "background_session_id": item.trigger_session_id,
+                "queue_id": item.queue_id,
+                "prompt": item.prompt,
+            }
+            self._persist_ui_event("background_followup_started", started_payload)
+            await self.event_broker.publish("background_followup_started", started_payload)
 
             async def emit(event: str, data: dict[str, Any]) -> None:
                 self._handle_internal_event(event, data)
+                self._persist_ui_event(event, data)
                 await self.event_broker.publish(event, data)
 
             finish_reason = await self._run_agent_prompt(
@@ -464,15 +612,14 @@ class ChatService:
                 prompt=item.prompt,
                 emit=emit,
             )
-            await self.event_broker.publish(
-                "background_followup_finished",
-                {
-                    "session_id": item.owner_session_id,
-                    "background_session_id": item.trigger_session_id,
-                    "queue_id": item.queue_id,
-                    "finish_reason": finish_reason,
-                },
-            )
+            finished_payload = {
+                "session_id": item.owner_session_id,
+                "background_session_id": item.trigger_session_id,
+                "queue_id": item.queue_id,
+                "finish_reason": finish_reason,
+            }
+            self._persist_ui_event("background_followup_finished", finished_payload)
+            await self.event_broker.publish("background_followup_finished", finished_payload)
 
         for background_session_id in completed_session_ids:
             self._background_owner_sessions.pop(background_session_id, None)

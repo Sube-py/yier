@@ -107,9 +107,32 @@ class CreateSessionResponse(BaseModel):
     session_id: str
 
 
+class SessionSummary(BaseModel):
+    session_id: str
+    title: str
+    preview: str
+    updated_at: float
+    message_count: int = 0
+
+
+class SessionListResponse(BaseModel):
+    sessions: list[SessionSummary] = Field(default_factory=list)
+
+
+class DeleteSessionResponse(BaseModel):
+    session_id: str
+    deleted: bool
+
+
+class StoredActivityEvent(BaseModel):
+    event: str
+    data: dict[str, Any] = Field(default_factory=dict)
+
+
 class SessionTranscriptResponse(BaseModel):
     session_id: str
     messages: list[Message] = Field(default_factory=list)
+    activity_events: list[StoredActivityEvent] = Field(default_factory=list)
 
 
 class ChatStreamRequest(BaseModel):

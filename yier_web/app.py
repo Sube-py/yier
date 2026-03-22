@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any, AsyncIterator
 
-from litestar import Litestar, Request, Router, get, post, put
+from litestar import Litestar, Request, Router, delete, get, post, put
 from litestar.datastructures import State
 from litestar.exceptions import HTTPException
 from litestar.response import Response, ServerSentEvent
@@ -28,6 +28,8 @@ from yier_web.schemas import (
     SaveAllowedRootsRequest,
     SaveLLMRequest,
     SaveMCPConfigRequest,
+    DeleteSessionResponse,
+    SessionListResponse,
     SessionTranscriptResponse,
 )
 
@@ -153,11 +155,28 @@ async def create_session(state: State) -> CreateSessionResponse:
     return CreateSessionResponse(session_id=get_services(state).chat_service.create_session())
 
 
+@get("/chat/sessions")
+async def list_sessions(state: State) -> SessionListResponse:
+    sessions = get_services(state).chat_service.list_session_summaries()
+    return SessionListResponse(sessions=sessions)
+
+
 @get("/chat/sessions/{session_id:str}")
 async def get_session(session_id: str, state: State) -> SessionTranscriptResponse:
     services = get_services(state)
     messages = services.chat_service.get_session_messages(session_id)
-    return SessionTranscriptResponse(session_id=session_id, messages=messages)
+    activity_events = services.chat_service.get_session_activity_events(session_id)
+    return SessionTranscriptResponse(
+        session_id=session_id,
+        messages=messages,
+        activity_events=activity_events,
+    )
+
+
+@delete("/chat/sessions/{session_id:str}", status_code=200)
+async def delete_session(session_id: str, state: State) -> DeleteSessionResponse:
+    deleted = get_services(state).chat_service.delete_session(session_id)
+    return DeleteSessionResponse(session_id=session_id, deleted=deleted)
 
 
 @post("/chat/stream", status_code=200)
@@ -221,7 +240,9 @@ api_router = Router(
         save_mcp_config,
         reload_mcp_config,
         create_session,
+        list_sessions,
         get_session,
+        delete_session,
         stream_chat,
         stream_events,
     ],

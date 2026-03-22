@@ -147,6 +147,15 @@ select {
   gap: 0.75rem;
 }
 
+.side-card--history {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 0.85rem;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .side-card-row {
   display: flex;
   align-items: center;
@@ -162,6 +171,100 @@ select {
   margin: 0;
   color: var(--app-text-soft);
   font-size: 0.92rem;
+}
+
+.side-card-empty {
+  margin: 0;
+  color: var(--app-text-soft);
+  line-height: 1.6;
+}
+
+.session-history-list {
+  display: grid;
+  gap: 0.65rem;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 0.2rem;
+}
+
+.session-history-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.45rem;
+  align-items: center;
+  padding: 0.25rem;
+  border: 1px solid rgba(34, 66, 72, 0.08);
+  border-radius: 1rem;
+  background: rgba(255, 250, 242, 0.72);
+  transition:
+    border-color 160ms ease,
+    background-color 160ms ease,
+    transform 160ms ease;
+}
+
+.session-history-item:hover {
+  border-color: rgba(21, 94, 99, 0.18);
+  background: rgba(255, 250, 242, 0.92);
+  transform: translateY(-1px);
+}
+
+.session-history-item--active {
+  border-color: rgba(21, 94, 99, 0.28);
+  background: rgba(222, 241, 239, 0.52);
+  box-shadow: inset 0 0 0 1px rgba(21, 94, 99, 0.08);
+}
+
+.session-history-main {
+  min-width: 0;
+  padding: 0.55rem 0.65rem;
+  border: 0;
+  border-radius: 0.8rem;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.session-history-main:hover {
+  background: rgba(21, 94, 99, 0.06);
+}
+
+.session-history-main:focus-visible {
+  outline: 2px solid rgba(21, 94, 99, 0.38);
+  outline-offset: 2px;
+}
+
+.session-history-copy {
+  min-width: 0;
+}
+
+.session-history-title,
+.session-history-preview,
+.session-history-meta {
+  margin: 0;
+}
+
+.session-history-title {
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.session-history-preview {
+  margin-top: 0.18rem;
+  color: var(--app-text-soft);
+  font-size: 0.88rem;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.session-history-meta {
+  margin-top: 0.28rem;
+  color: var(--app-text-soft);
+  font-size: 0.76rem;
+}
+
+.session-history-delete {
+  flex-shrink: 0;
 }
 
 .root-list,
@@ -401,10 +504,48 @@ select {
   border-top: 1px solid var(--app-border);
 }
 
-.activity-list {
-  display: grid;
-  gap: 0.7rem;
-  margin-top: 0.75rem;
+.activity-timeline {
+  margin-top: 0.85rem;
+}
+
+.activity-timeline .p-timeline-event {
+  align-items: stretch;
+}
+
+.activity-timeline .p-timeline-event-opposite {
+  display: none;
+}
+
+.activity-timeline .p-timeline-event-separator {
+  flex: 0 0 2.2rem;
+}
+
+.activity-timeline .p-timeline-event-marker {
+  background: transparent;
+  box-shadow: none;
+}
+
+.activity-timeline-marker {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.4rem;
+  height: 1.4rem;
+  margin-top: 0.15rem;
+  border-radius: 999px;
+  background: rgba(255, 250, 242, 0.96);
+  border: 1px solid rgba(34, 66, 72, 0.1);
+}
+
+.activity-timeline .p-timeline-event-connector {
+  width: 2px;
+  background: linear-gradient(180deg, rgba(52, 127, 134, 0.18), rgba(52, 127, 134, 0.42));
+}
+
+.activity-timeline .p-timeline-event-content {
+  flex: 1;
+  min-width: 0;
+  padding-bottom: 0.95rem;
 }
 
 .activity-item {
@@ -416,7 +557,7 @@ select {
 
 .activity-summary {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 0.7rem;
   align-items: start;
   padding: 0.8rem 0.9rem;
@@ -472,11 +613,26 @@ select {
   word-break: break-word;
 }
 
+.activity-summary-cwd {
+  margin: 0;
+  color: var(--app-text-soft);
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.78rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: min(40vw, 24rem);
+}
+
 .activity-body {
   display: grid;
   gap: 0.55rem;
   padding: 0 0.9rem 0.9rem 2.35rem;
   border-top: 1px solid rgba(34, 66, 72, 0.08);
+}
+
+.activity-body--terminal {
+  gap: 0.7rem;
 }
 
 .activity-command,
@@ -493,6 +649,15 @@ select {
   word-break: break-word;
 }
 
+.activity-command--terminal {
+  padding: 0.85rem 1rem;
+  border-radius: 0.85rem 0.85rem 0 0;
+  background: linear-gradient(180deg, rgba(16, 33, 37, 0.98), rgba(21, 43, 48, 0.98));
+  color: #f7fffc;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.28);
+}
+
 .activity-meta,
 .activity-stream-label {
   color: var(--app-text-soft);
@@ -502,6 +667,11 @@ select {
 .activity-stream {
   display: grid;
   gap: 0.3rem;
+}
+
+.activity-stream--terminal {
+  position: relative;
+  gap: 0;
 }
 
 .activity-stream-output {
@@ -516,6 +686,24 @@ select {
   line-height: 1.55;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.activity-stream--terminal .activity-stream-output {
+  min-height: 4rem;
+  max-height: 18rem;
+  overflow: auto;
+  padding: 0.3rem 0.9rem 1.7rem;
+  border-radius: 0 0 0.85rem 0.85rem;
+}
+
+.activity-runtime {
+  position: absolute;
+  right: 0.85rem;
+  bottom: 0.7rem;
+  color: rgba(242, 245, 246, 0.72);
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.74rem;
+  line-height: 1;
 }
 
 .activity-stream--stderr .activity-stream-output {

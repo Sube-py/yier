@@ -61,6 +61,84 @@ function sseResponse(frames: string) {
   )
 }
 
+function isSessionListRequest(path: string, init?: RequestInit) {
+  return path.endsWith('/api/chat/sessions') && (!init?.method || init.method === 'GET')
+}
+
+function isSessionCreateRequest(path: string, init?: RequestInit) {
+  return path.endsWith('/api/chat/sessions') && init?.method === 'POST'
+}
+
+function shellCommandRaw(overrides: Record<string, unknown> = {}) {
+  return {
+    kind: 'shell_command',
+    request: {
+      command: 'printf "hello"',
+      cwd: '/tmp/project',
+      allow_shell: true,
+      shell_program: '/bin/bash',
+      timeout_seconds: 30,
+      max_output_chars: 8000,
+    },
+    process: {
+      session_id: null,
+      state: 'completed',
+      exit_code: 0,
+      started_at: 1,
+      finished_at: 2,
+      runtime_seconds: 1,
+      timed_out: false,
+    },
+    events: [
+      { index: 0, timestamp: 1, type: 'started', command: 'printf "hello"', cwd: '/tmp/project' },
+      { index: 1, timestamp: 2, type: 'stdout', text: 'hello', stream: 'stdout' },
+      { index: 2, timestamp: 2, type: 'state_changed', state: 'completed' },
+      { index: 3, timestamp: 2, type: 'exit', exit_code: 0, state: 'completed', timed_out: false },
+    ],
+    latest_event_index: 3,
+    streams: {
+      stdout: { text: 'hello', truncated: false },
+      stderr: { text: '', truncated: false },
+    },
+    events_truncated: false,
+    dropped_event_count: 0,
+    ...overrides,
+  }
+}
+
+function backgroundCommandRaw(overrides: Record<string, unknown> = {}) {
+  return {
+    kind: 'background_command',
+    request: {
+      command: 'npm run dev',
+      cwd: '/tmp/project',
+      allow_shell: true,
+      shell_program: '/bin/bash',
+    },
+    process: {
+      session_id: 'bg-1',
+      state: 'running',
+      exit_code: null,
+      started_at: 1,
+      finished_at: null,
+      runtime_seconds: 3,
+      timed_out: false,
+    },
+    events: [
+      { index: 0, timestamp: 1, type: 'started', command: 'npm run dev', cwd: '/tmp/project' },
+      { index: 1, timestamp: 2, type: 'stdout', text: 'ready on http://localhost:3000', stream: 'stdout' },
+    ],
+    latest_event_index: 1,
+    streams: {
+      stdout: { text: 'ready on http://localhost:3000', truncated: false },
+      stderr: { text: '', truncated: false },
+    },
+    events_truncated: false,
+    dropped_event_count: 0,
+    ...overrides,
+  }
+}
+
 async function mountApp(initialPath = '/chat') {
   const router = createTestRouter()
   await router.push(initialPath)
@@ -94,7 +172,7 @@ describe('App', () => {
   it('shows the setup empty state when the llm is not configured', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn((input: RequestInfo | URL) => {
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
         const path = input.toString()
         if (path.endsWith('/api/health')) {
           return jsonResponse({
@@ -114,7 +192,10 @@ describe('App', () => {
         if (path.endsWith('/api/config/mcp')) {
           return jsonResponse({ mcp_servers: {}, runtime: {} })
         }
-        if (path.endsWith('/api/chat/sessions')) {
+        if (isSessionListRequest(path, init)) {
+          return jsonResponse({ sessions: [] })
+        }
+        if (isSessionCreateRequest(path, init)) {
           return jsonResponse({ session_id: 'session-1' }, 201)
         }
         throw new Error(`Unexpected request: ${path}`)
@@ -130,7 +211,7 @@ describe('App', () => {
 
   it('starts a fresh session when clicking New Chat', async () => {
     let sessionCounter = 0
-    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const path = input.toString()
       if (path.endsWith('/api/health')) {
         return jsonResponse({
@@ -150,7 +231,10 @@ describe('App', () => {
       if (path.endsWith('/api/config/mcp')) {
         return jsonResponse({ mcp_servers: {}, runtime: {} })
       }
-      if (path.endsWith('/api/chat/sessions')) {
+      if (isSessionListRequest(path, init)) {
+        return jsonResponse({ sessions: [] })
+      }
+      if (isSessionCreateRequest(path, init)) {
         sessionCounter += 1
         return jsonResponse({ session_id: `session-${sessionCounter}` }, 201)
       }
@@ -172,6 +256,295 @@ describe('App', () => {
 
     expect(sessionCounter).toBe(2)
     expect(wrapper.text()).toContain('Started a fresh session.')
+  })
+
+  it('renders recent sessions and switches to the selected transcript', async () => {
+    localStorage.setItem('yier.active-session-id', 'session-1')
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const path = input.toString()
+        if (path.endsWith('/api/health')) {
+          return jsonResponse({
+            frontend: { ready: true, mode: 'static' },
+            llm: { ready: true },
+            mcp: { ready: true, runtime: {} },
+            allowed_roots: ['/tmp/project'],
+          })
+        }
+        if (path.endsWith('/api/config')) {
+          return jsonResponse({
+            llm: { base_url: 'https://example.test', model: 'demo', has_api_key: true },
+            allowed_roots: ['/tmp/project'],
+            mcp_runtime: {},
+          })
+        }
+        if (path.endsWith('/api/config/mcp')) {
+          return jsonResponse({ mcp_servers: {}, runtime: {} })
+        }
+        if (isSessionListRequest(path, init)) {
+          return jsonResponse({
+            sessions: [
+              {
+                session_id: 'session-1',
+                title: 'First session',
+                preview: 'first preview',
+                updated_at: 100,
+                message_count: 2,
+              },
+              {
+                session_id: 'session-2',
+                title: 'Second session',
+                preview: 'second preview',
+                updated_at: 200,
+                message_count: 2,
+              },
+            ],
+          })
+        }
+        if (path.endsWith('/api/chat/sessions/session-1')) {
+          return jsonResponse({
+            session_id: 'session-1',
+            messages: [
+              { role: 'user', content: 'open first' },
+              { role: 'assistant', content: 'first transcript body' },
+            ],
+            activity_events: [],
+          })
+        }
+        if (path.endsWith('/api/chat/sessions/session-2')) {
+          return jsonResponse({
+            session_id: 'session-2',
+            messages: [
+              { role: 'user', content: 'open second' },
+              { role: 'assistant', content: 'second transcript body' },
+            ],
+            activity_events: [],
+          })
+        }
+        if (isSessionCreateRequest(path, init)) {
+          return jsonResponse({ session_id: 'session-created' }, 201)
+        }
+        throw new Error(`Unexpected request: ${path}`)
+      }),
+    )
+
+    const wrapper = await mountApp()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('First session')
+    expect(wrapper.text()).toContain('Second session')
+    expect(wrapper.text()).toContain('first transcript body')
+
+    const historyButtons = wrapper.findAll('.session-history-main')
+    expect(historyButtons).toHaveLength(2)
+    await historyButtons[1]!.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('second transcript body')
+    expect(wrapper.find('.session-history-item--active').text()).toContain('Second session')
+  })
+
+  it('deletes the active session and switches to the next saved session', async () => {
+    localStorage.setItem('yier.active-session-id', 'session-1')
+
+    let sessions = [
+      {
+        session_id: 'session-1',
+        title: 'First session',
+        preview: 'first preview',
+        updated_at: 200,
+        message_count: 2,
+      },
+      {
+        session_id: 'session-2',
+        title: 'Second session',
+        preview: 'second preview',
+        updated_at: 100,
+        message_count: 2,
+      },
+    ]
+    const deletedSessionIds: string[] = []
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const path = input.toString()
+        if (path.endsWith('/api/health')) {
+          return jsonResponse({
+            frontend: { ready: true, mode: 'static' },
+            llm: { ready: true },
+            mcp: { ready: true, runtime: {} },
+            allowed_roots: ['/tmp/project'],
+          })
+        }
+        if (path.endsWith('/api/config')) {
+          return jsonResponse({
+            llm: { base_url: 'https://example.test', model: 'demo', has_api_key: true },
+            allowed_roots: ['/tmp/project'],
+            mcp_runtime: {},
+          })
+        }
+        if (path.endsWith('/api/config/mcp')) {
+          return jsonResponse({ mcp_servers: {}, runtime: {} })
+        }
+        if (isSessionListRequest(path, init)) {
+          return jsonResponse({ sessions })
+        }
+        if (path.endsWith('/api/chat/sessions/session-1') && init?.method === 'DELETE') {
+          deletedSessionIds.push('session-1')
+          sessions = sessions.filter((session) => session.session_id !== 'session-1')
+          return jsonResponse({ session_id: 'session-1', deleted: true })
+        }
+        if (path.endsWith('/api/chat/sessions/session-1')) {
+          return jsonResponse({
+            session_id: 'session-1',
+            messages: [
+              { role: 'user', content: 'open first' },
+              { role: 'assistant', content: 'first transcript body' },
+            ],
+            activity_events: [],
+          })
+        }
+        if (path.endsWith('/api/chat/sessions/session-2')) {
+          return jsonResponse({
+            session_id: 'session-2',
+            messages: [
+              { role: 'user', content: 'open second' },
+              { role: 'assistant', content: 'second transcript body' },
+            ],
+            activity_events: [],
+          })
+        }
+        if (isSessionCreateRequest(path, init)) {
+          return jsonResponse({ session_id: 'session-created' }, 201)
+        }
+        throw new Error(`Unexpected request: ${path}`)
+      }),
+    )
+
+    const wrapper = await mountApp()
+    await flushPromises()
+
+    const deleteButtons = wrapper.findAll('.session-history-delete')
+    expect(deleteButtons).toHaveLength(2)
+    await deleteButtons[0]!.trigger('click')
+    await flushPromises()
+
+    expect(deletedSessionIds).toEqual(['session-1'])
+    expect(wrapper.text()).toContain('Session deleted.')
+    expect(wrapper.text()).toContain('second transcript body')
+    expect(wrapper.find('.session-history-item--active').text()).toContain('Second session')
+    expect(wrapper.findAll('.session-history-item')).toHaveLength(1)
+  })
+
+  it('restores persisted tool activities for the active session after refresh', async () => {
+    localStorage.setItem('yier.active-session-id', 'session-1')
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const path = input.toString()
+        if (path.endsWith('/api/health')) {
+          return jsonResponse({
+            frontend: { ready: true, mode: 'static' },
+            llm: { ready: true },
+            mcp: { ready: true, runtime: {} },
+            allowed_roots: ['/tmp/project'],
+          })
+        }
+        if (path.endsWith('/api/config')) {
+          return jsonResponse({
+            llm: { base_url: 'https://example.test', model: 'demo', has_api_key: true },
+            allowed_roots: ['/tmp/project'],
+            mcp_runtime: {},
+          })
+        }
+        if (path.endsWith('/api/config/mcp')) {
+          return jsonResponse({ mcp_servers: {}, runtime: {} })
+        }
+        if (isSessionListRequest(path, init)) {
+          return jsonResponse({
+            sessions: [
+              {
+                session_id: 'session-1',
+                title: 'run something',
+                preview: 'Done.',
+                updated_at: 123,
+                message_count: 2,
+              },
+            ],
+          })
+        }
+        if (path.includes('/api/chat/sessions/')) {
+          return jsonResponse({
+            session_id: 'session-1',
+            messages: [
+              { role: 'user', content: 'run something' },
+              { role: 'assistant', content: 'Done.' },
+            ],
+            activity_events: [
+              {
+                event: 'tool_call_start',
+                data: {
+                  session_id: 'session-1',
+                  tool_name: 'run_command',
+                  tool_call_id: 'call-1',
+                  arguments: {
+                    command: 'printf "hello"',
+                    cwd: '/tmp/project',
+                  },
+                  iteration: 1,
+                },
+              },
+              {
+                event: 'command_start',
+                data: {
+                  session_id: 'session-1',
+                  tool_call_id: 'call-1',
+                  tool_name: 'run_command',
+                  command: 'printf "hello"',
+                  cwd: '/tmp/project',
+                  is_background: false,
+                },
+              },
+              {
+                event: 'command_output',
+                data: {
+                  session_id: 'session-1',
+                  tool_call_id: 'call-1',
+                  tool_name: 'run_command',
+                  stream: 'stdout',
+                  content: 'hello',
+                  is_background: false,
+                },
+              },
+              {
+                event: 'tool_call_end',
+                data: {
+                  session_id: 'session-1',
+                  tool_name: 'run_command',
+                  tool_call_id: 'call-1',
+                  result: 'Command finished successfully.',
+                  is_error: false,
+                  iteration: 1,
+                  raw: shellCommandRaw(),
+                },
+              },
+            ],
+          })
+        }
+        throw new Error(`Unexpected request: ${path}`)
+      }),
+    )
+
+    const wrapper = await mountApp()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Shell command')
+    expect(wrapper.text()).toContain('printf "hello"')
+    expect(wrapper.text()).toContain('hello')
   })
 
   it('renders a streamed assistant reply after submitting a message', async () => {
@@ -197,7 +570,10 @@ describe('App', () => {
         if (path.endsWith('/api/config/mcp')) {
           return jsonResponse({ mcp_servers: {}, runtime: {} })
         }
-        if (path.endsWith('/api/chat/sessions')) {
+        if (isSessionListRequest(path, init)) {
+          return jsonResponse({ sessions: [] })
+        }
+        if (isSessionCreateRequest(path, init)) {
           return jsonResponse({ session_id: 'session-1' }, 201)
         }
         if (path.includes('/api/chat/sessions/')) {
@@ -220,6 +596,22 @@ describe('App', () => {
               '',
               'event: command_end',
               'data: {"session_id":"session-1","tool_call_id":"call-1","tool_name":"run_command","command":"printf \\"hello\\"","cwd":"/tmp/project","exit_code":0,"timed_out":false,"is_background":false}',
+              '',
+              'event: tool_call_end',
+              `data: ${JSON.stringify({
+                session_id: 'session-1',
+                tool_name: 'run_command',
+                tool_call_id: 'call-1',
+                result: 'Command finished successfully.',
+                is_error: false,
+                iteration: 1,
+                metadata: {
+                  command: 'printf "hello"',
+                  cwd: '/tmp/project',
+                  exit_code: 0,
+                },
+                raw: shellCommandRaw(),
+              })}`,
               '',
               'event: assistant_message',
               'data: {"session_id":"session-1","content":"I found the **project files**.\\n\\n```ts\\nconsole.log(1)\\n```","iteration":1}',
@@ -250,13 +642,19 @@ describe('App', () => {
     expect(wrapper.html()).toContain('<pre><code class="language-ts">')
     expect(wrapper.text()).toContain('Shell command')
     expect(wrapper.text()).toContain('printf "hello"')
+    expect(wrapper.text()).toContain('/tmp/project')
     expect(wrapper.text()).toContain('hello')
+    expect(wrapper.text()).toContain('1s')
+    expect(wrapper.text()).not.toContain('Iteration 1')
+    expect(wrapper.text()).not.toContain('Exit 0')
+    expect(wrapper.text()).not.toContain('#3 exit 0 (completed)')
+    expect(wrapper.findAll('.activity-item')).toHaveLength(1)
   })
 
   it('renders settings in the shared workspace via routing', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn((input: RequestInfo | URL) => {
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
         const path = input.toString()
         if (path.endsWith('/api/health')) {
           return jsonResponse({
@@ -276,7 +674,10 @@ describe('App', () => {
         if (path.endsWith('/api/config/mcp')) {
           return jsonResponse({ mcp_servers: {}, runtime: {} })
         }
-        if (path.endsWith('/api/chat/sessions')) {
+        if (isSessionListRequest(path, init)) {
+          return jsonResponse({ sessions: [] })
+        }
+        if (isSessionCreateRequest(path, init)) {
           return jsonResponse({ session_id: 'session-1' }, 201)
         }
         throw new Error(`Unexpected request: ${path}`)
@@ -294,7 +695,7 @@ describe('App', () => {
   it('renders background updates from the persistent event stream', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn((input: RequestInfo | URL) => {
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
         const path = input.toString()
         if (path.endsWith('/api/health')) {
           return jsonResponse({
@@ -314,7 +715,10 @@ describe('App', () => {
         if (path.endsWith('/api/config/mcp')) {
           return jsonResponse({ mcp_servers: {}, runtime: {} })
         }
-        if (path.endsWith('/api/chat/sessions')) {
+        if (isSessionListRequest(path, init)) {
+          return jsonResponse({ sessions: [] })
+        }
+        if (isSessionCreateRequest(path, init)) {
           return jsonResponse({ session_id: 'session-1' }, 201)
         }
         if (path.includes('/api/chat/sessions/')) {
@@ -365,6 +769,132 @@ describe('App', () => {
     expect(wrapper.text()).toContain('ready on http://localhost:3000')
   })
 
+  it('merges background shell tool updates into one activity', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const path = input.toString()
+        if (path.endsWith('/api/health')) {
+          return jsonResponse({
+            frontend: { ready: true, mode: 'static' },
+            llm: { ready: true },
+            mcp: { ready: true, runtime: {} },
+            allowed_roots: ['/tmp/project'],
+          })
+        }
+        if (path.endsWith('/api/config')) {
+          return jsonResponse({
+            llm: { base_url: 'https://example.test', model: 'demo', has_api_key: true },
+            allowed_roots: ['/tmp/project'],
+            mcp_runtime: {},
+          })
+        }
+        if (path.endsWith('/api/config/mcp')) {
+          return jsonResponse({ mcp_servers: {}, runtime: {} })
+        }
+        if (isSessionListRequest(path, init)) {
+          return jsonResponse({ sessions: [] })
+        }
+        if (isSessionCreateRequest(path, init)) {
+          return jsonResponse({ session_id: 'session-1' }, 201)
+        }
+        if (path.includes('/api/chat/sessions/')) {
+          return jsonResponse({ session_id: 'session-1', messages: [] })
+        }
+        throw new Error(`Unexpected request: ${path}`)
+      }),
+    )
+
+    const wrapper = await mountApp()
+    await flushPromises()
+
+    const eventSource = MockEventSource.instances[0]
+    expect(eventSource).toBeTruthy()
+    if (!eventSource) {
+      throw new Error('Expected persistent EventSource connection.')
+    }
+
+    eventSource.emit('tool_call_start', {
+      session_id: 'session-1',
+      tool_name: 'start_background_command',
+      tool_call_id: 'call-start',
+      arguments: {
+        command: 'npm run dev',
+        cwd: '/tmp/project',
+      },
+      iteration: 1,
+    })
+    eventSource.emit('background_command_started', {
+      session_id: 'session-1',
+      background_session_id: 'bg-1',
+      tool_call_id: 'call-start',
+      tool_name: 'start_background_command',
+      command: 'npm run dev',
+      cwd: '/tmp/project',
+      state: 'running',
+    })
+    eventSource.emit('tool_call_end', {
+      session_id: 'session-1',
+      tool_name: 'start_background_command',
+      tool_call_id: 'call-start',
+      result: 'Started background command bg-1',
+      is_error: false,
+      iteration: 1,
+      metadata: {
+        session_id: 'bg-1',
+        command: 'npm run dev',
+      },
+      raw: backgroundCommandRaw(),
+    })
+    eventSource.emit('tool_call_start', {
+      session_id: 'session-1',
+      tool_name: 'read_background_command',
+      tool_call_id: 'call-read',
+      arguments: {
+        session_id: 'bg-1',
+      },
+      iteration: 2,
+    })
+    eventSource.emit('tool_call_end', {
+      session_id: 'session-1',
+      tool_name: 'read_background_command',
+      tool_call_id: 'call-read',
+      result: 'Read background output.',
+      is_error: false,
+      iteration: 2,
+      metadata: {
+        session_id: 'bg-1',
+        state: 'running',
+      },
+      raw: backgroundCommandRaw({
+        process: {
+          session_id: 'bg-1',
+          state: 'running',
+          exit_code: null,
+          started_at: 1,
+          finished_at: null,
+          runtime_seconds: 5,
+          timed_out: false,
+        },
+        events: [
+          { index: 0, timestamp: 1, type: 'started', command: 'npm run dev', cwd: '/tmp/project' },
+          { index: 1, timestamp: 2, type: 'stdout', text: 'ready on http://localhost:3000', stream: 'stdout' },
+          { index: 2, timestamp: 3, type: 'stdin', text: 'rs\n', append_newline: true },
+        ],
+        latest_event_index: 2,
+      }),
+    })
+    await flushPromises()
+
+    expect(wrapper.findAll('.activity-item')).toHaveLength(1)
+    expect(wrapper.text()).toContain('Background bg-1')
+    expect(wrapper.text()).toContain('/tmp/project')
+    expect(wrapper.text()).toContain('ready on http://localhost:3000')
+    expect(wrapper.text()).toContain('5s')
+    expect(wrapper.text()).not.toContain('Iteration 1')
+    expect(wrapper.text()).not.toContain('#2 stdin rs')
+  })
+
   it('saves allowed roots from the settings workspace', async () => {
     let savedRoots: string[] = ['/tmp/project', '/tmp/docs']
 
@@ -399,7 +929,10 @@ describe('App', () => {
         if (path.endsWith('/api/config/mcp')) {
           return jsonResponse({ mcp_servers: {}, runtime: {} })
         }
-        if (path.endsWith('/api/chat/sessions')) {
+        if (isSessionListRequest(path, init)) {
+          return jsonResponse({ sessions: [] })
+        }
+        if (isSessionCreateRequest(path, init)) {
           return jsonResponse({ session_id: 'session-1' }, 201)
         }
         throw new Error(`Unexpected request: ${path}`)

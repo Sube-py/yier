@@ -37,6 +37,8 @@ class AppConfigService:
         self.web_root = self.yier_root / "web"
         self.settings_path = self.web_root / "settings.json"
         self.sessions_path = self.web_root / "sessions"
+        self.transcripts_path = self.web_root / "transcripts"
+        self.session_ui_path = self.web_root / "session_ui"
         self.prompt_history_path = self.web_root / "prompt_history.txt"
         self.mcp_config_path = self.yier_root / ".yier.json"
         self.ensure_storage()
@@ -45,6 +47,8 @@ class AppConfigService:
         self.yier_root.mkdir(parents=True, exist_ok=True)
         self.web_root.mkdir(parents=True, exist_ok=True)
         self.sessions_path.mkdir(parents=True, exist_ok=True)
+        self.transcripts_path.mkdir(parents=True, exist_ok=True)
+        self.session_ui_path.mkdir(parents=True, exist_ok=True)
 
     def default_allowed_roots(self) -> list[str]:
         defaults = [

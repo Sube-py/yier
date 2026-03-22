@@ -28,10 +28,18 @@ const HIDDEN_TOOL_TITLES = new Set([
   'wait_background_command',
   'stop_background_command',
   'send_background_command_input',
+  'start background command',
+  'list background commands',
+  'read background command',
+  'wait background command',
+  'stop background command',
+  'send background command input',
 ])
 
 const timelineBody = ref<HTMLElement | null>(null)
 const shouldStickToBottom = ref(true)
+const copiedActivityId = ref('')
+let copiedResetTimer: number | null = null
 const bottomThreshold = 72
 const timelineScrollPt = {
   contentContainer: {
@@ -66,11 +74,63 @@ function isShellActivity(activity: ChatActivity) {
   return Boolean(activity.shell)
 }
 
+function hasShellTranscript(activity: ChatActivity) {
+  return Boolean(activity.shell?.events.length)
+}
+
+function shellOutputTranscript(activity: ChatActivity) {
+  if (!activity.shell?.events.length) {
+    return ''
+  }
+
+  const lines: string[] = []
+  for (const event of activity.shell.events) {
+    if (event.type === 'started' || event.type === 'state_changed' || event.type === 'exit') {
+      continue
+    }
+    if (!event.text) {
+      continue
+    }
+
+    if (event.type === 'stdin') {
+      lines.push(`> ${event.text.replace(/\n$/, '')}`)
+      continue
+    }
+
+    lines.push(event.text.replace(/\n$/, ''))
+  }
+
+  return lines.filter((line) => line.length > 0).join('\n')
+}
+
 function shellRuntime(activity: ChatActivity) {
   if (!activity.shell?.process) {
     return ''
   }
   return `${activity.shell.process.runtime_seconds}s`
+}
+
+function isCopied(activityId: string) {
+  return copiedActivityId.value === activityId
+}
+
+async function copyShellCommand(activity: ChatActivity) {
+  const command = shellCommand(activity).trim()
+  if (!command) {
+    return
+  }
+
+  await navigator.clipboard.writeText(command)
+  copiedActivityId.value = activity.id
+  if (copiedResetTimer !== null) {
+    window.clearTimeout(copiedResetTimer)
+  }
+  copiedResetTimer = window.setTimeout(() => {
+    if (copiedActivityId.value === activity.id) {
+      copiedActivityId.value = ''
+    }
+    copiedResetTimer = null
+  }, 1600)
 }
 
 function activityMarkerClass(activity: ChatActivity) {
@@ -139,6 +199,15 @@ async function scrollToBottomIfNeeded() {
 onMounted(async () => {
   await scrollToBottomIfNeeded()
 })
+
+watch(
+  () => props.activities.map((activity) => activity.id),
+  (ids) => {
+    if (copiedActivityId.value && !ids.includes(copiedActivityId.value)) {
+      copiedActivityId.value = ''
+    }
+  },
+)
 
 watch(
   () => props.activities,
@@ -223,7 +292,7 @@ watch(
               <summary class="activity-summary">
                 <div class="activity-summary-copy">
                   <p class="activity-title">{{ slotProps.item.title }}</p>
-                  <p v-if="!isShellActivity(slotProps.item)" class="activity-detail">
+                  <p v-if="!isShellActivity(slotProps.item) && slotProps.item.detail" class="activity-detail">
                     {{ slotProps.item.detail }}
                   </p>
                 </div>
@@ -243,10 +312,35 @@ watch(
                   v-if="shellCommand(slotProps.item)"
                   class="activity-command activity-command--terminal"
                 >
-                  $ {{ shellCommand(slotProps.item) }}
+                  <span class="activity-command-text">$ {{ shellCommand(slotProps.item) }}</span>
+                  <button
+                    type="button"
+                    class="activity-command-copy"
+                    :aria-label="`Copy command ${shellCommand(slotProps.item)}`"
+                    @click="copyShellCommand(slotProps.item)"
+                  >
+                    {{ isCopied(slotProps.item.id) ? 'Copied' : 'Copy' }}
+                  </button>
                 </p>
 
-                <div v-if="slotProps.item.stdout" class="activity-stream activity-stream--terminal">
+                <div
+                  v-if="hasShellTranscript(slotProps.item)"
+                  class="activity-stream activity-stream--terminal"
+                >
+                  <ScrollPanel class="activity-stream-panel activity-stream-panel--terminal">
+                    <pre class="activity-stream-output">{{
+                      shellOutputTranscript(slotProps.item)
+                    }}</pre>
+                  </ScrollPanel>
+                  <span v-if="shellRuntime(slotProps.item)" class="activity-runtime">
+                    {{ shellRuntime(slotProps.item) }}
+                  </span>
+                </div>
+
+                <div
+                  v-if="!hasShellTranscript(slotProps.item) && slotProps.item.stdout"
+                  class="activity-stream activity-stream--terminal"
+                >
                   <ScrollPanel class="activity-stream-panel activity-stream-panel--terminal">
                     <pre class="activity-stream-output">{{ slotProps.item.stdout }}</pre>
                   </ScrollPanel>
@@ -256,13 +350,21 @@ watch(
                 </div>
 
                 <div
-                  v-if="slotProps.item.stderr"
+                  v-if="!hasShellTranscript(slotProps.item) && slotProps.item.stderr"
                   class="activity-stream activity-stream--stderr activity-stream--terminal"
                 >
                   <ScrollPanel class="activity-stream-panel activity-stream-panel--terminal">
                     <pre class="activity-stream-output">{{ slotProps.item.stderr }}</pre>
                   </ScrollPanel>
                 </div>
+
+                <p
+                  v-for="note in slotProps.item.meta"
+                  :key="`${slotProps.item.id}-${note}`"
+                  class="activity-meta"
+                >
+                  {{ note }}
+                </p>
               </div>
 
               <div v-else class="activity-body">

@@ -139,6 +139,54 @@ function backgroundCommandRaw(overrides: Record<string, unknown> = {}) {
   }
 }
 
+function skillLoadRaw(overrides: Record<string, unknown> = {}) {
+  return {
+    kind: 'skill_load',
+    name: 'codex-session-history',
+    description: 'Inspect Codex sessions',
+    location: '/tmp/skills/codex-session-history/SKILL.md',
+    directory: '/tmp/skills/codex-session-history',
+    sampled_files: ['scripts/list_codex_sessions.py', '_meta.json'],
+    sampled_file_locations: [
+      '/tmp/skills/codex-session-history/scripts/list_codex_sessions.py',
+      '/tmp/skills/codex-session-history/_meta.json',
+    ],
+    ...overrides,
+  }
+}
+
+function fileReadRaw(overrides: Record<string, unknown> = {}) {
+  return {
+    kind: 'file_read',
+    path: '/tmp/project/notes.md',
+    start_line: 1,
+    end_line: 4,
+    max_chars: 6000,
+    truncated: false,
+    lines: [
+      { number: 1, text: '# Notes' },
+      { number: 2, text: 'hello' },
+    ],
+    ...overrides,
+  }
+}
+
+function fileSearchRaw(overrides: Record<string, unknown> = {}) {
+  return {
+    kind: 'file_search',
+    path: '/tmp/project',
+    pattern: 'TODO',
+    regex: false,
+    case_sensitive: false,
+    include_hidden: false,
+    matches: [
+      { path: 'src/main.ts', line_number: 2, text: 'const note = "TODO"' },
+      { path: 'README.md', line_number: 8, text: '- TODO: document this' },
+    ],
+    ...overrides,
+  }
+}
+
 async function mountApp(initialPath = '/chat') {
   const router = createTestRouter()
   await router.push(initialPath)
@@ -158,6 +206,12 @@ describe('App', () => {
     localStorage.clear()
     vi.restoreAllMocks()
     MockEventSource.reset()
+    Object.defineProperty(navigator, 'clipboard', {
+      value: {
+        writeText: vi.fn().mockResolvedValue(undefined),
+      },
+      configurable: true,
+    })
     vi.stubGlobal(
       'ResizeObserver',
       class ResizeObserver {
@@ -529,7 +583,13 @@ describe('App', () => {
                   result: 'Command finished successfully.',
                   is_error: false,
                   iteration: 1,
-                  raw: shellCommandRaw(),
+                  metadata: {
+                    command: 'printf "hello"',
+                    cwd: '/tmp/project',
+                    exit_code: 0,
+                    timed_out: false,
+                  },
+                  raw: {},
                 },
               },
             ],
@@ -545,6 +605,8 @@ describe('App', () => {
     expect(wrapper.text()).toContain('Shell command')
     expect(wrapper.text()).toContain('printf "hello"')
     expect(wrapper.text()).toContain('hello')
+    expect(wrapper.text()).not.toContain('Command finished successfully.')
+    expect(wrapper.findAll('.activity-item')).toHaveLength(1)
   })
 
   it('renders a streamed assistant reply after submitting a message', async () => {
@@ -649,6 +711,637 @@ describe('App', () => {
     expect(wrapper.text()).not.toContain('Exit 0')
     expect(wrapper.text()).not.toContain('#3 exit 0 (completed)')
     expect(wrapper.findAll('.activity-item')).toHaveLength(1)
+  })
+
+  it('copies a shell command from the command bar', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const path = input.toString()
+        if (path.endsWith('/api/health')) {
+          return jsonResponse({
+            frontend: { ready: true, mode: 'static' },
+            llm: { ready: true },
+            mcp: { ready: true, runtime: {} },
+            allowed_roots: ['/tmp/project'],
+          })
+        }
+        if (path.endsWith('/api/config')) {
+          return jsonResponse({
+            llm: { base_url: 'https://example.test', model: 'demo', has_api_key: true },
+            allowed_roots: ['/tmp/project'],
+            mcp_runtime: {},
+          })
+        }
+        if (path.endsWith('/api/config/mcp')) {
+          return jsonResponse({ mcp_servers: {}, runtime: {} })
+        }
+        if (isSessionListRequest(path, init)) {
+          return jsonResponse({ sessions: [] })
+        }
+        if (isSessionCreateRequest(path, init)) {
+          return jsonResponse({ session_id: 'session-1' }, 201)
+        }
+        if (path.includes('/api/chat/sessions/')) {
+          return jsonResponse({ session_id: 'session-1', messages: [] })
+        }
+        if (path.endsWith('/api/chat/stream') && init?.method === 'POST') {
+          return sseResponse(
+            [
+              'event: run_started',
+              'data: {"session_id":"session-1"}',
+              '',
+              'event: tool_call_start',
+              'data: {"session_id":"session-1","tool_name":"run_command","tool_call_id":"call-1","arguments":{"command":"printf \\"hello\\"","cwd":"."},"iteration":1}',
+              '',
+              'event: command_start',
+              'data: {"session_id":"session-1","tool_call_id":"call-1","tool_name":"run_command","command":"printf \\"hello\\"","cwd":"/tmp/project","is_background":false}',
+              '',
+              'event: command_output',
+              'data: {"session_id":"session-1","tool_call_id":"call-1","tool_name":"run_command","stream":"stdout","content":"hello","is_background":false}',
+              '',
+              'event: command_end',
+              'data: {"session_id":"session-1","tool_call_id":"call-1","tool_name":"run_command","command":"printf \\"hello\\"","cwd":"/tmp/project","exit_code":0,"timed_out":false,"is_background":false}',
+              '',
+              'event: tool_call_end',
+              `data: ${JSON.stringify({
+                session_id: 'session-1',
+                tool_name: 'run_command',
+                tool_call_id: 'call-1',
+                result: 'Command finished successfully.',
+                is_error: false,
+                iteration: 1,
+                metadata: {
+                  command: 'printf "hello"',
+                  cwd: '/tmp/project',
+                  exit_code: 0,
+                },
+                raw: shellCommandRaw(),
+              })}`,
+              '',
+              'event: done',
+              'data: {"session_id":"session-1","finish_reason":"stop"}',
+              '',
+            ].join('\r\n'),
+          )
+        }
+        throw new Error(`Unexpected request: ${path}`)
+      }),
+    )
+
+    const wrapper = await mountApp()
+    await flushPromises()
+
+    const textarea = wrapper.get('textarea')
+    await textarea.setValue('Run the command')
+    const sendButton = wrapper.findAll('button').find((item) => item.text().includes('Send'))
+    expect(sendButton).toBeTruthy()
+    await sendButton!.trigger('click')
+    await flushPromises()
+
+    const copyButton = wrapper.find('.activity-command-copy')
+    expect(copyButton.exists()).toBe(true)
+    await copyButton.trigger('click')
+    await flushPromises()
+
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('printf "hello"')
+    expect(copyButton.text()).toBe('Copied')
+  })
+
+  it('renders compact digests for successful non-shell tools', async () => {
+    localStorage.setItem('yier.active-session-id', 'session-1')
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const path = input.toString()
+        if (path.endsWith('/api/health')) {
+          return jsonResponse({
+            frontend: { ready: true, mode: 'static' },
+            llm: { ready: true },
+            mcp: { ready: true, runtime: {} },
+            allowed_roots: ['/tmp/project'],
+          })
+        }
+        if (path.endsWith('/api/config')) {
+          return jsonResponse({
+            llm: { base_url: 'https://example.test', model: 'demo', has_api_key: true },
+            allowed_roots: ['/tmp/project'],
+            mcp_runtime: {},
+          })
+        }
+        if (path.endsWith('/api/config/mcp')) {
+          return jsonResponse({ mcp_servers: {}, runtime: {} })
+        }
+        if (isSessionListRequest(path, init)) {
+          return jsonResponse({
+            sessions: [
+              {
+                session_id: 'session-1',
+                title: 'digest tools',
+                preview: 'Done.',
+                updated_at: 123,
+                message_count: 2,
+              },
+            ],
+          })
+        }
+        if (path.includes('/api/chat/sessions/')) {
+          return jsonResponse({
+            session_id: 'session-1',
+            messages: [
+              { role: 'user', content: 'inspect tools' },
+              { role: 'assistant', content: 'Done.' },
+            ],
+            activity_events: [
+              {
+                event: 'tool_call_start',
+                data: {
+                  session_id: 'session-1',
+                  tool_name: 'skill_load',
+                  tool_call_id: 'tool-1',
+                  arguments: { name: 'codex-session-history' },
+                  iteration: 1,
+                },
+              },
+              {
+                event: 'tool_call_end',
+                data: {
+                  session_id: 'session-1',
+                  tool_name: 'skill_load',
+                  tool_call_id: 'tool-1',
+                  result: 'Loaded skill content',
+                  is_error: false,
+                  iteration: 1,
+                  raw: skillLoadRaw(),
+                },
+              },
+              {
+                event: 'tool_call_start',
+                data: {
+                  session_id: 'session-1',
+                  tool_name: 'read_file',
+                  tool_call_id: 'tool-2',
+                  arguments: { path: '/tmp/project/notes.md' },
+                  iteration: 2,
+                },
+              },
+              {
+                event: 'tool_call_end',
+                data: {
+                  session_id: 'session-1',
+                  tool_name: 'read_file',
+                  tool_call_id: 'tool-2',
+                  result: 'Read file',
+                  is_error: false,
+                  iteration: 2,
+                  raw: fileReadRaw(),
+                },
+              },
+              {
+                event: 'tool_call_start',
+                data: {
+                  session_id: 'session-1',
+                  tool_name: 'search_files',
+                  tool_call_id: 'tool-3',
+                  arguments: { path: '/tmp/project', pattern: 'TODO' },
+                  iteration: 3,
+                },
+              },
+              {
+                event: 'tool_call_end',
+                data: {
+                  session_id: 'session-1',
+                  tool_name: 'search_files',
+                  tool_call_id: 'tool-3',
+                  result: 'Found matches',
+                  is_error: false,
+                  iteration: 3,
+                  raw: fileSearchRaw(),
+                },
+              },
+            ],
+          })
+        }
+        throw new Error(`Unexpected request: ${path}`)
+      }),
+    )
+
+    const wrapper = await mountApp()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Loaded skill codex-session-history with 2 sampled files.')
+    expect(wrapper.text()).toContain('Read notes.md lines 1-4.')
+    expect(wrapper.text()).toContain('Found 2 matches for "TODO" in project.')
+    expect(wrapper.text()).not.toContain('<skill_content')
+    expect(wrapper.text()).not.toContain('"path": "/tmp/project/notes.md"')
+    expect(wrapper.text()).not.toContain('"pattern": "TODO"')
+  })
+
+  it('falls back to a compact summary when skill_load raw is missing', async () => {
+    localStorage.setItem('yier.active-session-id', 'session-1')
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const path = input.toString()
+        if (path.endsWith('/api/health')) {
+          return jsonResponse({
+            frontend: { ready: true, mode: 'static' },
+            llm: { ready: true },
+            mcp: { ready: true, runtime: {} },
+            allowed_roots: ['/tmp/project'],
+          })
+        }
+        if (path.endsWith('/api/config')) {
+          return jsonResponse({
+            llm: { base_url: 'https://example.test', model: 'demo', has_api_key: true },
+            allowed_roots: ['/tmp/project'],
+            mcp_runtime: {},
+          })
+        }
+        if (path.endsWith('/api/config/mcp')) {
+          return jsonResponse({ mcp_servers: {}, runtime: {} })
+        }
+        if (isSessionListRequest(path, init)) {
+          return jsonResponse({
+            sessions: [
+              {
+                session_id: 'session-1',
+                title: 'load skill',
+                preview: 'Done.',
+                updated_at: 123,
+                message_count: 1,
+              },
+            ],
+          })
+        }
+        if (path.includes('/api/chat/sessions/')) {
+          return jsonResponse({
+            session_id: 'session-1',
+            messages: [{ role: 'user', content: 'load a skill' }],
+            activity_events: [
+              {
+                event: 'tool_call_start',
+                data: {
+                  session_id: 'session-1',
+                  tool_name: 'skill_load',
+                  tool_call_id: 'tool-1',
+                  arguments: { name: 'codex-session-history' },
+                  iteration: 1,
+                },
+              },
+              {
+                event: 'tool_call_end',
+                data: {
+                  session_id: 'session-1',
+                  tool_name: 'skill_load',
+                  tool_call_id: 'tool-1',
+                  result:
+                    '<skill_content name="codex-session-history">\n# Skill: codex-session-history\n<skill_files>\n<file>a</file>\n<file>b</file>\n</skill_files>\n</skill_content>',
+                  is_error: false,
+                  iteration: 1,
+                  metadata: {
+                    name: 'codex-session-history',
+                    dir: '/tmp/skills/codex-session-history',
+                  },
+                  raw: {},
+                },
+              },
+            ],
+          })
+        }
+        throw new Error(`Unexpected request: ${path}`)
+      }),
+    )
+
+    const wrapper = await mountApp()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Load skill')
+    expect(wrapper.text()).toContain('Loaded skill codex-session-history with 2 sampled files.')
+    expect(wrapper.text()).not.toContain('<skill_content')
+    expect(wrapper.text()).not.toContain('# Skill: codex-session-history')
+  })
+
+  it('does not create a duplicate digest card for shell tools when raw is empty', async () => {
+    localStorage.setItem('yier.active-session-id', 'session-1')
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const path = input.toString()
+        if (path.endsWith('/api/health')) {
+          return jsonResponse({
+            frontend: { ready: true, mode: 'static' },
+            llm: { ready: true },
+            mcp: { ready: true, runtime: {} },
+            allowed_roots: ['/tmp/project'],
+          })
+        }
+        if (path.endsWith('/api/config')) {
+          return jsonResponse({
+            llm: { base_url: 'https://example.test', model: 'demo', has_api_key: true },
+            allowed_roots: ['/tmp/project'],
+            mcp_runtime: {},
+          })
+        }
+        if (path.endsWith('/api/config/mcp')) {
+          return jsonResponse({ mcp_servers: {}, runtime: {} })
+        }
+        if (isSessionListRequest(path, init)) {
+          return jsonResponse({
+            sessions: [
+              {
+                session_id: 'session-1',
+                title: 'run something',
+                preview: 'Done.',
+                updated_at: 123,
+                message_count: 2,
+              },
+            ],
+          })
+        }
+        if (path.includes('/api/chat/sessions/')) {
+          return jsonResponse({
+            session_id: 'session-1',
+            messages: [
+              { role: 'user', content: 'run something' },
+              { role: 'assistant', content: 'Done.' },
+            ],
+            activity_events: [
+              {
+                event: 'tool_call_start',
+                data: {
+                  session_id: 'session-1',
+                  tool_name: 'run_command',
+                  tool_call_id: 'call-1',
+                  arguments: {
+                    command: 'printf "hello"',
+                    cwd: '/tmp/project',
+                  },
+                  iteration: 1,
+                },
+              },
+              {
+                event: 'command_start',
+                data: {
+                  session_id: 'session-1',
+                  tool_call_id: 'call-1',
+                  tool_name: 'run_command',
+                  command: 'printf "hello"',
+                  cwd: '/tmp/project',
+                  is_background: false,
+                },
+              },
+              {
+                event: 'command_output',
+                data: {
+                  session_id: 'session-1',
+                  tool_call_id: 'call-1',
+                  tool_name: 'run_command',
+                  stream: 'stdout',
+                  content: 'hello\n',
+                  is_background: false,
+                },
+              },
+              {
+                event: 'command_end',
+                data: {
+                  session_id: 'session-1',
+                  tool_call_id: 'call-1',
+                  tool_name: 'run_command',
+                  command: 'printf "hello"',
+                  cwd: '/tmp/project',
+                  exit_code: 0,
+                  timed_out: false,
+                  is_background: false,
+                },
+              },
+              {
+                event: 'tool_call_end',
+                data: {
+                  session_id: 'session-1',
+                  tool_name: 'run_command',
+                  tool_call_id: 'call-1',
+                  result: 'Command: printf "hello"\nWorking directory: /tmp/project\nExit code: 0',
+                  is_error: false,
+                  iteration: 1,
+                  metadata: {
+                    command: 'printf "hello"',
+                    cwd: '/tmp/project',
+                    exit_code: 0,
+                    timed_out: false,
+                  },
+                  raw: {},
+                },
+              },
+            ],
+          })
+        }
+        throw new Error(`Unexpected request: ${path}`)
+      }),
+    )
+
+    const wrapper = await mountApp()
+    await flushPromises()
+
+    expect(wrapper.findAll('.activity-item')).toHaveLength(1)
+    expect(wrapper.text()).toContain('Shell command')
+    expect(wrapper.text()).toContain('$ printf "hello"')
+    expect(wrapper.text()).toContain('hello')
+    expect(wrapper.text()).not.toContain('Working directory: /tmp/project')
+    expect(wrapper.text()).not.toContain('Exit code: 0')
+  })
+
+  it('keeps tool errors visible while hiding background list noise', async () => {
+    localStorage.setItem('yier.active-session-id', 'session-1')
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const path = input.toString()
+        if (path.endsWith('/api/health')) {
+          return jsonResponse({
+            frontend: { ready: true, mode: 'static' },
+            llm: { ready: true },
+            mcp: { ready: true, runtime: {} },
+            allowed_roots: ['/tmp/project'],
+          })
+        }
+        if (path.endsWith('/api/config')) {
+          return jsonResponse({
+            llm: { base_url: 'https://example.test', model: 'demo', has_api_key: true },
+            allowed_roots: ['/tmp/project'],
+            mcp_runtime: {},
+          })
+        }
+        if (path.endsWith('/api/config/mcp')) {
+          return jsonResponse({ mcp_servers: {}, runtime: {} })
+        }
+        if (isSessionListRequest(path, init)) {
+          return jsonResponse({
+            sessions: [
+              {
+                session_id: 'session-1',
+                title: 'tool errors',
+                preview: 'Oops.',
+                updated_at: 123,
+                message_count: 1,
+              },
+            ],
+          })
+        }
+        if (path.includes('/api/chat/sessions/')) {
+          return jsonResponse({
+            session_id: 'session-1',
+            messages: [{ role: 'user', content: 'inspect tools' }],
+            activity_events: [
+              {
+                event: 'tool_call_start',
+                data: {
+                  session_id: 'session-1',
+                  tool_name: 'list_background_commands',
+                  tool_call_id: 'tool-bg',
+                  arguments: { include_completed: true },
+                  iteration: 1,
+                },
+              },
+              {
+                event: 'tool_call_end',
+                data: {
+                  session_id: 'session-1',
+                  tool_name: 'list_background_commands',
+                  tool_call_id: 'tool-bg',
+                  result: 'No background commands.',
+                  is_error: false,
+                  iteration: 1,
+                  metadata: { count: 0, running_count: 0 },
+                  raw: {
+                    kind: 'background_command',
+                    sessions: [],
+                  },
+                },
+              },
+              {
+                event: 'tool_call_start',
+                data: {
+                  session_id: 'session-1',
+                  tool_name: 'read_file',
+                  tool_call_id: 'tool-err',
+                  arguments: { path: '/tmp/project/missing.md' },
+                  iteration: 2,
+                },
+              },
+              {
+                event: 'tool_call_end',
+                data: {
+                  session_id: 'session-1',
+                  tool_name: 'read_file',
+                  tool_call_id: 'tool-err',
+                  result: 'Execution error: File not found: /tmp/project/missing.md',
+                  is_error: true,
+                  iteration: 2,
+                  raw: {},
+                },
+              },
+            ],
+          })
+        }
+        throw new Error(`Unexpected request: ${path}`)
+      }),
+    )
+
+    const wrapper = await mountApp()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('File not found: missing.md.')
+    expect(wrapper.text()).not.toContain('No background commands.')
+    expect(wrapper.text()).not.toContain('Shell command')
+    expect(wrapper.findAll('.activity-item')).toHaveLength(1)
+  })
+
+  it('compresses read_file allowed-roots errors into a short message', async () => {
+    localStorage.setItem('yier.active-session-id', 'session-1')
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const path = input.toString()
+        if (path.endsWith('/api/health')) {
+          return jsonResponse({
+            frontend: { ready: true, mode: 'static' },
+            llm: { ready: true },
+            mcp: { ready: true, runtime: {} },
+            allowed_roots: ['/tmp/project'],
+          })
+        }
+        if (path.endsWith('/api/config')) {
+          return jsonResponse({
+            llm: { base_url: 'https://example.test', model: 'demo', has_api_key: true },
+            allowed_roots: ['/tmp/project'],
+            mcp_runtime: {},
+          })
+        }
+        if (path.endsWith('/api/config/mcp')) {
+          return jsonResponse({ mcp_servers: {}, runtime: {} })
+        }
+        if (isSessionListRequest(path, init)) {
+          return jsonResponse({
+            sessions: [
+              {
+                session_id: 'session-1',
+                title: 'read file',
+                preview: 'Blocked.',
+                updated_at: 123,
+                message_count: 1,
+              },
+            ],
+          })
+        }
+        if (path.includes('/api/chat/sessions/')) {
+          return jsonResponse({
+            session_id: 'session-1',
+            messages: [{ role: 'user', content: 'read a file' }],
+            activity_events: [
+              {
+                event: 'tool_call_start',
+                data: {
+                  session_id: 'session-1',
+                  tool_name: 'read_file',
+                  tool_call_id: 'tool-1',
+                  arguments: {
+                    path: '/Users/sube/.codex/sessions/demo.jsonl',
+                  },
+                  iteration: 1,
+                },
+              },
+              {
+                event: 'tool_call_end',
+                data: {
+                  session_id: 'session-1',
+                  tool_name: 'read_file',
+                  tool_call_id: 'tool-1',
+                  result:
+                    'Execution error: Path is outside allowed roots: /Users/sube/.codex/sessions/demo.jsonl. Allowed roots: /tmp/project, /tmp/docs, /tmp/more',
+                  is_error: true,
+                  iteration: 1,
+                  raw: {},
+                },
+              },
+            ],
+          })
+        }
+        throw new Error(`Unexpected request: ${path}`)
+      }),
+    )
+
+    const wrapper = await mountApp()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Read file')
+    expect(wrapper.text()).toContain("Can't read demo.jsonl because it is outside allowed roots.")
+    expect(wrapper.text()).not.toContain('Allowed roots: /tmp/project, /tmp/docs, /tmp/more')
   })
 
   it('renders settings in the shared workspace via routing', async () => {

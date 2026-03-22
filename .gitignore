@@ -12,3 +12,4 @@ wheels/
 
 # macOS
 .DS_Store
+.playwright-cli/

@@ -122,7 +122,7 @@ export interface ChatToolEndEvent {
     is_error: boolean
     iteration: number
     metadata?: Record<string, unknown>
-    raw?: Record<string, unknown>
+    raw?: ToolRawPayload | Record<string, unknown>
   }
 }
 
@@ -169,6 +169,177 @@ export interface ShellRawPayload {
   }
   events_truncated: boolean
   dropped_event_count: number
+}
+
+export interface BackgroundCommandSessionSummary {
+  session_id: string
+  command: string
+  cwd: string
+  state: string
+  exit_code: number | null
+  runtime_seconds: number
+}
+
+export interface BackgroundCommandListRawPayload {
+  kind: 'background_command'
+  sessions: BackgroundCommandSessionSummary[]
+}
+
+export interface FileReadLineRecord {
+  number: number
+  text: string
+}
+
+export interface FileReadRawPayload {
+  kind: 'file_read'
+  path: string
+  start_line: number
+  end_line: number
+  max_chars: number
+  truncated: boolean
+  lines: FileReadLineRecord[]
+}
+
+export interface FileListEntry {
+  path: string
+  type: 'directory' | 'file'
+}
+
+export interface FileListRawPayload {
+  kind: 'file_list'
+  path: string
+  recursive: boolean
+  include_hidden: boolean
+  max_entries: number
+  entries: FileListEntry[]
+}
+
+export interface FileSearchMatch {
+  path: string
+  line_number: number
+  text: string
+}
+
+export interface FileSearchRawPayload {
+  kind: 'file_search'
+  path: string
+  pattern: string
+  regex: boolean
+  case_sensitive: boolean
+  include_hidden: boolean
+  matches: FileSearchMatch[]
+}
+
+export interface FileWriteRawPayload {
+  kind: 'file_write'
+  path: string
+  append: boolean
+  create_directories: boolean
+  chars_written: number
+}
+
+export interface FileReplaceRawPayload {
+  kind: 'file_replace'
+  path: string
+  replaced_count: number
+  replace_all: boolean
+  old_text: string
+  new_text: string
+}
+
+export interface SkillLoadRawPayload {
+  kind: 'skill_load'
+  name: string
+  description: string
+  location: string
+  directory: string
+  sampled_files: string[]
+  sampled_file_locations: string[]
+}
+
+export interface TodoStatusCounts {
+  pending: number
+  in_progress: number
+  completed: number
+}
+
+export interface TodoRecord {
+  id?: string | null
+  content: string
+  activeForm: string
+  status: 'pending' | 'in_progress' | 'completed'
+}
+
+export interface TodoListRawPayload {
+  kind: 'todo_list'
+  session_id: string
+  total: number
+  status_counts: TodoStatusCounts
+  todos: TodoRecord[]
+}
+
+export interface TodoUpdateRawPayload {
+  kind: 'todo_update'
+  session_id: string
+  total: number
+  status_counts: TodoStatusCounts
+  todos: TodoRecord[]
+}
+
+export interface McpContentItem {
+  index: number
+  kind: string
+  text?: string | null
+  mime_type?: string | null
+  uri?: string | null
+  data?: string | null
+}
+
+export interface McpToolResultRawPayload {
+  kind: 'mcp_tool_result'
+  tool_name: string
+  arguments: Record<string, unknown>
+  is_error: boolean
+  contents: McpContentItem[]
+}
+
+export interface SubagentFinalMessage {
+  role?: string
+  content?: string | null
+  reasoning_content?: string | null
+}
+
+export interface SubagentResultRawPayload {
+  kind: 'subagent_result'
+  sub_session_id: string
+  finish_reason: string
+  message_count: number
+  tool_summary: string
+  final_message: SubagentFinalMessage
+}
+
+export type ToolRawPayload =
+  | ShellRawPayload
+  | BackgroundCommandListRawPayload
+  | FileReadRawPayload
+  | FileListRawPayload
+  | FileSearchRawPayload
+  | FileWriteRawPayload
+  | FileReplaceRawPayload
+  | SkillLoadRawPayload
+  | TodoListRawPayload
+  | TodoUpdateRawPayload
+  | McpToolResultRawPayload
+  | SubagentResultRawPayload
+
+export type ToolDigestRawPayload = Exclude<ToolRawPayload, ShellRawPayload>
+
+export interface ToolActivityState {
+  raw: ToolDigestRawPayload | null
+  metadata: Record<string, unknown>
+  arguments: Record<string, unknown>
+  result: string
+  is_error: boolean
 }
 
 export interface ShellActivityState {
@@ -365,6 +536,7 @@ export interface ChatActivity {
   stderr: string
   meta: string[]
   shell: ShellActivityState | null
+  tool: ToolActivityState | null
 }
 
 export interface EditableMcpServer {

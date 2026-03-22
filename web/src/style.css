@@ -661,12 +661,46 @@ select {
 }
 
 .activity-command--terminal {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
   padding: 0.85rem 1rem;
   border-radius: 0.85rem 0.85rem 0 0;
   background: linear-gradient(180deg, rgba(16, 33, 37, 0.98), rgba(21, 43, 48, 0.98));
   color: #f7fffc;
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
   text-shadow: 0 1px 1px rgba(0, 0, 0, 0.28);
+}
+
+.activity-command-text {
+  min-width: 0;
+  flex: 1;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.activity-command-copy {
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 999px;
+  padding: 0.28rem 0.7rem;
+  background: rgba(255, 255, 255, 0.12);
+  color: #f7fffc;
+  font-size: 0.76rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    background-color 120ms ease,
+    transform 120ms ease;
+}
+
+.activity-command-copy:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.activity-command-copy:active {
+  transform: translateY(1px);
 }
 
 .activity-meta,

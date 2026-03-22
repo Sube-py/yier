@@ -21,6 +21,7 @@ import {
   streamChat,
 } from './lib/api'
 import type {
+  BackgroundCommandListRawPayload,
   ChatActivity,
   ChatStreamDoneEvent,
   ChatStreamEvent,
@@ -39,6 +40,9 @@ import type {
   ShellProcessSnapshot,
   ShellRawPayload,
   StoredMessage,
+  ToolActivityState,
+  ToolDigestRawPayload,
+  ToolRawPayload,
   UiChatMessage,
 } from './types/api'
 
@@ -326,31 +330,22 @@ function handleStreamEvent(event: ChatStreamEvent) {
   if (event.event === 'tool_call_start') {
     if (isShellToolName(event.data.tool_name)) {
       handleShellToolStart(event.data.tool_call_id, event.data.tool_name, event.data.arguments)
-      appendActivityMeta(
-        resolveShellActivityId(event.data.tool_call_id, event.data.tool_name, event.data.arguments),
-        `Iteration ${event.data.iteration}`,
-      )
       return
     }
 
-    upsertActivity(event.data.tool_call_id, {
-      id: event.data.tool_call_id,
-      kind: 'tool',
-      title: event.data.tool_name,
-      detail: formatToolArguments(event.data.arguments),
-      state: 'running',
-      command: '',
-      cwd: '',
-      stdout: '',
-      stderr: '',
-      meta: [`Iteration ${event.data.iteration}`],
-      shell: null,
-    })
+    upsertActivity(
+      event.data.tool_call_id,
+      makeToolDigestActivity({
+        toolCallId: event.data.tool_call_id,
+        toolName: event.data.tool_name,
+        argumentsValue: event.data.arguments,
+      }),
+    )
     return
   }
 
   if (event.event === 'tool_call_end') {
-    if (isShellToolName(event.data.tool_name) && isShellRawPayload(event.data.raw)) {
+    if (isShellToolName(event.data.tool_name) && isShellStreamRawPayload(event.data.raw)) {
       handleShellToolEnd(
         event.data.tool_call_id,
         event.data.tool_name,
@@ -358,24 +353,33 @@ function handleStreamEvent(event: ChatStreamEvent) {
         event.data.metadata ?? {},
         event.data.result,
         event.data.is_error,
-        event.data.iteration,
       )
       return
     }
 
-    upsertActivity(event.data.tool_call_id, {
-      id: event.data.tool_call_id,
-      kind: 'tool',
-      title: event.data.tool_name,
-      detail: event.data.result,
-      state: event.data.is_error ? 'error' : 'done',
-      command: '',
-      cwd: '',
-      stdout: '',
-      stderr: '',
-      meta: [`Iteration ${event.data.iteration}`],
-      shell: null,
-    })
+    if (isShellToolName(event.data.tool_name)) {
+      handleShellToolEndFallback(
+        event.data.tool_call_id,
+        event.data.tool_name,
+        event.data.metadata ?? {},
+        event.data.result,
+        event.data.is_error,
+      )
+      return
+    }
+
+    upsertActivity(
+      event.data.tool_call_id,
+      makeToolDigestActivity({
+        toolCallId: event.data.tool_call_id,
+        toolName: event.data.tool_name,
+        argumentsValue: {},
+        result: event.data.result,
+        isError: event.data.is_error,
+        metadata: event.data.metadata ?? {},
+        raw: toToolDigestRawPayload(event.data.raw),
+      }),
+    )
     return
   }
 
@@ -390,7 +394,7 @@ function handleStreamEvent(event: ChatStreamEvent) {
       cwd: event.data.cwd,
       stdout: '',
       stderr: '',
-      meta: [event.data.tool_name],
+      meta: [],
       shell: makeShellState({
         kind: 'shell_command',
         toolName: event.data.tool_name,
@@ -408,7 +412,15 @@ function handleStreamEvent(event: ChatStreamEvent) {
           runtime_seconds: 0,
           timed_out: false,
         },
+        events: [
+          buildShellEvent(0, 'started', {
+            command: event.data.command,
+            cwd: event.data.cwd,
+          }),
+        ],
+        latestEventIndex: 0,
       }),
+      tool: null,
     })
     return
   }
@@ -431,7 +443,7 @@ function handleStreamEvent(event: ChatStreamEvent) {
       cwd: event.data.cwd,
       stdout: '',
       stderr: '',
-      meta: [event.data.tool_name],
+      meta: [],
       shell: {
         kind: 'shell_command',
         tool_name: event.data.tool_name,
@@ -463,6 +475,7 @@ function handleStreamEvent(event: ChatStreamEvent) {
         events_truncated: false,
         dropped_event_count: 0,
       },
+      tool: null,
     })
     return
   }
@@ -481,7 +494,7 @@ function handleStreamEvent(event: ChatStreamEvent) {
       cwd: event.data.cwd,
       stdout: '',
       stderr: '',
-      meta: [event.data.tool_name],
+      meta: [],
       shell: makeShellState({
         kind: 'background_command',
         toolName: event.data.tool_name,
@@ -501,6 +514,7 @@ function handleStreamEvent(event: ChatStreamEvent) {
           timed_out: false,
         },
       }),
+      tool: null,
     })
     return
   }
@@ -562,6 +576,7 @@ function handleStreamEvent(event: ChatStreamEvent) {
         events_truncated: false,
         dropped_event_count: 0,
       },
+      tool: null,
     })
     return
   }
@@ -601,6 +616,7 @@ function handleStreamEvent(event: ChatStreamEvent) {
       stderr: '',
       meta: [`Triggered by ${event.data.background_session_id}`],
       shell: null,
+      tool: null,
     })
     return
   }
@@ -808,6 +824,7 @@ function makeActivity(
     stderr: overrides.stderr ?? '',
     meta: overrides.meta ?? [],
     shell: overrides.shell ?? null,
+    tool: overrides.tool ?? null,
   }
 }
 
@@ -840,7 +857,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function isShellRawPayload(value: unknown): value is ShellRawPayload {
+function isBackgroundCommandListRawPayload(value: unknown): value is BackgroundCommandListRawPayload {
+  return isRecord(value) && value.kind === 'background_command' && Array.isArray(value.sessions)
+}
+
+function isShellStreamRawPayload(value: unknown): value is ShellRawPayload {
   if (!isRecord(value)) {
     return false
   }
@@ -857,6 +878,320 @@ function isShellRawPayload(value: unknown): value is ShellRawPayload {
   )
 }
 
+function toToolRawPayload(value: unknown): ToolRawPayload | null {
+  if (!isRecord(value) || typeof value.kind !== 'string') {
+    return null
+  }
+
+  if (isShellStreamRawPayload(value) || isBackgroundCommandListRawPayload(value)) {
+    return value
+  }
+
+  switch (value.kind) {
+    case 'file_read':
+    case 'file_list':
+    case 'file_search':
+    case 'file_write':
+    case 'file_replace':
+    case 'skill_load':
+    case 'todo_list':
+    case 'todo_update':
+    case 'mcp_tool_result':
+    case 'subagent_result':
+      return value as unknown as ToolRawPayload
+    default:
+      return null
+  }
+}
+
+function toToolDigestRawPayload(value: unknown): ToolDigestRawPayload | null {
+  const raw = toToolRawPayload(value)
+  if (!raw || isShellStreamRawPayload(raw)) {
+    return null
+  }
+  return raw
+}
+
+function makeToolDigestActivity(options: {
+  toolCallId: string
+  toolName: string
+  argumentsValue: Record<string, unknown>
+  result?: string
+  isError?: boolean
+  metadata?: Record<string, unknown>
+  raw?: ToolDigestRawPayload | null
+}): ChatActivity {
+  const metadata = options.metadata ?? {}
+  const result = options.result ?? ''
+  const isError = options.isError ?? false
+  const raw = options.raw ?? null
+
+  return {
+    id: options.toolCallId,
+    kind: 'tool',
+    title: toolDisplayTitle(options.toolName),
+    detail: isError
+      ? summarizeToolError(options.toolName, result, options.argumentsValue)
+      : summarizeToolDigest(options.toolName, raw, metadata, result, options.argumentsValue),
+    state: isError ? 'error' : options.result ? 'done' : 'running',
+    command: '',
+    cwd: '',
+    stdout: '',
+    stderr: '',
+    meta: summarizeToolMeta(metadata, isError),
+    shell: null,
+    tool: makeToolActivityState({
+      raw,
+      metadata,
+      argumentsValue: options.argumentsValue,
+      result,
+      isError,
+    }),
+  }
+}
+
+function makeToolActivityState(options: {
+  raw: ToolDigestRawPayload | null
+  metadata: Record<string, unknown>
+  argumentsValue: Record<string, unknown>
+  result: string
+  isError: boolean
+}): ToolActivityState {
+  return {
+    raw: options.raw,
+    metadata: options.metadata,
+    arguments: options.argumentsValue,
+    result: options.result,
+    is_error: options.isError,
+  }
+}
+
+function toolDisplayTitle(toolName: string) {
+  switch (toolName) {
+    case 'skill_load':
+      return 'Load skill'
+    case 'read_file':
+      return 'Read file'
+    case 'list_files':
+      return 'List files'
+    case 'search_files':
+      return 'Search files'
+    case 'write_file':
+      return 'Write file'
+    case 'replace_in_file':
+      return 'Replace in file'
+    case 'todo_read':
+      return 'Read todos'
+    case 'todo_write':
+      return 'Update todos'
+    default:
+      return toolName.replace(/_/g, ' ')
+  }
+}
+
+function summarizeToolStart(toolName: string, argumentsValue: Record<string, unknown>) {
+  switch (toolName) {
+    case 'skill_load':
+      return typeof argumentsValue.name === 'string'
+        ? `Loading skill ${argumentsValue.name}.`
+        : 'Loading skill.'
+    case 'read_file':
+      return typeof argumentsValue.path === 'string'
+        ? `Reading ${displayNameForPath(argumentsValue.path)}.`
+        : 'Reading file.'
+    case 'list_files':
+      return typeof argumentsValue.path === 'string'
+        ? `Listing ${displayNameForPath(argumentsValue.path)}.`
+        : 'Listing files.'
+    case 'search_files':
+      return typeof argumentsValue.pattern === 'string'
+        ? `Searching for ${JSON.stringify(argumentsValue.pattern)}.`
+        : 'Searching files.'
+    case 'write_file':
+      return typeof argumentsValue.path === 'string'
+        ? `Writing ${displayNameForPath(argumentsValue.path)}.`
+        : 'Writing file.'
+    case 'replace_in_file':
+      return typeof argumentsValue.path === 'string'
+        ? `Updating ${displayNameForPath(argumentsValue.path)}.`
+        : 'Updating file.'
+    case 'todo_read':
+      return 'Loading todos.'
+    case 'todo_write':
+      return 'Updating todos.'
+    default:
+      return `Running ${toolName}.`
+  }
+}
+
+function summarizeToolDigest(
+  toolName: string,
+  raw: ToolDigestRawPayload | null,
+  metadata: Record<string, unknown>,
+  result: string,
+  argumentsValue: Record<string, unknown>,
+) {
+  if (!raw) {
+    return summarizeToolDigestFallback(toolName, result, metadata, argumentsValue)
+  }
+
+  if (isBackgroundCommandListRawPayload(raw)) {
+    if (!raw.sessions.length) {
+      return 'No background commands.'
+    }
+    const runningCount =
+      typeof metadata.running_count === 'number'
+        ? metadata.running_count
+        : raw.sessions.filter((session) => session.state === 'running').length
+    return `${raw.sessions.length} background command${raw.sessions.length === 1 ? '' : 's'}${runningCount ? `, ${runningCount} running` : ''}.`
+  }
+
+  switch (raw.kind) {
+    case 'skill_load':
+      return `Loaded skill ${raw.name} with ${raw.sampled_files.length} sampled file${raw.sampled_files.length === 1 ? '' : 's'}.`
+    case 'file_read':
+      return `Read ${displayNameForPath(raw.path)} lines ${raw.start_line}-${raw.end_line}${raw.truncated ? ' (truncated)' : ''}.`
+    case 'file_list':
+      return `Listed ${raw.entries.length} entr${raw.entries.length === 1 ? 'y' : 'ies'} in ${displayNameForPath(raw.path)}.`
+    case 'file_search':
+      return `Found ${raw.matches.length} match${raw.matches.length === 1 ? '' : 'es'} for ${JSON.stringify(raw.pattern)} in ${displayNameForPath(raw.path)}.`
+    case 'file_write':
+      return `${raw.append ? 'Appended' : 'Wrote'} ${raw.chars_written} chars to ${displayNameForPath(raw.path)}.`
+    case 'file_replace':
+      return `Updated ${displayNameForPath(raw.path)} with ${raw.replaced_count} replacement${raw.replaced_count === 1 ? '' : 's'}.`
+    case 'todo_list':
+    case 'todo_update':
+      return `${raw.total} todo${raw.total === 1 ? '' : 's'}: ${formatTodoCounts(raw.status_counts)}.`
+    case 'mcp_tool_result':
+      return `${raw.tool_name} returned ${raw.contents.length} content item${raw.contents.length === 1 ? '' : 's'}.`
+    case 'subagent_result':
+      return `Sub-agent ${raw.sub_session_id} finished with ${raw.finish_reason}.`
+    default:
+      return result || summarizeToolStart(toolName, argumentsValue)
+  }
+}
+
+function summarizeToolDigestFallback(
+  toolName: string,
+  result: string,
+  metadata: Record<string, unknown>,
+  argumentsValue: Record<string, unknown>,
+) {
+  if (toolName === 'skill_load') {
+    const skillName = extractSkillLoadName(result) ?? stringMetadata(metadata.name) ?? stringArgument(argumentsValue.name)
+    const sampledFileCount = extractSkillLoadFileCount(result)
+    if (skillName) {
+      if (sampledFileCount !== null) {
+        return `Loaded skill ${skillName} with ${sampledFileCount} sampled file${sampledFileCount === 1 ? '' : 's'}.`
+      }
+      return `Loaded skill ${skillName}.`
+    }
+  }
+
+  if (toolName === 'read_file') {
+    const filePath = extractReadFilePath(result) ?? stringArgument(argumentsValue.path)
+    if (filePath) {
+      return `Read ${displayNameForPath(filePath)}.`
+    }
+  }
+
+  return result || summarizeToolStart(toolName, argumentsValue)
+}
+
+function summarizeToolError(
+  toolName: string,
+  result: string,
+  argumentsValue: Record<string, unknown>,
+) {
+  if (!result) {
+    return summarizeToolStart(toolName, argumentsValue)
+  }
+
+  const normalized = result.replace(/^Execution error:\s*/i, '')
+
+  if (toolName === 'read_file') {
+    const blockedPath = extractBlockedPath(normalized) ?? stringArgument(argumentsValue.path)
+    if (normalized.startsWith('Path is outside allowed roots:')) {
+      return blockedPath
+        ? `Can't read ${displayNameForPath(blockedPath)} because it is outside allowed roots.`
+        : 'This file is outside allowed roots.'
+    }
+    if (normalized.startsWith('File not found:')) {
+      return blockedPath
+        ? `File not found: ${displayNameForPath(blockedPath)}.`
+        : 'File not found.'
+    }
+    if (normalized.startsWith('Path is not a file:')) {
+      return blockedPath
+        ? `${displayNameForPath(blockedPath)} is not a file.`
+        : 'The selected path is not a file.'
+    }
+  }
+
+  const fallbackPath = extractBlockedPath(normalized)
+  if (normalized.startsWith('Path is outside allowed roots:') && fallbackPath) {
+    return `${displayNameForPath(fallbackPath)} is outside allowed roots.`
+  }
+
+  return normalized
+}
+
+function summarizeToolMeta(metadata: Record<string, unknown>, isError: boolean) {
+  if (isError) {
+    return []
+  }
+
+  const notes: string[] = []
+  if (metadata.truncated === true) {
+    notes.push('Truncated')
+  }
+  return notes
+}
+
+function displayNameForPath(path: string) {
+  const parts = path.split('/').filter(Boolean)
+  if (!parts.length) {
+    return path
+  }
+  return parts[parts.length - 1] ?? path
+}
+
+function stringArgument(value: unknown) {
+  return typeof value === 'string' ? value : null
+}
+
+function stringMetadata(value: unknown) {
+  return typeof value === 'string' ? value : null
+}
+
+function extractSkillLoadName(result: string) {
+  const match = result.match(/<skill_content name="([^"]+)">/)
+  return match?.[1] ?? null
+}
+
+function extractSkillLoadFileCount(result: string) {
+  const matches = result.match(/<file>/g)
+  return matches ? matches.length : null
+}
+
+function extractReadFilePath(result: string) {
+  const match = result.match(/^File:\s+(.+)$/m)
+  return match?.[1]?.trim() ?? null
+}
+
+function extractBlockedPath(result: string) {
+  const match = result.match(/(?:Path is outside allowed roots:|File not found:|Path is not a file:)\s+(.+?)(?:\. Allowed roots:|$)/)
+  return match?.[1]?.trim() ?? null
+}
+
+function formatTodoCounts(counts: {
+  pending: number
+  in_progress: number
+  completed: number
+}) {
+  return `${counts.completed} completed, ${counts.in_progress} in progress, ${counts.pending} pending`
+}
+
 function makeShellState(options: {
   kind: ShellActivityState['kind']
   toolName: string
@@ -864,6 +1199,8 @@ function makeShellState(options: {
   request?: Record<string, unknown>
   sessionId?: string | null
   process?: ShellProcessSnapshot | null
+  events?: ShellEventEntry[]
+  latestEventIndex?: number | null
 }): ShellActivityState {
   return {
     kind: options.kind,
@@ -872,8 +1209,8 @@ function makeShellState(options: {
     session_id: options.sessionId ?? null,
     request: options.request ?? {},
     process: options.process ?? null,
-    events: [],
-    latest_event_index: null,
+    events: options.events ?? [],
+    latest_event_index: options.latestEventIndex ?? null,
     streams: {
       stdout: { text: '', truncated: false },
       stderr: { text: '', truncated: false },
@@ -881,6 +1218,25 @@ function makeShellState(options: {
     events_truncated: false,
     dropped_event_count: 0,
   }
+}
+
+function buildShellEvent(
+  index: number,
+  type: ShellEventEntry['type'],
+  payload: Omit<ShellEventEntry, 'index' | 'timestamp' | 'type'> = {},
+): ShellEventEntry {
+  return {
+    index,
+    timestamp: Date.now() / 1000,
+    type,
+    ...payload,
+  }
+}
+
+function nextShellEventIndex(shell: ShellActivityState | null) {
+  return shell?.latest_event_index === null || shell?.latest_event_index === undefined
+    ? 0
+    : shell.latest_event_index + 1
 }
 
 function normalizeShellRaw(
@@ -963,6 +1319,7 @@ function upsertActivity(activityId: string, nextValue: ChatActivity) {
     target.meta = dedupeMeta([...target.meta, ...nextValue.meta])
   }
   target.shell = nextValue.shell
+  target.tool = nextValue.tool
 }
 
 function upsertShellActivity(activityId: string, nextValue: ChatActivity) {
@@ -984,6 +1341,7 @@ function upsertShellActivity(activityId: string, nextValue: ChatActivity) {
     target.meta = dedupeMeta([...target.meta, ...nextValue.meta])
   }
   target.shell = mergeShellState(target.shell, nextValue.shell)
+  target.tool = nextValue.tool ?? target.tool
 }
 
 function rekeyActivity(sourceId: string, targetId: string) {
@@ -1023,19 +1381,35 @@ function appendActivityOutput(activityId: string, stream: 'stdout' | 'stderr', c
   if (stream === 'stdout') {
     target.stdout += content
     if (target.shell) {
+      const nextIndex = nextShellEventIndex(target.shell)
       target.shell.streams.stdout = {
         ...target.shell.streams.stdout,
         text: target.stdout,
       }
+      target.shell.events = mergeShellEvents(target.shell.events, [
+        buildShellEvent(nextIndex, 'stdout', {
+          text: content,
+          stream: 'stdout',
+        }),
+      ])
+      target.shell.latest_event_index = nextIndex
     }
     return
   }
   target.stderr += content
   if (target.shell) {
+    const nextIndex = nextShellEventIndex(target.shell)
     target.shell.streams.stderr = {
       ...target.shell.streams.stderr,
       text: target.stderr,
     }
+    target.shell.events = mergeShellEvents(target.shell.events, [
+      buildShellEvent(nextIndex, 'stderr', {
+        text: content,
+        stream: 'stderr',
+      }),
+    ])
+    target.shell.latest_event_index = nextIndex
   }
 }
 
@@ -1049,10 +1423,6 @@ function appendActivityMeta(activityId: string, note: string) {
 
 function dedupeMeta(values: string[]) {
   return [...new Set(values.filter((value) => value.trim()))]
-}
-
-function formatToolArguments(argumentsValue: Record<string, unknown>) {
-  return JSON.stringify(argumentsValue, null, 2)
 }
 
 function activityStateFromShell(
@@ -1079,12 +1449,15 @@ function shellDetailFromProcess(process: ShellProcessSnapshot | null, fallback: 
     return 'Running.'
   }
   if (process.timed_out) {
-    return `Timed out with exit code ${process.exit_code ?? 'unknown'}.`
+    return 'Timed out.'
+  }
+  if (process.exit_code === 0) {
+    return 'Completed successfully.'
   }
   if (process.exit_code === null) {
-    return `Finished with state ${process.state}.`
+    return `State: ${process.state}.`
   }
-  return `Finished with state ${process.state} and exit code ${process.exit_code}.`
+  return `Failed with exit code ${process.exit_code}.`
 }
 
 function shellTitle(kind: ShellActivityState['kind'], sessionId: string | null) {
@@ -1114,13 +1487,13 @@ function handleShellToolStart(
     id: activityId,
     kind: isBackground ? 'background' : 'command',
     title: shellTitle(isBackground ? 'background_command' : 'shell_command', sessionId),
-    detail: isBackground ? 'Background command update.' : 'Preparing shell command.',
+    detail: isBackground ? 'Waiting for background output.' : 'Preparing shell command.',
     state: 'running',
     command: typeof argumentsValue.command === 'string' ? argumentsValue.command : '',
     cwd: typeof argumentsValue.cwd === 'string' ? argumentsValue.cwd : '',
     stdout: '',
     stderr: '',
-    meta: [toolName],
+    meta: [],
     shell: makeShellState({
       kind: isBackground ? 'background_command' : 'shell_command',
       toolName,
@@ -1128,6 +1501,7 @@ function handleShellToolStart(
       request: argumentsValue,
       sessionId,
     }),
+    tool: null,
   })
 }
 
@@ -1138,7 +1512,6 @@ function handleShellToolEnd(
   metadata: Record<string, unknown>,
   result: string,
   isError: boolean,
-  iteration: number,
 ) {
   const shell = normalizeShellRaw(raw, toolName, toolCallId)
   const activityId =
@@ -1151,9 +1524,9 @@ function handleShellToolEnd(
     rekeyActivity(toolCallId, activityId)
   }
 
-  const meta = [toolName, `Iteration ${iteration}`]
+  const meta: string[] = []
   if (metadata.truncated === true) {
-    meta.push('Output truncated')
+    meta.push('Truncated')
   }
 
   upsertShellActivity(activityId, {
@@ -1168,6 +1541,106 @@ function handleShellToolEnd(
     stderr: raw.streams.stderr.text,
     meta,
     shell,
+    tool: null,
+  })
+}
+
+function handleShellToolEndFallback(
+  toolCallId: string,
+  toolName: string,
+  metadata: Record<string, unknown>,
+  result: string,
+  isError: boolean,
+) {
+  const activityId = backgroundActivityIdsByToolCallId.get(toolCallId) ?? toolCallId
+  const existing = activities.value.find((item) => item.id === activityId)
+  const shell = existing?.shell
+  const kind = shell?.kind ?? (BACKGROUND_SHELL_TOOL_NAMES.has(toolName) ? 'background_command' : 'shell_command')
+  const sessionId =
+    typeof metadata.session_id === 'string'
+      ? metadata.session_id
+      : (shell?.session_id ?? null)
+  const exitCode =
+    typeof metadata.exit_code === 'number' ? metadata.exit_code : (shell?.process?.exit_code ?? null)
+  const timedOut =
+    metadata.timed_out === true || shell?.process?.timed_out === true
+  const state =
+    typeof metadata.state === 'string'
+      ? metadata.state
+      : timedOut
+        ? 'timed_out'
+        : exitCode === 0
+          ? 'completed'
+          : exitCode === null
+            ? (shell?.process?.state ?? 'running')
+            : 'failed'
+
+  const nextEvents: ShellEventEntry[] = []
+  if (state !== 'running' && shell) {
+    const stateIndex = nextShellEventIndex(shell)
+    nextEvents.push(buildShellEvent(stateIndex, 'state_changed', { state }))
+    nextEvents.push(
+      buildShellEvent(stateIndex + 1, 'exit', {
+        state,
+        exit_code: exitCode ?? undefined,
+        timed_out: timedOut,
+      }),
+    )
+  }
+
+  upsertShellActivity(activityId, {
+    id: activityId,
+    kind: kind === 'background_command' ? 'background' : 'command',
+    title: shellTitle(kind, sessionId),
+    detail: isError ? result : '',
+    state: isError ? 'error' : activityStateFromShell(
+      {
+        session_id: sessionId,
+        state,
+        exit_code: exitCode,
+        started_at: shell?.process?.started_at ?? 0,
+        finished_at: state === 'running' ? null : Date.now() / 1000,
+        runtime_seconds: shell?.process?.runtime_seconds ?? 0,
+        timed_out: timedOut,
+      },
+      isError,
+    ),
+    command:
+      typeof metadata.command === 'string'
+        ? metadata.command
+        : (existing?.command ?? shellCommandFromRequest(shell?.request ?? {}, '')),
+    cwd:
+      typeof metadata.cwd === 'string'
+        ? metadata.cwd
+        : (existing?.cwd ?? shellCwdFromRequest(shell?.request ?? {}, '')),
+    stdout: existing?.stdout ?? '',
+    stderr: existing?.stderr ?? '',
+    meta: metadata.truncated === true ? ['Truncated'] : [],
+    shell: makeShellState({
+      kind,
+      toolName,
+      toolCallId,
+      request: {
+        ...(shell?.request ?? {}),
+        ...(typeof metadata.command === 'string' ? { command: metadata.command } : {}),
+        ...(typeof metadata.cwd === 'string' ? { cwd: metadata.cwd } : {}),
+      },
+      sessionId,
+      process: {
+        session_id: sessionId,
+        state,
+        exit_code: exitCode,
+        started_at: shell?.process?.started_at ?? 0,
+        finished_at: state === 'running' ? null : Date.now() / 1000,
+        runtime_seconds: shell?.process?.runtime_seconds ?? 0,
+        timed_out: timedOut,
+      },
+      events: nextEvents,
+      latestEventIndex: nextEvents.length
+        ? nextEvents[nextEvents.length - 1]?.index ?? shell?.latest_event_index ?? null
+        : (shell?.latest_event_index ?? null),
+    }),
+    tool: null,
   })
 }
 

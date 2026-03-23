@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +21,7 @@ from yier_web.chat import ChatService
 from yier_web.config import AppConfigService, MCPValidationError
 from yier_web.event_stream import EventStreamBroker
 from yier_web.frontend import FrontendService
-from yier_web.schemas import MCPRuntimeEntry, SaveLLMRequest
+from yier_web.schemas import MCPRuntimeEntry, SaveLLMRequest, StoredLLMSettings
 from yier_web.tool_events import reset_tool_event_emitter, set_tool_event_emitter
 
 
@@ -286,10 +287,74 @@ def test_llm_settings_are_saved_and_masked(tmp_path: Path) -> None:
     assert stored.llm.api_key == "secret-token"
 
     public = service.build_public_config({})
+    assert public.llm.provider == ""
     assert public.llm.base_url == "https://example.test/v1"
     assert public.llm.model == "demo-model"
     assert public.llm.has_api_key is True
     assert "api_key" not in public.model_dump()["llm"]
+
+
+def test_llm_preset_settings_allow_blank_base_url(tmp_path: Path) -> None:
+    service = AppConfigService(project_root=tmp_path / "project", home_dir=tmp_path / "home")
+    service.save_llm_settings(
+        SaveLLMRequest(
+            provider="zai-coding-plan",
+            base_url="",
+            model="glm-4.7-flash",
+            api_key="secret-token",
+        )
+    )
+
+    stored = service.load_web_settings()
+    assert stored.llm.provider == "zai-coding-plan"
+    assert stored.llm.base_url == ""
+    assert stored.llm.is_ready is True
+
+    public = service.build_public_config({})
+    assert public.llm.provider == "zai-coding-plan"
+    assert public.llm.base_url == ""
+    assert public.llm.model == "glm-4.7-flash"
+    assert public.llm.has_api_key is True
+
+
+def test_llm_settings_infer_legacy_zai_provider_without_rewriting_file(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir(parents=True)
+    service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
+    service.settings_path.write_text(
+        json.dumps(
+            {
+                "llm": {
+                    "base_url": "https://api.z.ai/api/coding/paas/v4",
+                    "api_key": "secret-token",
+                    "model": "glm-4.7-flash",
+                },
+                "allowed_roots": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    stored = service.load_web_settings()
+
+    assert stored.llm.provider == "zai-coding-plan"
+    assert stored.llm.base_url == "https://api.z.ai/api/coding/paas/v4"
+
+    persisted = json.loads(service.settings_path.read_text(encoding="utf-8"))
+    assert persisted["llm"].get("provider") is None
+
+
+def test_stored_llm_settings_require_base_url_only_for_custom_provider() -> None:
+    assert StoredLLMSettings(base_url="", api_key="secret", model="demo").is_ready is False
+    assert (
+        StoredLLMSettings(
+            provider="zai-coding-plan",
+            base_url="",
+            api_key="secret",
+            model="glm-4.7-flash",
+        ).is_ready
+        is True
+    )
 
 
 def test_allowed_roots_are_saved_normalized_and_defaulted(tmp_path: Path) -> None:
@@ -361,17 +426,20 @@ def test_api_endpoints_cover_config_session_and_stream(tmp_path: Path) -> None:
     with build_test_client(tmp_path) as client:
         config_response = client.get("/api/config")
         assert config_response.status_code == 200
+        assert config_response.json()["llm"]["provider"] == ""
         assert config_response.json()["llm"]["has_api_key"] is False
 
         save_response = client.put(
             "/api/config/llm",
             json={
+                "provider": "zai-coding-plan",
                 "base_url": "https://example.test/v1",
                 "model": "demo-model",
                 "api_key": "secret-token",
             },
         )
         assert save_response.status_code == 200
+        assert save_response.json()["llm"]["provider"] == "zai-coding-plan"
         assert save_response.json()["llm"]["has_api_key"] is True
 
         roots_response = client.put(
@@ -452,6 +520,29 @@ def test_chat_service_skips_llm_construction_without_saved_credentials(
 
     asyncio.run(chat_service.start())
     assert chat_service._agent is None
+
+
+def test_chat_service_build_llm_passes_provider_and_optional_base_url(tmp_path: Path) -> None:
+    service = AppConfigService(project_root=tmp_path / "project", home_dir=tmp_path / "home")
+    chat_service = ChatService(
+        project_root=tmp_path / "project",
+        config_service=service,
+        mcp_manager=FakeMCPManager(),  # type: ignore[arg-type]
+    )
+
+    llm = chat_service._build_llm(
+        StoredLLMSettings(
+            provider="zai-coding-plan",
+            base_url="",
+            api_key="secret-token",
+            model="glm-4.7-flash",
+        )
+    )
+
+    assert llm.provider == "zai-coding-plan"
+    assert llm.base_url == "https://api.z.ai/api/coding/paas/v4"
+    assert llm.api_key == "secret-token"
+    assert llm.model == "glm-4.7-flash"
 
 
 def test_chat_service_run_command_tool_supports_shell_pipes(

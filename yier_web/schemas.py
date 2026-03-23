@@ -14,16 +14,26 @@ MCPRuntimeStatus = Literal[
 ]
 FrontendMode = Literal["proxy", "static", "missing"]
 SessionSource = Literal["chat", "channel"]
+LLMProvider = Literal["", "zai", "zai-coding-plan"]
 
 
 class StoredLLMSettings(BaseModel):
+    provider: LLMProvider = ""
     base_url: str = ""
     api_key: str = ""
     model: str = ""
 
     @property
+    def is_preset(self) -> bool:
+        return self.provider in {"zai", "zai-coding-plan"}
+
+    @property
     def is_ready(self) -> bool:
-        return bool(self.base_url.strip() and self.api_key.strip() and self.model.strip())
+        has_model = bool(self.model.strip())
+        has_api_key = bool(self.api_key.strip())
+        if self.is_preset:
+            return bool(self.provider and has_model and has_api_key)
+        return bool(self.base_url.strip() and has_model and has_api_key)
 
 
 class WebSettings(BaseModel):
@@ -32,6 +42,7 @@ class WebSettings(BaseModel):
 
 
 class LLMConfigPayload(BaseModel):
+    provider: LLMProvider = ""
     base_url: str = ""
     model: str = ""
     has_api_key: bool = False
@@ -74,6 +85,7 @@ class ConfigResponse(BaseModel):
 
 
 class SaveLLMRequest(BaseModel):
+    provider: LLMProvider = ""
     base_url: str
     model: str
     api_key: str | None = None

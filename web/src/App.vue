@@ -37,6 +37,7 @@ import type {
   EditableAllowedRoot,
   EditableMcpServer,
   HealthResponse,
+  LlmProvider,
   McpConfigResponse,
   SessionListResponse,
   SessionSummary,
@@ -53,6 +54,19 @@ import type {
 } from './types/api'
 
 const SESSION_STORAGE_KEY = 'yier.active-session-id'
+const LLM_PROVIDER_DEFAULTS: Record<
+  Exclude<LlmProvider, ''>,
+  { baseUrl: string; model: string }
+> = {
+  zai: {
+    baseUrl: 'https://api.z.ai/api/paas/v4',
+    model: 'glm-4.7-flash',
+  },
+  'zai-coding-plan': {
+    baseUrl: 'https://api.z.ai/api/coding/paas/v4',
+    model: 'glm-4.7-flash',
+  },
+}
 const route = useRoute()
 const router = useRouter()
 const isBooting = ref(true)
@@ -84,21 +98,28 @@ const savingState = reactive({
   reloadingMcp: false,
 })
 const llmForm = reactive({
+  provider: '' as LlmProvider,
   baseUrl: '',
   model: '',
   apiKey: '',
+})
+const lastCustomLlmForm = reactive({
+  baseUrl: '',
+  model: '',
 })
 const rootsDraft = ref<EditableAllowedRoot[]>([])
 const mcpDraft = ref<EditableMcpServer[]>([])
 const isSettingsRoute = computed(() => route.name === 'settings')
 const isChannelRoute = computed(() => route.name === 'channel')
 const isChatRoute = computed(() => route.name === 'chat')
-const activeSession = computed(() =>
-  sessionHistory.value.find((session) => session.session_id === activeSessionId.value) ?? null,
+const activeSession = computed(
+  () =>
+    sessionHistory.value.find((session) => session.session_id === activeSessionId.value) ?? null,
 )
 const defaultAllowedRoots = computed(() => health.value?.allowed_roots ?? [])
 let closePersistentEventStream: (() => void) | null = null
 const backgroundActivityIdsByToolCallId = new Map<string, string>()
+let hydratingLlmForm = false
 
 const SHELL_TOOL_NAMES = new Set([
   'run_command',
@@ -151,6 +172,31 @@ watch(activeSessionId, (value) => {
   }
   localStorage.setItem(SESSION_STORAGE_KEY, value)
 })
+
+watch(
+  () => llmForm.provider,
+  (nextProvider, previousProvider) => {
+    if (hydratingLlmForm || nextProvider === previousProvider) {
+      return
+    }
+
+    if (previousProvider === '') {
+      lastCustomLlmForm.baseUrl = llmForm.baseUrl
+      lastCustomLlmForm.model = llmForm.model
+    }
+
+    if (nextProvider === '') {
+      llmForm.baseUrl = lastCustomLlmForm.baseUrl
+      llmForm.model = lastCustomLlmForm.model
+      return
+    }
+
+    const defaults = LLM_PROVIDER_DEFAULTS[nextProvider]
+    llmForm.baseUrl = defaults.baseUrl
+    llmForm.model = defaults.model
+  },
+  { flush: 'sync' },
+)
 
 onMounted(async () => {
   startPersistentEvents()
@@ -207,9 +253,7 @@ async function refreshDashboard() {
   channelConfig.value = channelConfigPayload
   channelMonitorSessions.value = normalizeSessionSummaries(channelMonitorSessionsPayload)
   sessionHistory.value = normalizeSessionSummaries(sessionsPayload)
-  llmForm.baseUrl = configPayload.llm.base_url
-  llmForm.model = configPayload.llm.model
-  llmForm.apiKey = ''
+  hydrateLlmForm(configPayload.llm)
   rootsDraft.value = toEditableAllowedRoots(configPayload.allowed_roots)
   mcpDraft.value = toEditableMcpServers(mcpPayload)
 }
@@ -373,8 +417,10 @@ function isRelevantPersistentEvent(event: ChatStreamEvent) {
 function handleStreamEvent(event: ChatStreamEvent) {
   if (event.event === 'channel_account_state') {
     const accounts = channelWorkspace.value?.accounts ?? []
-    const nextAccounts = [...accounts.filter((item) => item.account_id !== event.data.account_id), event.data]
-      .sort((left, right) => left.account_id.localeCompare(right.account_id))
+    const nextAccounts = [
+      ...accounts.filter((item) => item.account_id !== event.data.account_id),
+      event.data,
+    ].sort((left, right) => left.account_id.localeCompare(right.account_id))
     if (channelWorkspace.value) {
       channelWorkspace.value = {
         ...channelWorkspace.value,
@@ -750,9 +796,11 @@ async function saveLlmSettings() {
   errorMessage.value = ''
   successMessage.value = ''
   try {
+    const normalizedLlmPayload = buildLlmSavePayload()
     config.value = await apiPut<ConfigResponse>('/api/config/llm', {
-      base_url: llmForm.baseUrl,
-      model: llmForm.model,
+      provider: normalizedLlmPayload.provider,
+      base_url: normalizedLlmPayload.base_url,
+      model: normalizedLlmPayload.model,
       api_key: llmForm.apiKey,
     })
     llmForm.apiKey = ''
@@ -873,10 +921,8 @@ async function loginWeixin() {
     const payload = await apiPost<Record<string, unknown>>('/api/channel/accounts/weixin/login', {
       account_id: null,
     } satisfies ChannelLoginRequest)
-    channelLoginState.qrcodeUrl =
-      typeof payload.qrcode_url === 'string' ? payload.qrcode_url : ''
-    channelLoginState.accountId =
-      typeof payload.account_id === 'string' ? payload.account_id : ''
+    channelLoginState.qrcodeUrl = typeof payload.qrcode_url === 'string' ? payload.qrcode_url : ''
+    channelLoginState.accountId = typeof payload.account_id === 'string' ? payload.account_id : ''
     channelLoginState.status = typeof payload.status === 'string' ? payload.status : 'waiting'
     await refreshDashboard()
     successMessage.value = 'Weixin login started.'
@@ -887,7 +933,10 @@ async function loginWeixin() {
 
 async function startChannelAccount(accountId: string) {
   try {
-    await apiPost<ChannelAccountActionResponse>(`/api/channel/accounts/weixin/${accountId}/start`, {})
+    await apiPost<ChannelAccountActionResponse>(
+      `/api/channel/accounts/weixin/${accountId}/start`,
+      {},
+    )
     await refreshDashboard()
   } catch (error) {
     errorMessage.value = toErrorMessage(error)
@@ -896,7 +945,10 @@ async function startChannelAccount(accountId: string) {
 
 async function stopChannelAccount(accountId: string) {
   try {
-    await apiPost<ChannelAccountActionResponse>(`/api/channel/accounts/weixin/${accountId}/stop`, {})
+    await apiPost<ChannelAccountActionResponse>(
+      `/api/channel/accounts/weixin/${accountId}/stop`,
+      {},
+    )
     await refreshDashboard()
   } catch (error) {
     errorMessage.value = toErrorMessage(error)
@@ -950,6 +1002,53 @@ function normalizeSessionSummaries(payload: Partial<SessionListResponse> | null 
   return Array.isArray(payload?.sessions) ? payload.sessions : []
 }
 
+function normalizeLlmProvider(value: unknown): LlmProvider {
+  if (value === 'zai' || value === 'zai-coding-plan') {
+    return value
+  }
+  return ''
+}
+
+function hydrateLlmForm(configPayload: ConfigResponse['llm']) {
+  hydratingLlmForm = true
+  llmForm.provider = normalizeLlmProvider(configPayload.provider)
+  llmForm.baseUrl = configPayload.base_url || resolveProviderDefaultBaseUrl(llmForm.provider)
+  llmForm.model = configPayload.model || resolveProviderDefaultModel(llmForm.provider)
+  llmForm.apiKey = ''
+  if (llmForm.provider === '') {
+    lastCustomLlmForm.baseUrl = llmForm.baseUrl
+    lastCustomLlmForm.model = llmForm.model
+  }
+  hydratingLlmForm = false
+}
+
+function resolveProviderDefaultBaseUrl(provider: LlmProvider) {
+  if (!provider) {
+    return ''
+  }
+  return LLM_PROVIDER_DEFAULTS[provider].baseUrl
+}
+
+function resolveProviderDefaultModel(provider: LlmProvider) {
+  if (!provider) {
+    return ''
+  }
+  return LLM_PROVIDER_DEFAULTS[provider].model
+}
+
+function buildLlmSavePayload() {
+  const provider = llmForm.provider
+  const trimmedBaseUrl = llmForm.baseUrl.trim()
+  const trimmedModel = llmForm.model.trim()
+  const defaultBaseUrl = resolveProviderDefaultBaseUrl(provider)
+
+  return {
+    provider,
+    base_url: provider && trimmedBaseUrl === defaultBaseUrl ? '' : trimmedBaseUrl,
+    model: trimmedModel,
+  }
+}
+
 function makeActivity(
   overrides: Partial<ChatActivity> & Pick<ChatActivity, 'title' | 'detail' | 'state' | 'kind'>,
 ): ChatActivity {
@@ -998,7 +1097,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function isBackgroundCommandListRawPayload(value: unknown): value is BackgroundCommandListRawPayload {
+function isBackgroundCommandListRawPayload(
+  value: unknown,
+): value is BackgroundCommandListRawPayload {
   return isRecord(value) && value.kind === 'background_command' && Array.isArray(value.sessions)
 }
 
@@ -1219,7 +1320,10 @@ function summarizeToolDigestFallback(
   argumentsValue: Record<string, unknown>,
 ) {
   if (toolName === 'skill_load') {
-    const skillName = extractSkillLoadName(result) ?? stringMetadata(metadata.name) ?? stringArgument(argumentsValue.name)
+    const skillName =
+      extractSkillLoadName(result) ??
+      stringMetadata(metadata.name) ??
+      stringArgument(argumentsValue.name)
     const sampledFileCount = extractSkillLoadFileCount(result)
     if (skillName) {
       if (sampledFileCount !== null) {
@@ -1258,9 +1362,7 @@ function summarizeToolError(
         : 'This file is outside allowed roots.'
     }
     if (normalized.startsWith('File not found:')) {
-      return blockedPath
-        ? `File not found: ${displayNameForPath(blockedPath)}.`
-        : 'File not found.'
+      return blockedPath ? `File not found: ${displayNameForPath(blockedPath)}.` : 'File not found.'
     }
     if (normalized.startsWith('Path is not a file:')) {
       return blockedPath
@@ -1321,15 +1423,13 @@ function extractReadFilePath(result: string) {
 }
 
 function extractBlockedPath(result: string) {
-  const match = result.match(/(?:Path is outside allowed roots:|File not found:|Path is not a file:)\s+(.+?)(?:\. Allowed roots:|$)/)
+  const match = result.match(
+    /(?:Path is outside allowed roots:|File not found:|Path is not a file:)\s+(.+?)(?:\. Allowed roots:|$)/,
+  )
   return match?.[1]?.trim() ?? null
 }
 
-function formatTodoCounts(counts: {
-  pending: number
-  in_progress: number
-  completed: number
-}) {
+function formatTodoCounts(counts: { pending: number; in_progress: number; completed: number }) {
   return `${counts.completed} completed, ${counts.in_progress} in progress, ${counts.pending} pending`
 }
 
@@ -1696,15 +1796,16 @@ function handleShellToolEndFallback(
   const activityId = backgroundActivityIdsByToolCallId.get(toolCallId) ?? toolCallId
   const existing = activities.value.find((item) => item.id === activityId)
   const shell = existing?.shell
-  const kind = shell?.kind ?? (BACKGROUND_SHELL_TOOL_NAMES.has(toolName) ? 'background_command' : 'shell_command')
+  const kind =
+    shell?.kind ??
+    (BACKGROUND_SHELL_TOOL_NAMES.has(toolName) ? 'background_command' : 'shell_command')
   const sessionId =
-    typeof metadata.session_id === 'string'
-      ? metadata.session_id
-      : (shell?.session_id ?? null)
+    typeof metadata.session_id === 'string' ? metadata.session_id : (shell?.session_id ?? null)
   const exitCode =
-    typeof metadata.exit_code === 'number' ? metadata.exit_code : (shell?.process?.exit_code ?? null)
-  const timedOut =
-    metadata.timed_out === true || shell?.process?.timed_out === true
+    typeof metadata.exit_code === 'number'
+      ? metadata.exit_code
+      : (shell?.process?.exit_code ?? null)
+  const timedOut = metadata.timed_out === true || shell?.process?.timed_out === true
   const state =
     typeof metadata.state === 'string'
       ? metadata.state
@@ -1734,18 +1835,20 @@ function handleShellToolEndFallback(
     kind: kind === 'background_command' ? 'background' : 'command',
     title: shellTitle(kind, sessionId),
     detail: isError ? result : '',
-    state: isError ? 'error' : activityStateFromShell(
-      {
-        session_id: sessionId,
-        state,
-        exit_code: exitCode,
-        started_at: shell?.process?.started_at ?? 0,
-        finished_at: state === 'running' ? null : Date.now() / 1000,
-        runtime_seconds: shell?.process?.runtime_seconds ?? 0,
-        timed_out: timedOut,
-      },
-      isError,
-    ),
+    state: isError
+      ? 'error'
+      : activityStateFromShell(
+          {
+            session_id: sessionId,
+            state,
+            exit_code: exitCode,
+            started_at: shell?.process?.started_at ?? 0,
+            finished_at: state === 'running' ? null : Date.now() / 1000,
+            runtime_seconds: shell?.process?.runtime_seconds ?? 0,
+            timed_out: timedOut,
+          },
+          isError,
+        ),
     command:
       typeof metadata.command === 'string'
         ? metadata.command
@@ -1778,7 +1881,7 @@ function handleShellToolEndFallback(
       },
       events: nextEvents,
       latestEventIndex: nextEvents.length
-        ? nextEvents[nextEvents.length - 1]?.index ?? shell?.latest_event_index ?? null
+        ? (nextEvents[nextEvents.length - 1]?.index ?? shell?.latest_event_index ?? null)
         : (shell?.latest_event_index ?? null),
     }),
     tool: null,
@@ -1941,8 +2044,12 @@ function toErrorMessage(error: unknown) {
                   </p>
                   <p class="session-history-meta">
                     <span>{{ session.source }}</span>
-                    <span v-if="session.channel_meta?.platform"> · {{ session.channel_meta.platform }}</span>
-                    <span v-if="session.channel_meta?.peer_id"> · {{ session.channel_meta.peer_id }}</span>
+                    <span v-if="session.channel_meta?.platform">
+                      · {{ session.channel_meta.platform }}</span
+                    >
+                    <span v-if="session.channel_meta?.peer_id">
+                      · {{ session.channel_meta.peer_id }}</span
+                    >
                     <span> · </span>
                     {{ formatSessionUpdatedAt(session.updated_at) }}
                     <span v-if="session.message_count"> · {{ session.message_count }} msgs</span>
@@ -2033,8 +2140,8 @@ function toErrorMessage(error: unknown) {
           <p class="eyebrow">Setup needed</p>
           <h3>Configure the LLM connection before sending messages.</h3>
           <p>
-            Add `base_url`, `api_key`, and `model` in Settings. Your values stay on this machine in
-            `~/.yier/web/settings.json`.
+            Add a provider or `base_url`, plus `api_key` and `model`, in Settings. Your values stay
+            on this machine in `~/.yier/web/settings.json`.
           </p>
           <Button label="Open Settings" icon="pi pi-cog" @click="openSettings" />
         </section>

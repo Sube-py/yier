@@ -98,7 +98,15 @@ async def health(state: State) -> HealthResponse:
         frontend=frontend,
         llm=LLMHealth(
             ready=llm_ready,
-            detail=None if llm_ready else "Set base URL, API key, and model in Settings.",
+            detail=(
+                None
+                if llm_ready
+                else (
+                    "Set provider, API key, and model in Settings. Base URL is optional for preset providers."
+                    if settings.llm.is_preset
+                    else "Set base URL, API key, and model in Settings."
+                )
+            ),
         ),
         mcp=MCPHealth(
             ready=mcp_ready,

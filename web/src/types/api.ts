@@ -1,3 +1,5 @@
+export type LlmProvider = '' | 'zai' | 'zai-coding-plan'
+
 export interface FrontendHealth {
   ready: boolean
   mode: 'proxy' | 'static' | 'missing'
@@ -30,6 +32,7 @@ export interface HealthResponse {
 
 export interface ConfigResponse {
   llm: {
+    provider: LlmProvider
     base_url: string
     model: string
     has_api_key: boolean

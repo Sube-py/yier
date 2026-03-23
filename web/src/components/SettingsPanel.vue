@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref, toRefs } from 'vue'
 
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import Password from 'primevue/password'
 import ScrollPanel from 'primevue/scrollpanel'
+import Select from 'primevue/select'
 import Tag from 'primevue/tag'
 import Tabs from 'primevue/tabs'
 import Tab from 'primevue/tab'
@@ -21,11 +22,12 @@ import type {
   McpConfigResponse,
 } from '../types/api'
 
-defineProps<{
+const props = defineProps<{
   health: HealthResponse | null
   config: ConfigResponse | null
   mcpConfig: McpConfigResponse | null
   llmForm: {
+    provider: '' | 'zai' | 'zai-coding-plan'
     baseUrl: string
     model: string
     apiKey: string
@@ -38,7 +40,26 @@ defineProps<{
   reloadingMcp: boolean
 }>()
 
+const {
+  config,
+  health,
+  llmForm,
+  mcpConfig,
+  mcpDraft,
+  reloadingMcp,
+  rootsDraft,
+  savingLlm,
+  savingMcp,
+  savingRoots,
+} = toRefs(props)
+
 const activeTab = ref('llm')
+const isPresetProvider = computed(() => llmForm.value.provider !== '')
+const providerOptions = [
+  { label: 'Custom', value: '' },
+  { label: 'Z.AI', value: 'zai' },
+  { label: 'Z.AI Coding Plan', value: 'zai-coding-plan' },
+]
 
 const emit = defineEmits<{
   saveLlm: []
@@ -82,13 +103,37 @@ const emit = defineEmits<{
           <TabPanels>
             <TabPanel value="llm">
               <section class="settings-section">
-                <label class="field-label" for="base-url">Base URL</label>
+                <label class="field-label" for="provider">Provider</label>
+                <Select
+                  input-id="provider"
+                  v-model="llmForm.provider"
+                  :options="providerOptions"
+                  option-label="label"
+                  option-value="value"
+                  placeholder="Select a provider"
+                  fluid
+                />
+
+                <label class="field-label" for="base-url">
+                  {{ isPresetProvider ? 'Base URL Override' : 'Base URL' }}
+                </label>
                 <InputText
                   id="base-url"
                   v-model="llmForm.baseUrl"
                   fluid
-                  placeholder="https://api.example.com/v1"
+                  :placeholder="
+                    isPresetProvider
+                      ? 'Optional override for the preset endpoint'
+                      : 'https://api.example.com/v1'
+                  "
                 />
+                <p class="settings-hint">
+                  {{
+                    isPresetProvider
+                      ? 'Preset providers prefill the official endpoint and model. Edit them only if you need an override.'
+                      : 'Required for custom OpenAI-compatible providers.'
+                  }}
+                </p>
 
                 <label class="field-label" for="model">Model</label>
                 <InputText id="model" v-model="llmForm.model" fluid placeholder="gpt-4.1-mini" />

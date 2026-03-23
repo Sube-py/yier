@@ -811,7 +811,8 @@ class ChatService:
 
     def _build_llm(self, settings: StoredLLMSettings) -> LLM:
         return LLM(
-            base_url=settings.base_url,
-            api_key=settings.api_key,
-            model=settings.model,
+            base_url=settings.base_url or None,
+            api_key=settings.api_key or None,
+            model=settings.model or None,
+            provider=settings.provider or None,
         )

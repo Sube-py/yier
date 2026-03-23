@@ -24,6 +24,11 @@ RUNTIME_STATUSES = {
     "needs_client_registration",
 }
 
+PROVIDER_BASE_URLS = {
+    "zai": "https://api.z.ai/api/paas/v4",
+    "zai-coding-plan": "https://api.z.ai/api/coding/paas/v4",
+}
+
 
 class MCPValidationError(ValueError):
     """Raised when MCP configuration payloads are malformed."""
@@ -84,10 +89,14 @@ class AppConfigService:
         settings.allowed_roots = self._normalize_allowed_roots(settings.allowed_roots)
         if not settings.allowed_roots:
             settings.allowed_roots = self.default_allowed_roots()
+        inferred_provider = self._infer_provider_from_base_url(settings.llm.base_url)
+        if not settings.llm.provider and inferred_provider:
+            settings.llm = settings.llm.model_copy(update={"provider": inferred_provider})
         return settings
 
     def save_llm_settings(self, payload: SaveLLMRequest) -> WebSettings:
         settings = self.load_web_settings()
+        settings.llm.provider = payload.provider
         settings.llm.base_url = payload.base_url
         settings.llm.model = payload.model
         if payload.api_key is not None and payload.api_key != "":
@@ -160,6 +169,7 @@ class AppConfigService:
         settings = self.load_web_settings()
         return ConfigResponse(
             llm=LLMConfigPayload(
+                provider=settings.llm.provider,
                 base_url=settings.llm.base_url,
                 model=settings.llm.model,
                 has_api_key=bool(settings.llm.api_key),
@@ -241,6 +251,15 @@ class AppConfigService:
                 )
             normalized[key] = item
         return normalized
+
+    def _infer_provider_from_base_url(self, base_url: str) -> str:
+        normalized_base_url = base_url.strip().rstrip("/")
+        if not normalized_base_url:
+            return ""
+        for provider, provider_base_url in PROVIDER_BASE_URLS.items():
+            if normalized_base_url == provider_base_url.rstrip("/"):
+                return provider
+        return ""
 
     def _normalize_allowed_roots(self, allowed_roots: list[str]) -> list[str]:
         normalized_roots: list[str] = []

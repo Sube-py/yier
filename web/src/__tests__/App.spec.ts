@@ -126,7 +126,13 @@ function backgroundCommandRaw(overrides: Record<string, unknown> = {}) {
     },
     events: [
       { index: 0, timestamp: 1, type: 'started', command: 'npm run dev', cwd: '/tmp/project' },
-      { index: 1, timestamp: 2, type: 'stdout', text: 'ready on http://localhost:3000', stream: 'stdout' },
+      {
+        index: 1,
+        timestamp: 2,
+        type: 'stdout',
+        text: 'ready on http://localhost:3000',
+        stream: 'stdout',
+      },
     ],
     latest_event_index: 1,
     streams: {
@@ -206,6 +212,19 @@ describe('App', () => {
     localStorage.clear()
     vi.restoreAllMocks()
     MockEventSource.reset()
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn().mockImplementation((query: string) => ({
+        matches: false,
+        media: query,
+        onchange: null,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    )
     Object.defineProperty(navigator, 'clipboard', {
       value: {
         writeText: vi.fn().mockResolvedValue(undefined),
@@ -260,6 +279,9 @@ describe('App', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('Configure the LLM connection before sending messages.')
+    expect(wrapper.text()).toContain(
+      'Add a provider or `base_url`, plus `api_key` and `model`, in Settings.',
+    )
     expect(wrapper.text()).toContain('session-1'.slice(0, 8))
   })
 
@@ -1385,6 +1407,190 @@ describe('App', () => {
     expect(wrapper.text()).toContain('Adjust the assistant without leaving the main console')
   })
 
+  it('hydrates the provider selector from config', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const path = input.toString()
+        if (path.endsWith('/api/health')) {
+          return jsonResponse({
+            frontend: { ready: true, mode: 'static' },
+            llm: { ready: true },
+            mcp: { ready: true, runtime: {} },
+            allowed_roots: ['/tmp/project'],
+          })
+        }
+        if (path.endsWith('/api/config')) {
+          return jsonResponse({
+            llm: {
+              provider: 'zai-coding-plan',
+              base_url: 'https://api.z.ai/api/coding/paas/v4',
+              model: 'glm-4.7-flash',
+              has_api_key: true,
+            },
+            allowed_roots: ['/tmp/project'],
+            mcp_runtime: {},
+          })
+        }
+        if (path.endsWith('/api/config/mcp')) {
+          return jsonResponse({ mcp_servers: {}, runtime: {} })
+        }
+        if (isSessionListRequest(path, init)) {
+          return jsonResponse({ sessions: [] })
+        }
+        if (isSessionCreateRequest(path, init)) {
+          return jsonResponse({ session_id: 'session-1' }, 201)
+        }
+        throw new Error(`Unexpected request: ${path}`)
+      }),
+    )
+
+    const wrapper = await mountApp('/settings')
+    await flushPromises()
+
+    const providerSelect = wrapper.findComponent({ name: 'Select' })
+    expect(providerSelect.exists()).toBe(true)
+    expect(providerSelect.props('modelValue')).toBe('zai-coding-plan')
+    expect((wrapper.find('input#base-url').element as HTMLInputElement).value).toBe(
+      'https://api.z.ai/api/coding/paas/v4',
+    )
+    expect((wrapper.find('input#model').element as HTMLInputElement).value).toBe('glm-4.7-flash')
+    expect(wrapper.text()).toContain(
+      'Preset providers prefill the official endpoint and model. Edit them only if you need an override.',
+    )
+  })
+
+  it('keeps a saved custom model when hydrating a preset provider', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const path = input.toString()
+        if (path.endsWith('/api/health')) {
+          return jsonResponse({
+            frontend: { ready: true, mode: 'static' },
+            llm: { ready: true },
+            mcp: { ready: true, runtime: {} },
+            allowed_roots: ['/tmp/project'],
+          })
+        }
+        if (path.endsWith('/api/config')) {
+          return jsonResponse({
+            llm: {
+              provider: 'zai-coding-plan',
+              base_url: '',
+              model: 'glm-4.7',
+              has_api_key: true,
+            },
+            allowed_roots: ['/tmp/project'],
+            mcp_runtime: {},
+          })
+        }
+        if (path.endsWith('/api/config/mcp')) {
+          return jsonResponse({ mcp_servers: {}, runtime: {} })
+        }
+        if (isSessionListRequest(path, init)) {
+          return jsonResponse({ sessions: [] })
+        }
+        if (isSessionCreateRequest(path, init)) {
+          return jsonResponse({ session_id: 'session-1' }, 201)
+        }
+        throw new Error(`Unexpected request: ${path}`)
+      }),
+    )
+
+    const wrapper = await mountApp('/settings')
+    await flushPromises()
+
+    expect((wrapper.find('input#base-url').element as HTMLInputElement).value).toBe(
+      'https://api.z.ai/api/coding/paas/v4',
+    )
+    expect((wrapper.find('input#model').element as HTMLInputElement).value).toBe('glm-4.7')
+  })
+
+  it('prefills Z.AI Coding Plan defaults when switching provider and saves without persisting the default base URL', async () => {
+    let savedPayload: Record<string, unknown> | null = null
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const path = input.toString()
+        if (path.endsWith('/api/health')) {
+          return jsonResponse({
+            frontend: { ready: true, mode: 'static' },
+            llm: { ready: true },
+            mcp: { ready: true, runtime: {} },
+            allowed_roots: ['/tmp/project'],
+          })
+        }
+        if (path.endsWith('/api/config') && (!init || init.method === 'GET')) {
+          return jsonResponse({
+            llm: { provider: '', base_url: '', model: '', has_api_key: false },
+            allowed_roots: ['/tmp/project'],
+            mcp_runtime: {},
+          })
+        }
+        if (path.endsWith('/api/config/llm') && init?.method === 'PUT') {
+          savedPayload = JSON.parse(String(init.body)) as Record<string, unknown>
+          return jsonResponse({
+            llm: {
+              provider: 'zai-coding-plan',
+              base_url: '',
+              model: 'glm-4.7-flash',
+              has_api_key: true,
+            },
+            allowed_roots: ['/tmp/project'],
+            mcp_runtime: {},
+          })
+        }
+        if (path.endsWith('/api/config/mcp')) {
+          return jsonResponse({ mcp_servers: {}, runtime: {} })
+        }
+        if (isSessionListRequest(path, init)) {
+          return jsonResponse({ sessions: [] })
+        }
+        if (isSessionCreateRequest(path, init)) {
+          return jsonResponse({ session_id: 'session-1' }, 201)
+        }
+        throw new Error(`Unexpected request: ${path}`)
+      }),
+    )
+
+    const wrapper = await mountApp('/settings')
+    await flushPromises()
+
+    const providerSelect = wrapper.findComponent({ name: 'Select' })
+    expect(providerSelect.exists()).toBe(true)
+    providerSelect.vm.$emit('update:modelValue', 'zai-coding-plan')
+    await flushPromises()
+
+    expect((wrapper.find('input#base-url').element as HTMLInputElement).value).toBe(
+      'https://api.z.ai/api/coding/paas/v4',
+    )
+    expect((wrapper.find('input#model').element as HTMLInputElement).value).toBe('glm-4.7-flash')
+
+    const apiKeyInput = wrapper
+      .findAll('input')
+      .find((item) => (item.attributes('placeholder') ?? '').includes('Leave blank'))
+    expect(apiKeyInput).toBeTruthy()
+    await apiKeyInput!.setValue('secret-token')
+    await flushPromises()
+
+    const saveButton = wrapper
+      .findAll('button')
+      .find((item) => item.text().includes('Save LLM Settings'))
+    expect(saveButton).toBeTruthy()
+    await saveButton!.trigger('click')
+    await flushPromises()
+
+    expect(savedPayload).toEqual({
+      provider: 'zai-coding-plan',
+      base_url: '',
+      model: 'glm-4.7-flash',
+      api_key: 'secret-token',
+    })
+    expect(wrapper.text()).toContain('LLM settings saved.')
+  })
+
   it('renders background updates from the persistent event stream', async () => {
     vi.stubGlobal(
       'fetch',
@@ -1571,7 +1777,13 @@ describe('App', () => {
         },
         events: [
           { index: 0, timestamp: 1, type: 'started', command: 'npm run dev', cwd: '/tmp/project' },
-          { index: 1, timestamp: 2, type: 'stdout', text: 'ready on http://localhost:3000', stream: 'stdout' },
+          {
+            index: 1,
+            timestamp: 2,
+            type: 'stdout',
+            text: 'ready on http://localhost:3000',
+            stream: 'stdout',
+          },
           { index: 2, timestamp: 3, type: 'stdin', text: 'rs\n', append_newline: true },
         ],
         latest_event_index: 2,
@@ -1635,7 +1847,9 @@ describe('App', () => {
     const wrapper = await mountApp('/settings')
     await flushPromises()
 
-    const workspaceTab = wrapper.findAll('[role="tab"]').find((item) => item.text().includes('Workspace'))
+    const workspaceTab = wrapper
+      .findAll('[role="tab"]')
+      .find((item) => item.text().includes('Workspace'))
     expect(workspaceTab).toBeTruthy()
     await workspaceTab!.trigger('click')
     await flushPromises()

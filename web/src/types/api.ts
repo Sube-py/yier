@@ -54,11 +54,19 @@ export interface McpConfigResponse {
   runtime: Record<string, McpRuntimeEntry>
 }
 
+export interface ChannelMeta {
+  platform: string
+  account_id: string
+  peer_id: string
+}
+
 export interface StoredMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'
   content: string | null
   reasoning_content?: string | null
   tool_call_id?: string | null
+  source: 'chat' | 'channel'
+  channel_meta?: ChannelMeta | null
 }
 
 export interface StoredActivityEvent {
@@ -68,6 +76,8 @@ export interface StoredActivityEvent {
 
 export interface SessionTranscriptResponse {
   session_id: string
+  source: 'chat' | 'channel'
+  channel_meta?: ChannelMeta | null
   messages: StoredMessage[]
   activity_events: StoredActivityEvent[]
 }
@@ -78,6 +88,8 @@ export interface SessionSummary {
   preview: string
   updated_at: number
   message_count: number
+  source: 'chat' | 'channel'
+  channel_meta?: ChannelMeta | null
 }
 
 export interface SessionListResponse {
@@ -87,6 +99,62 @@ export interface SessionListResponse {
 export interface DeleteSessionResponse {
   session_id: string
   deleted: boolean
+}
+
+export interface ChannelPlatformSummary {
+  name: string
+  label: string
+  implemented: boolean
+  account_count: number
+  running_count: number
+}
+
+export interface ChannelAccountSummary {
+  platform: string
+  account_id: string
+  configured: boolean
+  enabled: boolean
+  running: boolean
+  name?: string | null
+  last_inbound_at?: number | null
+  last_outbound_at?: number | null
+  last_error?: string | null
+  login_status?: string | null
+}
+
+export interface ChannelWorkspaceResponse {
+  platforms: ChannelPlatformSummary[]
+  accounts: ChannelAccountSummary[]
+}
+
+export interface ChannelPlatformsResponse {
+  platforms: Array<{
+    name: string
+    label: string
+    implemented: boolean
+  }>
+}
+
+export interface ChannelConfigResponse {
+  enabled_platforms: string[]
+  weixin: Record<string, unknown>
+}
+
+export interface SaveChannelConfigRequest {
+  enabled_platforms: string[]
+  weixin: Record<string, unknown>
+}
+
+export interface ChannelAccountsResponse {
+  accounts: ChannelAccountSummary[]
+}
+
+export interface ChannelLoginRequest {
+  account_id?: string | null
+}
+
+export interface ChannelAccountActionResponse {
+  account: ChannelAccountSummary
 }
 
 export interface ChatStreamRequest {
@@ -500,6 +568,54 @@ export interface ChatStreamDoneEvent {
   }
 }
 
+export interface ChannelAccountStateEvent {
+  event: 'channel_account_state'
+  data: ChannelAccountSummary
+}
+
+export interface ChannelInboundMessageEvent {
+  event: 'channel_inbound_message'
+  data: {
+    platform: string
+    account_id: string
+    peer_id: string
+    session_id: string
+    content: string
+    timestamp_ms: number
+  }
+}
+
+export interface ChannelOutboundMessageEvent {
+  event: 'channel_outbound_message'
+  data: {
+    platform: string
+    account_id: string
+    peer_id: string
+    content: string
+    message_id: string
+    timestamp_ms: number
+  }
+}
+
+export interface ChannelErrorEvent {
+  event: 'channel_error'
+  data: {
+    platform: string
+    account_id: string
+    message: string
+  }
+}
+
+export interface ChannelLoginQrEvent {
+  event: 'channel_login_qr'
+  data: {
+    platform: string
+    account_id: string
+    qrcode_url?: string
+    status: string
+  }
+}
+
 export type ChatStreamEvent =
   | ChatRunStartedEvent
   | ChatToolStartEvent
@@ -517,11 +633,18 @@ export type ChatStreamEvent =
   | ChatAssistantEvent
   | ChatErrorEvent
   | ChatStreamDoneEvent
+  | ChannelAccountStateEvent
+  | ChannelInboundMessageEvent
+  | ChannelOutboundMessageEvent
+  | ChannelErrorEvent
+  | ChannelLoginQrEvent
 
 export interface UiChatMessage {
   id: string
   role: 'user' | 'assistant'
   content: string
+  source: 'chat' | 'channel'
+  channelMeta?: ChannelMeta | null
 }
 
 export interface ChatActivity {

@@ -10,5 +10,12 @@ dependencies = [
     "litestar>=2.21.1",
     "pydantic>=2.12.5",
     "pytest>=9.0.2",
+    "yier-channel",
     "yier-agents>=0.1.3",
 ]
+
+[tool.uv.workspace]
+members = ["packages/yier-channel"]
+
+[tool.uv.sources]
+yier-channel = { workspace = true }

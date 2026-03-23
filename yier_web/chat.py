@@ -39,8 +39,15 @@ from yier_agents.src.config import AssistantSettings
 from yier_web.background_followups import FollowupQueueManager, create_queue_background_followup_tool
 from yier_web.config import AppConfigService
 from yier_web.event_stream import EventStreamBroker
+from yier_web.session_metadata_store import SessionMetadataStore
 from yier_web.session_ui_store import SessionUIStore
-from yier_web.schemas import MCPRuntimeEntry, SessionSummary, StoredLLMSettings
+from yier_web.schemas import (
+    ChannelMetaPayload,
+    MCPRuntimeEntry,
+    SessionSummary,
+    StoredLLMSettings,
+    StoredSessionMessage,
+)
 from yier_web.streaming_tools import (
     create_streaming_run_command_tool,
     create_streaming_start_background_command_tool,
@@ -65,6 +72,7 @@ class ChatService:
         self.session_store = JSONSessionStore(self.config_service.sessions_path)
         self.transcript_store = JSONSessionStore(self.config_service.transcripts_path)
         self.session_ui_store = SessionUIStore(self.config_service.session_ui_path)
+        self.session_metadata_store = SessionMetadataStore(self.config_service.session_meta_path)
         self.background_manager = BackgroundCommandManager(
             default_root=self.project_root,
             allow_shell=True,
@@ -137,7 +145,9 @@ class ChatService:
         }
 
     def create_session(self) -> str:
-        return str(uuid4())
+        session_id = str(uuid4())
+        self.ensure_session_metadata(session_id)
+        return session_id
 
     def get_session_messages(self, session_id: str) -> list[Message]:
         transcript_messages = self.transcript_store.get_session_messages(session_id)
@@ -145,10 +155,66 @@ class ChatService:
             return transcript_messages
         return self.session_store.get_session_messages(session_id) or []
 
+    def get_session_metadata(self, session_id: str) -> dict[str, Any]:
+        payload = self.session_metadata_store.load(session_id) or {}
+        source = payload.get("source")
+        if source not in {"chat", "channel"}:
+            source = "chat"
+        channel_meta = payload.get("channel_meta")
+        if not isinstance(channel_meta, dict):
+            channel_meta = None
+        return {
+            "source": source,
+            "channel_meta": channel_meta,
+        }
+
+    def ensure_session_metadata(
+        self,
+        session_id: str,
+        source: str = "chat",
+        channel_meta: dict[str, Any] | None = None,
+    ) -> None:
+        existing = self.session_metadata_store.load(session_id) or {}
+        payload = {
+            "session_id": session_id,
+            "source": source if source in {"chat", "channel"} else "chat",
+            "channel_meta": channel_meta if isinstance(channel_meta, dict) else existing.get("channel_meta"),
+        }
+        self.session_metadata_store.save(session_id, payload)
+
+    def mark_channel_session(
+        self,
+        session_id: str,
+        channel_meta: dict[str, Any],
+    ) -> None:
+        self.ensure_session_metadata(session_id, source="channel", channel_meta=channel_meta)
+
+    def is_channel_session(self, session_id: str) -> bool:
+        return self.get_session_metadata(session_id)["source"] == "channel"
+
+    def build_transcript_messages(self, session_id: str) -> list[StoredSessionMessage]:
+        session_meta = self.get_session_metadata(session_id)
+        channel_meta_payload = (
+            ChannelMetaPayload.model_validate(session_meta["channel_meta"])
+            if isinstance(session_meta["channel_meta"], dict)
+            else None
+        )
+        return [
+            StoredSessionMessage(
+                role=message.role,
+                content=message.content,
+                reasoning_content=message.reasoning_content,
+                tool_call_id=message.tool_call_id,
+                source=session_meta["source"],
+                channel_meta=channel_meta_payload,
+            )
+            for message in self.get_session_messages(session_id)
+        ]
+
     def get_session_activity_events(self, session_id: str) -> list[dict[str, Any]]:
         return self.session_ui_store.load_activity_events(session_id)
 
-    def list_session_summaries(self) -> list[SessionSummary]:
+    def list_session_summaries(self, source: str | None = None) -> list[SessionSummary]:
         session_entries: dict[str, dict[str, Any]] = {}
 
         for directory in (
@@ -179,6 +245,9 @@ class ChatService:
 
         summaries: list[SessionSummary] = []
         for session_id, entry in session_entries.items():
+            session_meta = self.get_session_metadata(session_id)
+            if source and session_meta["source"] != source:
+                continue
             messages = entry["messages"] if isinstance(entry["messages"], list) else []
             title = self._session_title(messages)
             preview = self._session_preview(messages)
@@ -189,6 +258,12 @@ class ChatService:
                     preview=preview,
                     updated_at=float(entry["updated_at"]),
                     message_count=self._message_count(messages),
+                    source=session_meta["source"],
+                    channel_meta=(
+                        ChannelMetaPayload.model_validate(session_meta["channel_meta"])
+                        if isinstance(session_meta["channel_meta"], dict)
+                        else None
+                    ),
                 )
             )
 
@@ -203,6 +278,7 @@ class ChatService:
         if session_ui_file.exists():
             session_ui_file.unlink()
             deleted = True
+        deleted = self.session_metadata_store.delete(session_id) or deleted
 
         owned_background_ids = [
             background_session_id
@@ -267,6 +343,7 @@ class ChatService:
         token = set_tool_event_emitter(emit)
 
         try:
+            self.ensure_session_metadata(session_id)
             self._append_transcript_message(
                 session_id,
                 Message(role="user", content=user_message),

@@ -4,8 +4,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-from yier_agents import Message
-
 
 MCPRuntimeStatus = Literal[
     "connected",
@@ -15,6 +13,7 @@ MCPRuntimeStatus = Literal[
     "needs_client_registration",
 ]
 FrontendMode = Literal["proxy", "static", "missing"]
+SessionSource = Literal["chat", "channel"]
 
 
 class StoredLLMSettings(BaseModel):
@@ -103,6 +102,12 @@ class SaveMCPConfigRequest(BaseModel):
     mcp_servers: dict[str, dict[str, Any]]
 
 
+class ChannelMetaPayload(BaseModel):
+    platform: str
+    account_id: str
+    peer_id: str
+
+
 class CreateSessionResponse(BaseModel):
     session_id: str
 
@@ -113,6 +118,8 @@ class SessionSummary(BaseModel):
     preview: str
     updated_at: float
     message_count: int = 0
+    source: SessionSource = "chat"
+    channel_meta: ChannelMetaPayload | None = None
 
 
 class SessionListResponse(BaseModel):
@@ -129,9 +136,20 @@ class StoredActivityEvent(BaseModel):
     data: dict[str, Any] = Field(default_factory=dict)
 
 
+class StoredSessionMessage(BaseModel):
+    role: Literal["system", "user", "assistant", "tool"]
+    content: str | None = None
+    reasoning_content: str | None = None
+    tool_call_id: str | None = None
+    source: SessionSource = "chat"
+    channel_meta: ChannelMetaPayload | None = None
+
+
 class SessionTranscriptResponse(BaseModel):
     session_id: str
-    messages: list[Message] = Field(default_factory=list)
+    source: SessionSource = "chat"
+    channel_meta: ChannelMetaPayload | None = None
+    messages: list[StoredSessionMessage] = Field(default_factory=list)
     activity_events: list[StoredActivityEvent] = Field(default_factory=list)
 
 
@@ -143,3 +161,34 @@ class ChatStreamRequest(BaseModel):
     @classmethod
     def strip_fields(cls, value: str) -> str:
         return value.strip()
+
+
+class ChannelWorkspaceResponse(BaseModel):
+    platforms: list[dict[str, Any]] = Field(default_factory=list)
+    accounts: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ChannelPlatformsResponse(BaseModel):
+    platforms: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ChannelAccountsResponse(BaseModel):
+    accounts: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ChannelConfigResponse(BaseModel):
+    enabled_platforms: list[str] = Field(default_factory=list)
+    weixin: dict[str, Any] = Field(default_factory=dict)
+
+
+class SaveChannelConfigRequest(BaseModel):
+    enabled_platforms: list[str] = Field(default_factory=list)
+    weixin: dict[str, Any] = Field(default_factory=dict)
+
+
+class ChannelLoginRequest(BaseModel):
+    account_id: str | None = None
+
+
+class ChannelAccountActionResponse(BaseModel):
+    account: dict[str, Any]

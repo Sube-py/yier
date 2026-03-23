@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "yier-channel"
+version = "0.1.0"
+description = "Channel runtime and platform adapters for yier"
+readme = "../../README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.28.1",
+    "pydantic>=2.12.5",
+]
+
+[project.scripts]
+yier-channel = "yier_channel.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/yier_channel"]

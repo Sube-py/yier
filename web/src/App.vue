@@ -10,6 +10,7 @@ import Tag from 'primevue/tag'
 
 import ChatComposer from './components/ChatComposer.vue'
 import ChatTimeline from './components/ChatTimeline.vue'
+import ChannelWorkspacePanel from './components/ChannelWorkspacePanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import {
   ApiError,
@@ -22,6 +23,11 @@ import {
 } from './lib/api'
 import type {
   BackgroundCommandListRawPayload,
+  ChannelAccountActionResponse,
+  ChannelConfigResponse,
+  ChannelLoginRequest,
+  ChannelPlatformsResponse,
+  ChannelWorkspaceResponse,
   ChatActivity,
   ChatStreamDoneEvent,
   ChatStreamEvent,
@@ -56,6 +62,15 @@ const successMessage = ref('')
 const health = ref<HealthResponse | null>(null)
 const config = ref<ConfigResponse | null>(null)
 const mcpConfig = ref<McpConfigResponse | null>(null)
+const channelWorkspace = ref<ChannelWorkspaceResponse | null>(null)
+const channelPlatforms = ref<ChannelPlatformsResponse | null>(null)
+const channelConfig = ref<ChannelConfigResponse | null>(null)
+const channelMonitorSessions = ref<SessionSummary[]>([])
+const channelLoginState = reactive({
+  qrcodeUrl: '',
+  accountId: '',
+  status: '',
+})
 const activeSessionId = ref(localStorage.getItem(SESSION_STORAGE_KEY) ?? '')
 const chatMessages = ref<UiChatMessage[]>([])
 const activities = ref<ChatActivity[]>([])
@@ -76,7 +91,11 @@ const llmForm = reactive({
 const rootsDraft = ref<EditableAllowedRoot[]>([])
 const mcpDraft = ref<EditableMcpServer[]>([])
 const isSettingsRoute = computed(() => route.name === 'settings')
-const isChatRoute = computed(() => route.name !== 'settings')
+const isChannelRoute = computed(() => route.name === 'channel')
+const isChatRoute = computed(() => route.name === 'chat')
+const activeSession = computed(() =>
+  sessionHistory.value.find((session) => session.session_id === activeSessionId.value) ?? null,
+)
 const defaultAllowedRoots = computed(() => health.value?.allowed_roots ?? [])
 let closePersistentEventStream: (() => void) | null = null
 const backgroundActivityIdsByToolCallId = new Map<string, string>()
@@ -108,13 +127,20 @@ const sessionLabel = computed(() => {
 const llmReady = computed(() => health.value?.llm.ready ?? false)
 const frontendMode = computed(() => health.value?.frontend.mode ?? 'missing')
 const canSend = computed(() => llmReady.value && !isSending.value && Boolean(activeSessionId.value))
+const canSendToSession = computed(() => canSend.value && activeSession.value?.source !== 'channel')
 const workspaceEyebrow = computed(() =>
-  isSettingsRoute.value ? 'Configuration workspace' : 'Chat workspace',
+  isSettingsRoute.value
+    ? 'Configuration workspace'
+    : isChannelRoute.value
+      ? 'Channel workspace'
+      : 'Chat workspace',
 )
 const workspaceTitle = computed(() =>
   isSettingsRoute.value
     ? 'Adjust the assistant without leaving the main console'
-    : 'One calm surface for code, files, and config',
+    : isChannelRoute.value
+      ? 'Multi-platform runtime, account status, and live channel sessions'
+      : 'One calm surface for code, files, and config',
 )
 const sessionHistoryCount = computed(() => sessionHistory.value.length)
 
@@ -150,16 +176,36 @@ async function bootstrap() {
 }
 
 async function refreshDashboard() {
-  const [healthPayload, configPayload, mcpPayload, sessionsPayload] = await Promise.all([
+  const [
+    healthPayload,
+    configPayload,
+    mcpPayload,
+    sessionsPayload,
+    channelWorkspacePayload,
+    channelPlatformsPayload,
+    channelConfigPayload,
+    channelMonitorSessionsPayload,
+  ] = await Promise.all([
     apiGet<HealthResponse>('/api/health'),
     apiGet<ConfigResponse>('/api/config'),
     apiGet<McpConfigResponse>('/api/config/mcp'),
     apiGet<SessionListResponse>('/api/chat/sessions'),
+    safeApiGet<ChannelWorkspaceResponse>('/api/channel/workspace', { platforms: [], accounts: [] }),
+    safeApiGet<ChannelPlatformsResponse>('/api/channel/platforms', { platforms: [] }),
+    safeApiGet<ChannelConfigResponse>('/api/channel/config', {
+      enabled_platforms: [],
+      weixin: {},
+    }),
+    safeApiGet<SessionListResponse>('/api/channel/monitor/sessions', { sessions: [] }),
   ])
 
   health.value = healthPayload
   config.value = configPayload
   mcpConfig.value = mcpPayload
+  channelWorkspace.value = channelWorkspacePayload
+  channelPlatforms.value = channelPlatformsPayload
+  channelConfig.value = channelConfigPayload
+  channelMonitorSessions.value = normalizeSessionSummaries(channelMonitorSessionsPayload)
   sessionHistory.value = normalizeSessionSummaries(sessionsPayload)
   llmForm.baseUrl = configPayload.llm.base_url
   llmForm.model = configPayload.llm.model
@@ -208,7 +254,7 @@ function handleNewChatClick() {
 
 async function submitMessage() {
   const content = composerText.value.trim()
-  if (!content || !canSend.value) {
+  if (!content || !canSendToSession.value) {
     return
   }
 
@@ -307,6 +353,16 @@ function startPersistentEvents() {
 }
 
 function isRelevantPersistentEvent(event: ChatStreamEvent) {
+  if (
+    event.event === 'channel_account_state' ||
+    event.event === 'channel_login_qr' ||
+    event.event === 'channel_error'
+  ) {
+    return true
+  }
+  if (event.event === 'channel_inbound_message' || event.event === 'channel_outbound_message') {
+    return true
+  }
   const eventSessionId = 'session_id' in event.data ? event.data.session_id : ''
   if (!eventSessionId) {
     return false
@@ -315,6 +371,38 @@ function isRelevantPersistentEvent(event: ChatStreamEvent) {
 }
 
 function handleStreamEvent(event: ChatStreamEvent) {
+  if (event.event === 'channel_account_state') {
+    const accounts = channelWorkspace.value?.accounts ?? []
+    const nextAccounts = [...accounts.filter((item) => item.account_id !== event.data.account_id), event.data]
+      .sort((left, right) => left.account_id.localeCompare(right.account_id))
+    if (channelWorkspace.value) {
+      channelWorkspace.value = {
+        ...channelWorkspace.value,
+        accounts: nextAccounts,
+      }
+    }
+    return
+  }
+
+  if (event.event === 'channel_login_qr') {
+    channelLoginState.accountId = event.data.account_id
+    channelLoginState.status = event.data.status
+    if (typeof event.data.qrcode_url === 'string') {
+      channelLoginState.qrcodeUrl = event.data.qrcode_url
+    }
+    return
+  }
+
+  if (event.event === 'channel_inbound_message' || event.event === 'channel_outbound_message') {
+    void refreshSessionHistory()
+    return
+  }
+
+  if (event.event === 'channel_error') {
+    errorMessage.value = event.data.message
+    return
+  }
+
   if (event.event === 'run_started') {
     activities.value.push(
       makeActivity({
@@ -770,8 +858,49 @@ function openSettings() {
   void router.push({ name: 'settings' })
 }
 
+function openChannel() {
+  void router.push({ name: 'channel' })
+}
+
 function openChat() {
   void router.push({ name: 'chat' })
+}
+
+async function loginWeixin() {
+  errorMessage.value = ''
+  successMessage.value = ''
+  try {
+    const payload = await apiPost<Record<string, unknown>>('/api/channel/accounts/weixin/login', {
+      account_id: null,
+    } satisfies ChannelLoginRequest)
+    channelLoginState.qrcodeUrl =
+      typeof payload.qrcode_url === 'string' ? payload.qrcode_url : ''
+    channelLoginState.accountId =
+      typeof payload.account_id === 'string' ? payload.account_id : ''
+    channelLoginState.status = typeof payload.status === 'string' ? payload.status : 'waiting'
+    await refreshDashboard()
+    successMessage.value = 'Weixin login started.'
+  } catch (error) {
+    errorMessage.value = toErrorMessage(error)
+  }
+}
+
+async function startChannelAccount(accountId: string) {
+  try {
+    await apiPost<ChannelAccountActionResponse>(`/api/channel/accounts/weixin/${accountId}/start`, {})
+    await refreshDashboard()
+  } catch (error) {
+    errorMessage.value = toErrorMessage(error)
+  }
+}
+
+async function stopChannelAccount(accountId: string) {
+  try {
+    await apiPost<ChannelAccountActionResponse>(`/api/channel/accounts/weixin/${accountId}/stop`, {})
+    await refreshDashboard()
+  } catch (error) {
+    errorMessage.value = toErrorMessage(error)
+  }
 }
 
 function toUiMessages(messages: StoredMessage[]): UiChatMessage[] {
@@ -780,15 +909,27 @@ function toUiMessages(messages: StoredMessage[]): UiChatMessage[] {
       (message) => (message.role === 'user' || message.role === 'assistant') && message.content,
     )
     .map((message) =>
-      makeUiMessage(message.role === 'user' ? 'user' : 'assistant', message.content ?? ''),
+      makeUiMessage(
+        message.role === 'user' ? 'user' : 'assistant',
+        message.content ?? '',
+        message.source,
+        message.channel_meta ?? null,
+      ),
     )
 }
 
-function makeUiMessage(role: 'user' | 'assistant', content: string): UiChatMessage {
+function makeUiMessage(
+  role: 'user' | 'assistant',
+  content: string,
+  source: 'chat' | 'channel' = 'chat',
+  channelMeta: UiChatMessage['channelMeta'] = null,
+): UiChatMessage {
   return {
     id: crypto.randomUUID(),
     role,
     content,
+    source,
+    channelMeta,
   }
 }
 
@@ -1714,6 +1855,14 @@ function parseJsonText(value: string, expected: 'array' | 'object') {
   return parsed
 }
 
+async function safeApiGet<T>(path: string, fallback: T): Promise<T> {
+  try {
+    return await apiGet<T>(path)
+  } catch {
+    return fallback
+  }
+}
+
 function toErrorMessage(error: unknown) {
   if (error instanceof ApiError) {
     return error.message
@@ -1791,6 +1940,10 @@ function toErrorMessage(error: unknown) {
                     {{ session.preview }}
                   </p>
                   <p class="session-history-meta">
+                    <span>{{ session.source }}</span>
+                    <span v-if="session.channel_meta?.platform"> · {{ session.channel_meta.platform }}</span>
+                    <span v-if="session.channel_meta?.peer_id"> · {{ session.channel_meta.peer_id }}</span>
+                    <span> · </span>
                     {{ formatSessionUpdatedAt(session.updated_at) }}
                     <span v-if="session.message_count"> · {{ session.message_count }} msgs</span>
                   </p>
@@ -1829,6 +1982,14 @@ function toErrorMessage(error: unknown) {
           :outlined="!isSettingsRoute"
           :severity="isSettingsRoute ? undefined : 'secondary'"
           @click="openSettings"
+        />
+        <Button
+          label="Channel"
+          icon="pi pi-share-alt"
+          fluid
+          :outlined="!isChannelRoute"
+          :severity="isChannelRoute ? undefined : 'secondary'"
+          @click="openChannel"
         />
       </div>
 
@@ -1886,13 +2047,33 @@ function toErrorMessage(error: unknown) {
               :is-sending="isSending"
               :session-label="sessionLabel"
             />
+            <Message
+              v-if="activeSession?.source === 'channel'"
+              severity="info"
+              class="status-banner"
+            >
+              This session comes from {{ activeSession.channel_meta?.platform ?? 'channel' }} and is
+              read-only in the chat workspace.
+            </Message>
             <ChatComposer
               v-model="composerText"
-              :disabled="!canSend"
+              :disabled="!canSendToSession"
               :is-sending="isSending"
               @submit="submitMessage"
             />
           </template>
+          <ChannelWorkspacePanel
+            v-else-if="isChannelRoute"
+            :workspace="channelWorkspace"
+            :platforms="channelPlatforms"
+            :config="channelConfig"
+            :monitor-sessions="channelMonitorSessions"
+            :login-state="channelLoginState"
+            @login-weixin="loginWeixin"
+            @start-account="startChannelAccount"
+            @stop-account="stopChannelAccount"
+            @open-session="openSessionFromHistory"
+          />
           <SettingsPanel
             v-else
             :health="health"

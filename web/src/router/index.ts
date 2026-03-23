@@ -25,6 +25,11 @@ export function createAppRouter(history: RouterHistory = createWebHistory(import
         name: 'settings',
         component: RouteAnchor,
       },
+      {
+        path: '/channel',
+        name: 'channel',
+        component: RouteAnchor,
+      },
     ],
   })
 }

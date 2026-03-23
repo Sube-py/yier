@@ -27,6 +27,11 @@ const STREAM_EVENT_NAMES = [
   'assistant_message',
   'error',
   'done',
+  'channel_account_state',
+  'channel_inbound_message',
+  'channel_outbound_message',
+  'channel_error',
+  'channel_login_qr',
 ] as const
 
 export async function apiGet<T>(path: string): Promise<T> {

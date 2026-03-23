@@ -60,6 +60,8 @@ class FakeChatService:
                 "preview": "hi there",
                 "updated_at": 123.0,
                 "message_count": 2,
+                "source": "chat",
+                "channel_meta": None,
             }
         ]
 
@@ -92,11 +94,32 @@ class FakeChatService:
     def get_session_messages(self, session_id: str) -> list[Message]:
         return self.sessions.get(session_id, [])
 
+    def build_transcript_messages(self, session_id: str) -> list[dict[str, Any]]:
+        return [
+            {
+                "role": message.role,
+                "content": message.content,
+                "reasoning_content": message.reasoning_content,
+                "tool_call_id": message.tool_call_id,
+                "source": "chat",
+                "channel_meta": None,
+            }
+            for message in self.sessions.get(session_id, [])
+        ]
+
+    def get_session_metadata(self, session_id: str) -> dict[str, Any]:
+        return {"source": "chat", "channel_meta": None}
+
+    def is_channel_session(self, session_id: str) -> bool:
+        return False
+
     def get_session_activity_events(self, session_id: str) -> list[dict[str, Any]]:
         return self.activity_events.get(session_id, [])
 
-    def list_session_summaries(self) -> list[dict[str, Any]]:
-        return self.session_summaries
+    def list_session_summaries(self, source: str | None = None) -> list[dict[str, Any]]:
+        if source is None:
+            return self.session_summaries
+        return [item for item in self.session_summaries if item["source"] == source]
 
     def delete_session(self, session_id: str) -> bool:
         self.sessions.pop(session_id, None)
@@ -133,6 +156,66 @@ class FakeChatService:
                 "finish_reason": "stop",
             },
         }
+
+
+class FakeChannelWorkspaceService:
+    def __init__(self) -> None:
+        self.started = False
+
+    async def start(self) -> None:
+        self.started = True
+
+    async def stop(self) -> None:
+        self.started = False
+
+    async def get_workspace_snapshot(self):
+        class Snapshot:
+            def __init__(self) -> None:
+                self.platforms = [
+                    type("Platform", (), {"model_dump": lambda self: {"name": "weixin", "label": "Weixin", "implemented": True, "account_count": 1, "running_count": 0}})()
+                ]
+                self.accounts = [
+                    type("Account", (), {"model_dump": lambda self: {"platform": "weixin", "account_id": "wx-a", "configured": False, "enabled": True, "running": False, "name": None, "last_inbound_at": None, "last_outbound_at": None, "last_error": None, "login_status": None}})()
+                ]
+
+        return Snapshot()
+
+    def load_config(self):
+        class Config:
+            def model_dump(self) -> dict[str, Any]:
+                return {"enabled_platforms": ["weixin"], "weixin": {}}
+
+        return Config()
+
+    def save_config(self, payload: dict[str, Any]):
+        class Config:
+            def __init__(self, incoming: dict[str, Any]) -> None:
+                self.incoming = incoming
+
+            def model_dump(self) -> dict[str, Any]:
+                return self.incoming
+
+        return Config(payload)
+
+    async def get_accounts(self):
+        return [
+            type("Account", (), {"model_dump": lambda self: {"platform": "weixin", "account_id": "wx-a", "configured": False, "enabled": True, "running": False, "name": None, "last_inbound_at": None, "last_outbound_at": None, "last_error": None, "login_status": None}})()
+        ]
+
+    async def login(self, platform: str, account_id: str | None = None):
+        return {"platform": platform, "account_id": account_id or "wx-a", "status": "waiting", "qrcode_url": "https://example.test/qr"}
+
+    async def start_account(self, platform: str, account_id: str):
+        return type("Account", (), {"model_dump": lambda self: {"platform": platform, "account_id": account_id, "configured": True, "enabled": True, "running": True, "name": None, "last_inbound_at": None, "last_outbound_at": None, "last_error": None, "login_status": None}})()
+
+    async def stop_account(self, platform: str, account_id: str):
+        return type("Account", (), {"model_dump": lambda self: {"platform": platform, "account_id": account_id, "configured": True, "enabled": True, "running": False, "name": None, "last_inbound_at": None, "last_outbound_at": None, "last_error": None, "login_status": None}})()
+
+    def get_registered_platforms(self):
+        return [{"name": "weixin", "label": "Weixin", "implemented": True}]
+
+    async def get_monitor_sessions(self):
+        return []
 
 
 class FakeMCPManager:
@@ -172,6 +255,7 @@ def build_test_client(tmp_path: Path) -> TestClient[Any]:
         services=AppServices(
             config_service=config_service,
             chat_service=chat_service,  # type: ignore[arg-type]
+            channel_workspace_service=FakeChannelWorkspaceService(),  # type: ignore[arg-type]
             event_broker=EventStreamBroker(),
             frontend_service=frontend_service,
         ),
@@ -326,6 +410,25 @@ def test_api_endpoints_cover_config_session_and_stream(tmp_path: Path) -> None:
         assert "event: tool_call_start" in payload
         assert "Echo: inspect this" in payload
         assert "event: done" in payload
+
+        channel_workspace_response = client.get("/api/channel/workspace")
+        assert channel_workspace_response.status_code == 200
+        assert channel_workspace_response.json()["platforms"][0]["name"] == "weixin"
+
+        channel_platforms_response = client.get("/api/channel/platforms")
+        assert channel_platforms_response.status_code == 200
+        assert channel_platforms_response.json()["platforms"][0]["implemented"] is True
+
+        channel_config_response = client.get("/api/channel/config")
+        assert channel_config_response.status_code == 200
+        assert channel_config_response.json()["enabled_platforms"] == ["weixin"]
+
+        channel_login_response = client.post(
+            "/api/channel/accounts/weixin/login",
+            json={"account_id": None},
+        )
+        assert channel_login_response.status_code == 201
+        assert channel_login_response.json()["status"] == "waiting"
 
 
 def test_chat_service_skips_llm_construction_without_saved_credentials(

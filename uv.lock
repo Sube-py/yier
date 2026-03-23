@@ -1230,12 +1230,14 @@ name = "yier-channel"
 version = "0.1.0"
 source = { editable = "packages/yier-channel" }
 dependencies = [
+    { name = "cryptography" },
     { name = "httpx" },
     { name = "pydantic" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "cryptography", specifier = ">=45.0.0" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "pydantic", specifier = ">=2.12.5" },
 ]

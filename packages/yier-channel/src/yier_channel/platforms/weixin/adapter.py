@@ -14,7 +14,20 @@ from yier_channel.core.models import (
     ChannelMeta,
     ChannelPlatformSummary,
 )
-from yier_channel.platforms.weixin.api import DEFAULT_BASE_URL, WeixinAPI
+from yier_channel.platforms.weixin.api import (
+    CDN_BASE_URL,
+    DEFAULT_BASE_URL,
+    UPLOAD_MEDIA_FILE,
+    UPLOAD_MEDIA_IMAGE,
+    UPLOAD_MEDIA_VIDEO,
+    WeixinAPI,
+)
+from yier_channel.platforms.weixin.cdn import (
+    aes_ecb_padded_size,
+    build_upload_metadata,
+    upload_buffer_to_cdn,
+)
+from yier_channel.platforms.weixin.media import detect_media_kind
 from yier_channel.storage.weixin import WeixinStorage
 
 
@@ -144,6 +157,101 @@ class WeixinAdapter(PlatformAdapter):
         )
         await self._emit_state(summary)
         return {"message_id": message_id}
+
+    async def send_file(
+        self,
+        account_id: str,
+        peer_id: str,
+        file_path: Path,
+        text: str = "",
+    ) -> dict[str, Any]:
+        payload = self.storage.load_account(account_id)
+        token = str(payload.get("token", ""))
+        context_token = self._context_tokens.get((account_id, peer_id))
+        if not token:
+            raise ValueError(f"Weixin account {account_id} does not have a token")
+        if not context_token:
+            raise ValueError(f"Missing context token for {account_id}:{peer_id}")
+        if not file_path.exists() or not file_path.is_file():
+            raise ValueError(f"File not found: {file_path}")
+
+        plaintext, filekey, plaintext_size, aes_key_hex = build_upload_metadata(file_path)
+        media_kind = detect_media_kind(file_path)
+        media_type = {
+            "image": UPLOAD_MEDIA_IMAGE,
+            "video": UPLOAD_MEDIA_VIDEO,
+            "file": UPLOAD_MEDIA_FILE,
+        }[media_kind]
+        upload_payload = await self.api.get_upload_url(
+            token=token,
+            filekey=filekey,
+            media_type=media_type,
+            to_user_id=peer_id,
+            plaintext=plaintext,
+            aes_key_hex=aes_key_hex,
+        )
+        upload_param = str(upload_payload.get("upload_param", "")).strip()
+        if not upload_param:
+            raise ValueError("Weixin get_upload_url did not return upload_param")
+        download_param = await upload_buffer_to_cdn(
+            data=plaintext,
+            upload_param=upload_param,
+            filekey=filekey,
+            cdn_base_url=str(payload.get("cdn_base_url", CDN_BASE_URL)),
+            aes_key=bytes.fromhex(aes_key_hex),
+        )
+        ciphertext_size = aes_ecb_padded_size(plaintext_size)
+        if media_kind == "image":
+            result = await self.api.send_image_message(
+                token=token,
+                to_user_id=peer_id,
+                context_token=context_token,
+                encrypted_query_param=download_param,
+                aes_key_hex=aes_key_hex,
+                ciphertext_size=ciphertext_size,
+                text=text,
+            )
+        elif media_kind == "video":
+            result = await self.api.send_video_message(
+                token=token,
+                to_user_id=peer_id,
+                context_token=context_token,
+                encrypted_query_param=download_param,
+                aes_key_hex=aes_key_hex,
+                ciphertext_size=ciphertext_size,
+                text=text,
+            )
+        else:
+            result = await self.api.send_file_message(
+                token=token,
+                to_user_id=peer_id,
+                context_token=context_token,
+                encrypted_query_param=download_param,
+                aes_key_hex=aes_key_hex,
+                plaintext_size=plaintext_size,
+                file_name=file_path.name,
+                text=text,
+            )
+        summary = self._load_summary(account_id)
+        summary.last_outbound_at = int(time.time() * 1000)
+        summary.last_error = None
+        self._set_summary(summary)
+        message_id = str(result.get("message_id", uuid4()))
+        await self.emit_event(
+            "channel_outbound_message",
+            {
+                "platform": self.platform,
+                "account_id": account_id,
+                "peer_id": peer_id,
+                "content": text,
+                "message_id": message_id,
+                "timestamp_ms": summary.last_outbound_at,
+                "file_name": file_path.name,
+                "media_kind": media_kind,
+            },
+        )
+        await self._emit_state(summary)
+        return {"message_id": message_id, "media_kind": media_kind, "file_name": file_path.name}
 
     async def _watch_login(self, account_id: str, qrcode: str) -> None:
         try:

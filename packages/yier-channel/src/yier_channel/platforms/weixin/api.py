@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import secrets
 from typing import Any
 
 import httpx
 
+from yier_channel.platforms.weixin.cdn import aes_ecb_padded_size
+
 
 DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com"
 DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000
+CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c"
+UPLOAD_MEDIA_IMAGE = 1
+UPLOAD_MEDIA_VIDEO = 2
+UPLOAD_MEDIA_FILE = 3
 
 
 class WeixinAPI:
@@ -75,6 +82,154 @@ class WeixinAPI:
             "base_info": {"channel_version": "0.1.0"},
         }
         return await self._post("ilink/bot/sendmessage", payload, token=token, timeout_ms=15_000)
+
+    async def send_message_items(
+        self,
+        token: str,
+        to_user_id: str,
+        context_token: str,
+        item_list: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        payload = {
+            "msg": {
+                "from_user_id": "",
+                "to_user_id": to_user_id,
+                "client_id": secrets.token_hex(8),
+                "message_type": 2,
+                "message_state": 2,
+                "context_token": context_token,
+                "item_list": item_list,
+            },
+            "base_info": {"channel_version": "0.1.0"},
+        }
+        return await self._post("ilink/bot/sendmessage", payload, token=token, timeout_ms=15_000)
+
+    async def get_upload_url(
+        self,
+        token: str,
+        *,
+        filekey: str,
+        media_type: int,
+        to_user_id: str,
+        plaintext: bytes,
+        aes_key_hex: str,
+    ) -> dict[str, Any]:
+        payload = {
+            "filekey": filekey,
+            "media_type": media_type,
+            "to_user_id": to_user_id,
+            "rawsize": len(plaintext),
+            "rawfilemd5": hashlib.md5(plaintext).hexdigest(),
+            "filesize": aes_ecb_padded_size(len(plaintext)),
+            "no_need_thumb": True,
+            "aeskey": aes_key_hex,
+            "base_info": {"channel_version": "0.1.0"},
+        }
+        return await self._post("ilink/bot/getuploadurl", payload, token=token, timeout_ms=15_000)
+
+    async def send_image_message(
+        self,
+        token: str,
+        to_user_id: str,
+        context_token: str,
+        *,
+        encrypted_query_param: str,
+        aes_key_hex: str,
+        ciphertext_size: int,
+        text: str = "",
+    ) -> dict[str, Any]:
+        item_list: list[dict[str, Any]] = []
+        if text:
+            item_list.append({"type": 1, "text_item": {"text": text}})
+        item_list.append(
+            {
+                "type": 2,
+                "image_item": {
+                    "media": {
+                        "encrypt_query_param": encrypted_query_param,
+                        "aes_key": base64.b64encode(bytes.fromhex(aes_key_hex)).decode("utf-8"),
+                        "encrypt_type": 1,
+                    },
+                    "mid_size": ciphertext_size,
+                },
+            }
+        )
+        return await self.send_message_items(
+            token=token,
+            to_user_id=to_user_id,
+            context_token=context_token,
+            item_list=item_list,
+        )
+
+    async def send_video_message(
+        self,
+        token: str,
+        to_user_id: str,
+        context_token: str,
+        *,
+        encrypted_query_param: str,
+        aes_key_hex: str,
+        ciphertext_size: int,
+        text: str = "",
+    ) -> dict[str, Any]:
+        item_list: list[dict[str, Any]] = []
+        if text:
+            item_list.append({"type": 1, "text_item": {"text": text}})
+        item_list.append(
+            {
+                "type": 5,
+                "video_item": {
+                    "media": {
+                        "encrypt_query_param": encrypted_query_param,
+                        "aes_key": base64.b64encode(bytes.fromhex(aes_key_hex)).decode("utf-8"),
+                        "encrypt_type": 1,
+                    },
+                    "video_size": ciphertext_size,
+                },
+            }
+        )
+        return await self.send_message_items(
+            token=token,
+            to_user_id=to_user_id,
+            context_token=context_token,
+            item_list=item_list,
+        )
+
+    async def send_file_message(
+        self,
+        token: str,
+        to_user_id: str,
+        context_token: str,
+        *,
+        encrypted_query_param: str,
+        aes_key_hex: str,
+        plaintext_size: int,
+        file_name: str,
+        text: str = "",
+    ) -> dict[str, Any]:
+        item_list: list[dict[str, Any]] = []
+        if text:
+            item_list.append({"type": 1, "text_item": {"text": text}})
+        item_list.append(
+            {
+                "type": 4,
+                "file_item": {
+                    "media": {
+                        "encrypt_query_param": encrypted_query_param,
+                        "aes_key": base64.b64encode(bytes.fromhex(aes_key_hex)).decode("utf-8"),
+                        "encrypt_type": 1,
+                    },
+                    "file_name": file_name,
+                    "len": str(plaintext_size),
+                },
+            }
+        )
+        return await self.send_message_items(
+            token=token,
+            to_user_id=to_user_id,
+            context_token=context_token,
+            item_list=item_list,
+        )
 
     async def get_config(self, token: str, ilink_user_id: str, context_token: str | None) -> dict[str, Any]:
         payload = {

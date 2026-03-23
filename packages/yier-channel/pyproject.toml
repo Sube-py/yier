@@ -9,6 +9,7 @@ description = "Channel runtime and platform adapters for yier"
 readme = "../../README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "cryptography>=45.0.0",
     "httpx>=0.28.1",
     "pydantic>=2.12.5",
 ]

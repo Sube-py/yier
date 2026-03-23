@@ -61,6 +61,22 @@ class ChannelWorkspaceService:
             text=text,
         )
 
+    async def send_file(
+        self,
+        platform: str,
+        account_id: str,
+        peer_id: str,
+        file_path: Path,
+        text: str = "",
+    ) -> dict[str, Any]:
+        return await self.manager.send_file(
+            platform=platform,
+            account_id=account_id,
+            peer_id=peer_id,
+            file_path=file_path,
+            text=text,
+        )
+
     def get_registered_platforms(self) -> list[dict[str, Any]]:
         return [
             {

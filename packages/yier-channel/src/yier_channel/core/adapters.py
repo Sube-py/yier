@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
 from yier_channel.core.models import ChannelAccountSummary, ChannelMessage, ChannelPlatformSummary
@@ -63,4 +64,14 @@ class PlatformAdapter(ABC):
 
     @abstractmethod
     async def send_text(self, account_id: str, peer_id: str, text: str) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def send_file(
+        self,
+        account_id: str,
+        peer_id: str,
+        file_path: Path,
+        text: str = "",
+    ) -> dict[str, Any]:
         raise NotImplementedError

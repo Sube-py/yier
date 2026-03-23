@@ -31,7 +31,8 @@ def build_parser() -> argparse.ArgumentParser:
     send_parser.add_argument("--platform", default="weixin")
     send_parser.add_argument("--account-id", required=True)
     send_parser.add_argument("--to", required=True)
-    send_parser.add_argument("--text", required=True)
+    send_parser.add_argument("--text", default="")
+    send_parser.add_argument("--file", default="")
 
     return parser
 
@@ -61,12 +62,23 @@ async def run_cli(args: argparse.Namespace) -> int:
         return 0
 
     if args.command == "send":
-        result = await service.send_text(
-            platform=args.platform,
-            account_id=args.account_id,
-            peer_id=args.to,
-            text=args.text,
-        )
+        if not args.text and not args.file:
+            raise SystemExit("Either --text or --file must be provided.")
+        if args.file:
+            result = await service.send_file(
+                platform=args.platform,
+                account_id=args.account_id,
+                peer_id=args.to,
+                file_path=Path(args.file).expanduser().resolve(),
+                text=args.text,
+            )
+        else:
+            result = await service.send_text(
+                platform=args.platform,
+                account_id=args.account_id,
+                peer_id=args.to,
+                text=args.text,
+            )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
 

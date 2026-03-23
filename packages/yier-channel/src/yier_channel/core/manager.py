@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
 from yier_channel.core.adapters import EventSink, MessageSink, PlatformAdapter
@@ -66,6 +66,22 @@ class ChannelManager:
     async def send_text(self, platform: str, account_id: str, peer_id: str, text: str) -> dict[str, Any]:
         adapter = self._require_platform(platform)
         return await adapter.send_text(account_id=account_id, peer_id=peer_id, text=text)
+
+    async def send_file(
+        self,
+        platform: str,
+        account_id: str,
+        peer_id: str,
+        file_path: Path,
+        text: str = "",
+    ) -> dict[str, Any]:
+        adapter = self._require_platform(platform)
+        return await adapter.send_file(
+            account_id=account_id,
+            peer_id=peer_id,
+            file_path=file_path,
+            text=text,
+        )
 
     def _require_platform(self, name: str) -> PlatformAdapter:
         adapter = self.get_platform(name)

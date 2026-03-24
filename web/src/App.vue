@@ -11,6 +11,8 @@ import Tag from 'primevue/tag'
 import ChatComposer from './components/ChatComposer.vue'
 import ChatTimeline from './components/ChatTimeline.vue'
 import ChannelWorkspacePanel from './components/ChannelWorkspacePanel.vue'
+import CodexSessionExplorer from './components/CodexSessionExplorer.vue'
+import CodexWorkbar from './components/CodexWorkbar.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import {
   ApiError,
@@ -35,6 +37,8 @@ import type {
   ChatActivity,
   ChatApprovalRequestedEvent,
   ChatAssistantDeltaEvent,
+  CodexWorkMode,
+  CodexWorkspaceResponse,
   ChatStreamDoneEvent,
   ChatStreamEvent,
   ChatStreamRequest,
@@ -46,6 +50,7 @@ import type {
   HealthResponse,
   LlmProvider,
   McpConfigResponse,
+  OpenCodexSessionResponse,
   PendingApproval,
   SaveAppSettingsRequest,
   SessionListResponse,
@@ -89,6 +94,7 @@ const channelWorkspace = ref<ChannelWorkspaceResponse | null>(null)
 const channelPlatforms = ref<ChannelPlatformsResponse | null>(null)
 const channelConfig = ref<ChannelConfigResponse | null>(null)
 const channelMonitorSessions = ref<SessionSummary[]>([])
+const codexWorkspace = ref<CodexWorkspaceResponse | null>(null)
 const channelLoginState = reactive({
   qrcodeUrl: '',
   accountId: '',
@@ -99,6 +105,7 @@ const activeSessionId = ref(localStorage.getItem(SESSION_STORAGE_KEY) ?? '')
 const chatMessages = ref<UiChatMessage[]>([])
 const activities = ref<ChatActivity[]>([])
 const sessionHistory = ref<SessionSummary[]>([])
+const activeCodexWorkMode = ref<CodexWorkMode>('build')
 const composerText = ref('')
 const deletingSessionId = ref('')
 const savingState = reactive({
@@ -107,6 +114,8 @@ const savingState = reactive({
   roots: false,
   mcp: false,
   reloadingMcp: false,
+  codexMode: false,
+  codexSandbox: false,
 })
 const appForm = reactive({
   defaultBackendId: 'yier' as BackendId,
@@ -202,16 +211,30 @@ const workspaceEyebrow = computed(() =>
     ? 'Configuration workspace'
     : isChannelRoute.value
       ? 'Channel workspace'
-      : 'Chat workspace',
+      : isCodexWorkspace.value
+        ? 'Codex workspace'
+        : 'Chat workspace',
 )
 const workspaceTitle = computed(() =>
   isSettingsRoute.value
     ? 'Adjust the assistant without leaving the main console'
     : isChannelRoute.value
       ? 'Multi-platform runtime, account status, and live channel sessions'
-      : 'One calm surface for code, files, and config',
+      : isCodexWorkspace.value
+        ? 'Project-aware Codex sessions with mode and permission control'
+        : 'One calm surface for code, files, and config',
 )
 const sessionHistoryCount = computed(() => sessionHistory.value.length)
+const isCodexWorkspace = computed(() => isChatRoute.value && activeBackendId.value === 'codex')
+const activeCodexProjects = computed(() => codexWorkspace.value?.projects ?? [])
+const assistantLabel = computed(() => (activeBackendId.value === 'codex' ? 'Codex' : 'Yier'))
+const composerPlaceholder = computed(() =>
+  activeBackendId.value === 'codex'
+    ? activeCodexWorkMode.value === 'plan'
+      ? 'Ask Codex to analyze the task and produce a concrete implementation plan…'
+      : 'Ask Codex to inspect, edit, or operate in the current workspace…'
+    : 'Ask yier to inspect code, read files, or operate inside the allowed roots…',
+)
 
 watch(activeSessionId, (value) => {
   if (!value) {
@@ -275,6 +298,7 @@ async function refreshDashboard() {
     configPayload,
     mcpPayload,
     sessionsPayload,
+    codexWorkspacePayload,
     channelWorkspacePayload,
     channelPlatformsPayload,
     channelConfigPayload,
@@ -284,6 +308,7 @@ async function refreshDashboard() {
     apiGet<ConfigResponse>('/api/config'),
     apiGet<McpConfigResponse>('/api/config/mcp'),
     apiGet<SessionListResponse>('/api/chat/sessions'),
+    safeApiGet<CodexWorkspaceResponse>('/api/codex/workspace', { projects: [] }),
     safeApiGet<ChannelWorkspaceResponse>('/api/channel/workspace', { platforms: [], accounts: [] }),
     safeApiGet<ChannelPlatformsResponse>('/api/channel/platforms', { platforms: [] }),
     safeApiGet<ChannelConfigResponse>('/api/channel/config', {
@@ -300,6 +325,7 @@ async function refreshDashboard() {
   channelPlatforms.value = channelPlatformsPayload
   channelConfig.value = channelConfigPayload
   channelMonitorSessions.value = normalizeSessionSummaries(channelMonitorSessionsPayload)
+  codexWorkspace.value = codexWorkspacePayload
   sessionHistory.value = normalizeSessionSummaries(sessionsPayload)
   hydrateLlmForm(configPayload.llm)
   hydrateAppForm(configPayload)
@@ -317,6 +343,7 @@ async function ensureSession() {
       chatMessages.value = toUiMessages(transcript.messages)
       activities.value = []
       activeSessionRuntime.value = transcript.backend_runtime ?? null
+      activeCodexWorkMode.value = transcript.codex_work_mode ?? 'build'
       backgroundActivityIdsByToolCallId.clear()
       replaySessionActivityEvents(
         Array.isArray(transcript.activity_events) ? transcript.activity_events : [],
@@ -348,6 +375,7 @@ async function startNewSession(navigateToChat = true) {
   chatMessages.value = []
   activities.value = []
   activeSessionRuntime.value = null
+  activeCodexWorkMode.value = newSessionDraft.backendId === 'codex' ? 'build' : 'build'
   backgroundActivityIdsByToolCallId.clear()
   await refreshSessionHistory()
   successMessage.value = 'Started a fresh session.'
@@ -399,8 +427,12 @@ async function submitMessage() {
 }
 
 async function refreshSessionHistory() {
-  const payload = await apiGet<SessionListResponse>('/api/chat/sessions')
+  const [payload, codexWorkspacePayload] = await Promise.all([
+    apiGet<SessionListResponse>('/api/chat/sessions'),
+    safeApiGet<CodexWorkspaceResponse>('/api/codex/workspace', { projects: [] }),
+  ])
   sessionHistory.value = normalizeSessionSummaries(payload)
+  codexWorkspace.value = codexWorkspacePayload
 }
 
 async function openSessionFromHistory(sessionId: string) {
@@ -419,6 +451,49 @@ async function openSessionFromHistory(sessionId: string) {
   await ensureSession()
   if (!isChatRoute.value) {
     await router.push({ name: 'chat' })
+  }
+}
+
+async function openCodexNativeSession(threadId: string) {
+  if (!threadId) {
+    return
+  }
+
+  errorMessage.value = ''
+  successMessage.value = ''
+  try {
+    const payload = await apiPost<OpenCodexSessionResponse>('/api/codex/sessions/open', {
+      thread_id: threadId,
+    })
+    await refreshSessionHistory()
+    await openSessionFromHistory(payload.session_id)
+  } catch (error) {
+    errorMessage.value = toErrorMessage(error)
+  }
+}
+
+async function updateCodexWorkMode(mode: CodexWorkMode) {
+  if (!activeSessionId.value || activeBackendId.value !== 'codex' || activeCodexWorkMode.value === mode) {
+    return
+  }
+
+  savingState.codexMode = true
+  errorMessage.value = ''
+  successMessage.value = ''
+  try {
+    await apiPut<{ ok: boolean }>(`/api/chat/sessions/${activeSessionId.value}/codex-mode`, {
+      codex_work_mode: mode,
+    })
+    activeCodexWorkMode.value = mode
+    const activeSummary = sessionHistory.value.find((session) => session.session_id === activeSessionId.value)
+    if (activeSummary) {
+      activeSummary.codex_work_mode = mode
+    }
+    successMessage.value = `Codex mode switched to ${mode}.`
+  } catch (error) {
+    errorMessage.value = toErrorMessage(error)
+  } finally {
+    savingState.codexMode = false
   }
 }
 
@@ -840,6 +915,25 @@ function handleStreamEvent(event: ChatStreamEvent) {
     return
   }
 
+  if (event.event === 'plan') {
+    const activityId = event.data.item_id || `plan:${crypto.randomUUID()}`
+    upsertActivity(activityId, {
+      id: activityId,
+      kind: 'plan',
+      title: 'Plan',
+      detail: event.data.content,
+      state: 'info',
+      command: '',
+      cwd: '',
+      stdout: '',
+      stderr: '',
+      meta: [],
+      shell: null,
+      tool: null,
+    })
+    return
+  }
+
   if (event.event === 'approval_requested') {
     if (activeSessionRuntime.value) {
       activeSessionRuntime.value.pending_approval_count += 1
@@ -915,25 +1009,7 @@ async function saveAppSettings() {
   errorMessage.value = ''
   successMessage.value = ''
   try {
-    config.value = await apiPut<ConfigResponse>('/api/config/app', {
-      session_defaults: {
-        default_backend_id: appForm.defaultBackendId,
-        default_project_path: appForm.defaultProjectPath,
-        channel_backend_id: appForm.channelBackendId,
-        channel_project_path: appForm.channelProjectPath,
-        channel_auto_approve_codex_requests: appForm.channelAutoApproveCodexRequests,
-      },
-      codex: {
-        launcher_command: appForm.codexLauncherCommand,
-        model: appForm.codexModel,
-        sandbox: appForm.codexSandbox,
-        approval_policy: appForm.codexApprovalPolicy,
-        approvals_reviewer: appForm.codexApprovalsReviewer,
-        personality: appForm.codexPersonality,
-        reasoning_effort: appForm.codexReasoningEffort,
-        service_tier: appForm.codexServiceTier,
-      },
-    } satisfies SaveAppSettingsRequest)
+    config.value = await apiPut<ConfigResponse>('/api/config/app', buildAppSettingsPayload())
     health.value = await apiGet<HealthResponse>('/api/health')
     hydrateAppForm(config.value)
     initializeNewSessionDraft(config.value)
@@ -942,6 +1018,26 @@ async function saveAppSettings() {
     errorMessage.value = toErrorMessage(error)
   } finally {
     savingState.app = false
+  }
+}
+
+async function saveCodexSandboxMode() {
+  if (activeBackendId.value !== 'codex') {
+    return
+  }
+
+  savingState.codexSandbox = true
+  errorMessage.value = ''
+  successMessage.value = ''
+  try {
+    config.value = await apiPut<ConfigResponse>('/api/config/app', buildAppSettingsPayload())
+    health.value = await apiGet<HealthResponse>('/api/health')
+    hydrateAppForm(config.value)
+    successMessage.value = 'Codex permission mode saved.'
+  } catch (error) {
+    errorMessage.value = toErrorMessage(error)
+  } finally {
+    savingState.codexSandbox = false
   }
 }
 
@@ -1379,6 +1475,28 @@ function buildLlmSavePayload() {
     base_url: provider && trimmedBaseUrl === defaultBaseUrl ? '' : trimmedBaseUrl,
     model: trimmedModel,
   }
+}
+
+function buildAppSettingsPayload() {
+  return {
+    session_defaults: {
+      default_backend_id: appForm.defaultBackendId,
+      default_project_path: appForm.defaultProjectPath,
+      channel_backend_id: appForm.channelBackendId,
+      channel_project_path: appForm.channelProjectPath,
+      channel_auto_approve_codex_requests: appForm.channelAutoApproveCodexRequests,
+    },
+    codex: {
+      launcher_command: appForm.codexLauncherCommand,
+      model: appForm.codexModel,
+      sandbox: appForm.codexSandbox,
+      approval_policy: appForm.codexApprovalPolicy,
+      approvals_reviewer: appForm.codexApprovalsReviewer,
+      personality: appForm.codexPersonality,
+      reasoning_effort: appForm.codexReasoningEffort,
+      service_tier: appForm.codexServiceTier,
+    },
+  } satisfies SaveAppSettingsRequest
 }
 
 function makeActivity(
@@ -2372,7 +2490,13 @@ function toErrorMessage(error: unknown) {
         <Button label="New Chat" icon="pi pi-plus" fluid @click="handleNewChatClick" />
       </div>
 
-      <div class="side-card side-card--history">
+      <CodexSessionExplorer
+        v-if="isCodexWorkspace"
+        :projects="activeCodexProjects"
+        :active-session-id="activeSessionId"
+        @open-session="openCodexNativeSession"
+      />
+      <div v-else class="side-card side-card--history">
         <div class="side-card-row">
           <p class="side-card-label">Recent sessions</p>
           <Tag :value="String(sessionHistoryCount)" severity="secondary" rounded />
@@ -2470,13 +2594,35 @@ function toErrorMessage(error: unknown) {
           <p class="eyebrow">{{ workspaceEyebrow }}</p>
           <h2>{{ workspaceTitle }}</h2>
         </div>
-        <Button
-          :label="isChatRoute ? 'Settings' : 'Back to Chat'"
-          :icon="isChatRoute ? 'pi pi-sliders-h' : 'pi pi-comments'"
-          severity="secondary"
-          text
-          @click="isChatRoute ? openSettings() : openChat()"
-        />
+        <div class="workspace-header-actions">
+          <div v-if="isCodexWorkspace" class="codex-mode-switch">
+            <button
+              type="button"
+              class="codex-mode-button"
+              :class="{ 'codex-mode-button--active': activeCodexWorkMode === 'plan' }"
+              :disabled="savingState.codexMode"
+              @click="updateCodexWorkMode('plan')"
+            >
+              Plan
+            </button>
+            <button
+              type="button"
+              class="codex-mode-button"
+              :class="{ 'codex-mode-button--active': activeCodexWorkMode === 'build' }"
+              :disabled="savingState.codexMode"
+              @click="updateCodexWorkMode('build')"
+            >
+              Build
+            </button>
+          </div>
+          <Button
+            :label="isChatRoute ? 'Settings' : 'Back to Chat'"
+            :icon="isChatRoute ? 'pi pi-sliders-h' : 'pi pi-comments'"
+            severity="secondary"
+            text
+            @click="isChatRoute ? openSettings() : openChat()"
+          />
+        </div>
       </header>
 
       <Message v-if="errorMessage" severity="error" class="status-banner">{{
@@ -2511,30 +2657,47 @@ function toErrorMessage(error: unknown) {
           <Button label="Open Settings" icon="pi pi-cog" @click="openSettings" />
         </section>
 
-        <section v-else class="workspace-content">
+        <section
+          v-else
+          class="workspace-content"
+          :class="{ 'workspace-content--codex': isCodexWorkspace }"
+        >
           <template v-if="isChatRoute">
-            <ChatTimeline
-              :messages="chatMessages"
-              :activities="activities"
-              :is-sending="isSending"
-              :session-label="sessionLabel"
-              :session-runtime="activeSessionRuntime"
+            <div class="chat-stage">
+              <ChatTimeline
+                :messages="chatMessages"
+                :activities="activities"
+                :is-sending="isSending"
+                :session-label="sessionLabel"
+                :session-runtime="activeSessionRuntime"
+                :project-path="activeProjectPath"
+                :assistant-label="assistantLabel"
+                @approval-action="submitApprovalDecision"
+              />
+              <Message
+                v-if="activeSession?.source === 'channel'"
+                severity="info"
+                class="status-banner"
+              >
+                This session comes from {{ activeSession.channel_meta?.platform ?? 'channel' }} and
+                is read-only in the chat workspace.
+              </Message>
+              <ChatComposer
+                v-model="composerText"
+                :disabled="!canSendToSession"
+                :is-sending="isSending"
+                :placeholder="composerPlaceholder"
+                @submit="submitMessage"
+              />
+            </div>
+            <CodexWorkbar
+              v-if="isCodexWorkspace"
+              :runtime="activeSessionRuntime"
               :project-path="activeProjectPath"
-              @approval-action="submitApprovalDecision"
-            />
-            <Message
-              v-if="activeSession?.source === 'channel'"
-              severity="info"
-              class="status-banner"
-            >
-              This session comes from {{ activeSession.channel_meta?.platform ?? 'channel' }} and is
-              read-only in the chat workspace.
-            </Message>
-            <ChatComposer
-              v-model="composerText"
-              :disabled="!canSendToSession"
-              :is-sending="isSending"
-              @submit="submitMessage"
+              :sandbox="appForm.codexSandbox"
+              :saving="savingState.codexSandbox"
+              @update-sandbox="appForm.codexSandbox = $event"
+              @save-sandbox="saveCodexSandboxMode"
             />
           </template>
           <ChannelWorkspacePanel

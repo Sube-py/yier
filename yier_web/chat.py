@@ -4,6 +4,7 @@ import asyncio
 from contextlib import suppress
 import json
 from pathlib import Path
+from time import time
 from typing import Any, AsyncIterator, Awaitable, Callable
 from uuid import uuid4
 
@@ -38,6 +39,7 @@ from yier_agents.src.config import AssistantSettings
 
 from yier_web.agent_backends import ChatSessionContext, CodexAppServerBackend, YierAgentBackend
 from yier_web.background_followups import FollowupQueueManager, create_queue_background_followup_tool
+from yier_web.codex_workspace import CodexWorkspaceService
 from yier_web.config import AppConfigService
 from yier_web.event_stream import EventStreamBroker
 from yier_web.session_metadata_store import SessionMetadataStore
@@ -45,6 +47,8 @@ from yier_web.session_ui_store import SessionUIStore
 from yier_web.schemas import (
     BackendRuntimePayload,
     ChannelMetaPayload,
+    CodexWorkspaceResponse,
+    CodexWorkMode,
     PendingApproval,
     MCPRuntimeEntry,
     SessionSummary,
@@ -76,6 +80,7 @@ class ChatService:
         self.transcript_store = JSONSessionStore(self.config_service.transcripts_path)
         self.session_ui_store = SessionUIStore(self.config_service.session_ui_path)
         self.session_metadata_store = SessionMetadataStore(self.config_service.session_meta_path)
+        self.codex_workspace = CodexWorkspaceService(self.config_service.home_dir)
         self.background_manager = BackgroundCommandManager(
             default_root=self.project_root,
             allow_shell=True,
@@ -168,6 +173,7 @@ class ChatService:
             session_id,
             backend_id=resolved_backend_id,
             project_path=resolved_project_path,
+            codex_work_mode="build" if resolved_backend_id == "codex" else None,
         )
         return session_id
 
@@ -189,6 +195,10 @@ class ChatService:
         backend_id: str | None = None,
         project_path: str | None = None,
         backend_state: dict[str, Any] | None = None,
+        codex_work_mode: CodexWorkMode | None = None,
+        title: str | None = None,
+        preview: str | None = None,
+        updated_at: float | None = None,
     ) -> None:
         existing = self.get_session_metadata(session_id)
         settings = self.config_service.load_web_settings()
@@ -216,7 +226,17 @@ class ChatService:
                 if isinstance(backend_state, dict)
                 else existing.get("backend_state", {})
             ),
+            "codex_work_mode": (
+                codex_work_mode
+                if codex_work_mode in {"plan", "build"}
+                else existing.get("codex_work_mode")
+            ),
+            "title": title if isinstance(title, str) else existing.get("title"),
+            "preview": preview if isinstance(preview, str) else existing.get("preview"),
+            "updated_at": updated_at if isinstance(updated_at, (int, float)) else existing.get("updated_at"),
         }
+        if payload["backend_id"] == "codex" and payload["codex_work_mode"] not in {"plan", "build"}:
+            payload["codex_work_mode"] = "build"
         self.session_metadata_store.save(session_id, payload)
 
     def mark_channel_session(
@@ -242,6 +262,10 @@ class ChatService:
             backend_id=metadata["backend_id"],
             project_path=metadata["project_path"],
             backend_state=next_backend_state,
+            codex_work_mode=metadata["codex_work_mode"],
+            title=metadata["title"],
+            preview=metadata["preview"],
+            updated_at=metadata["updated_at"],
         )
 
     def get_session_context(self, session_id: str) -> ChatSessionContext:
@@ -290,6 +314,14 @@ class ChatService:
             ),
             "channel_meta": channel_meta,
             "backend_state": backend_state,
+            "codex_work_mode": (
+                payload.get("codex_work_mode")
+                if payload.get("codex_work_mode") in {"plan", "build"}
+                else ("build" if backend_id == "codex" else None)
+            ),
+            "title": payload.get("title") if isinstance(payload.get("title"), str) else "",
+            "preview": payload.get("preview") if isinstance(payload.get("preview"), str) else "",
+            "updated_at": float(payload["updated_at"]) if isinstance(payload.get("updated_at"), (int, float)) else 0.0,
         }
 
     def build_transcript_messages(self, session_id: str) -> list[StoredSessionMessage]:
@@ -314,6 +346,45 @@ class ChatService:
     def get_session_activity_events(self, session_id: str) -> list[dict[str, Any]]:
         return self.session_ui_store.load_activity_events(session_id)
 
+    def get_codex_workspace(self) -> CodexWorkspaceResponse:
+        return self.codex_workspace.load_workspace()
+
+    def open_codex_native_session(self, thread_id: str) -> str | None:
+        native_session = self.codex_workspace.get_active_session(thread_id)
+        if native_session is None:
+            return None
+
+        session_id = native_session.thread_id
+        self.ensure_session_metadata(
+            session_id,
+            backend_id="codex",
+            project_path=native_session.cwd or native_session.project_path,
+            backend_state={"thread_id": native_session.thread_id},
+            codex_work_mode="build",
+            title=native_session.title,
+            preview=native_session.preview,
+            updated_at=native_session.updated_at or time(),
+        )
+        return session_id
+
+    def update_codex_session_mode(self, session_id: str, codex_work_mode: CodexWorkMode) -> bool:
+        metadata = self.get_session_metadata(session_id)
+        if metadata["backend_id"] != "codex":
+            return False
+        self.ensure_session_metadata(
+            session_id,
+            source=metadata["source"],
+            channel_meta=metadata["channel_meta"],
+            backend_id=metadata["backend_id"],
+            project_path=metadata["project_path"],
+            backend_state=metadata["backend_state"],
+            codex_work_mode=codex_work_mode,
+            title=metadata["title"],
+            preview=metadata["preview"],
+            updated_at=metadata["updated_at"],
+        )
+        return True
+
     def list_session_summaries(self, source: str | None = None) -> list[SessionSummary]:
         session_entries: dict[str, dict[str, Any]] = {}
 
@@ -321,6 +392,7 @@ class ChatService:
             self.config_service.transcripts_path,
             self.config_service.sessions_path,
             self.config_service.session_ui_path,
+            self.config_service.session_meta_path,
         ):
             for session_file in directory.glob("*.json"):
                 try:
@@ -349,14 +421,15 @@ class ChatService:
             if source and session_meta["source"] != source:
                 continue
             messages = entry["messages"] if isinstance(entry["messages"], list) else []
-            title = self._session_title(messages)
-            preview = self._session_preview(messages)
+            title = session_meta["title"] or self._session_title(messages)
+            preview = session_meta["preview"] or self._session_preview(messages)
+            updated_at = max(float(entry["updated_at"]), float(session_meta["updated_at"] or 0.0))
             summaries.append(
                 SessionSummary(
                     session_id=session_id,
                     title=title,
                     preview=preview,
-                    updated_at=float(entry["updated_at"]),
+                    updated_at=updated_at,
                     message_count=self._message_count(messages),
                     source=session_meta["source"],
                     backend_id=session_meta["backend_id"],
@@ -366,10 +439,51 @@ class ChatService:
                         if isinstance(session_meta["channel_meta"], dict)
                         else None
                     ),
+                    codex_work_mode=session_meta["codex_work_mode"],
                 )
             )
 
         return sorted(summaries, key=lambda item: item.updated_at, reverse=True)
+
+    def load_session_view(
+        self,
+        session_id: str,
+    ) -> tuple[list[StoredSessionMessage], list[dict[str, Any]]]:
+        native_view = self._native_codex_session_view(session_id)
+        if native_view is not None:
+            return native_view
+        return (
+            self.build_transcript_messages(session_id),
+            self.get_session_activity_events(session_id),
+        )
+
+    def _native_codex_session_view(
+        self,
+        session_id: str,
+    ) -> tuple[list[StoredSessionMessage], list[dict[str, Any]]] | None:
+        context = self.get_session_context(session_id)
+        thread_id = context.backend_state.get("thread_id")
+        if context.backend_id != "codex" or not isinstance(thread_id, str) or not thread_id:
+            return None
+
+        backend = self.backends.get(context.backend_id)
+        if not isinstance(backend, CodexAppServerBackend):
+            return None
+
+        view = backend.load_thread_view(context)
+        self.ensure_session_metadata(
+            session_id,
+            source=context.source,
+            channel_meta=context.channel_meta,
+            backend_id=context.backend_id,
+            project_path=str(context.project_path),
+            backend_state=context.backend_state,
+            codex_work_mode=self.get_session_metadata(session_id)["codex_work_mode"],
+            title=view["title"],
+            preview=view["preview"],
+            updated_at=view["updated_at"],
+        )
+        return (view["messages"], view["activity_events"])
 
     async def delete_session(self, session_id: str) -> bool:
         metadata = self.get_session_metadata(session_id)
@@ -649,6 +763,21 @@ class ChatService:
         messages = self.transcript_store.get_session_messages(session_id) or []
         messages.append(message)
         self.transcript_store.save(session_id, messages)
+        metadata = self.get_session_metadata(session_id)
+        title = metadata["title"] or self._session_title([item.model_dump() for item in messages if hasattr(item, "model_dump")])
+        preview = self._session_preview([item.model_dump() for item in messages if hasattr(item, "model_dump")])
+        self.ensure_session_metadata(
+            session_id,
+            source=metadata["source"],
+            channel_meta=metadata["channel_meta"],
+            backend_id=metadata["backend_id"],
+            project_path=metadata["project_path"],
+            backend_state=metadata["backend_state"],
+            codex_work_mode=metadata["codex_work_mode"],
+            title=title,
+            preview=preview,
+            updated_at=time(),
+        )
 
     def _session_title(self, messages: list[dict[str, Any]]) -> str:
         for message in messages:
@@ -701,6 +830,8 @@ class ChatService:
             "background_followup_queued",
             "background_followup_started",
             "background_followup_finished",
+            "reasoning",
+            "plan",
             "approval_requested",
             "approval_resolved",
         }:

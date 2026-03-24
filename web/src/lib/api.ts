@@ -24,6 +24,7 @@ const STREAM_EVENT_NAMES = [
   'background_followup_started',
   'background_followup_finished',
   'reasoning',
+  'plan',
   'assistant_delta',
   'assistant_message',
   'approval_requested',

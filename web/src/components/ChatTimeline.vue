@@ -23,6 +23,7 @@ const props = defineProps<{
   sessionLabel: string
   sessionRuntime: BackendRuntime | null
   projectPath: string
+  assistantLabel?: string
 }>()
 
 const emit = defineEmits<{
@@ -148,9 +149,6 @@ function activityMarkerClass(activity: ChatActivity) {
 function isHiddenActivity(activity: ChatActivity) {
   if (activity.kind === 'approval') {
     return false
-  }
-  if (activity.kind === 'reasoning') {
-    return true
   }
 
   if (activity.kind === 'status' && activity.title === 'Thinking') {
@@ -298,7 +296,7 @@ watch(
           class="message-bubble"
           :class="`message-bubble--${message.role}`"
         >
-          <p class="message-role">{{ message.role === 'user' ? 'You' : 'Yier' }}</p>
+          <p class="message-role">{{ message.role === 'user' ? 'You' : assistantLabel ?? 'Yier' }}</p>
           <p v-if="message.role === 'user'" class="message-content">{{ message.content }}</p>
           <div
             v-else
@@ -466,7 +464,7 @@ watch(
           :key="trailingAssistantMessage.id"
           class="message-bubble message-bubble--assistant"
         >
-          <p class="message-role">Yier</p>
+          <p class="message-role">{{ assistantLabel ?? 'Yier' }}</p>
           <div
             class="message-content message-content--markdown"
             v-html="renderAssistantMessage(trailingAssistantMessage.content)"

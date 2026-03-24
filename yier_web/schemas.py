@@ -16,6 +16,7 @@ FrontendMode = Literal["proxy", "static", "missing"]
 SessionSource = Literal["chat", "channel"]
 LLMProvider = Literal["", "zai", "zai-coding-plan"]
 BackendId = Literal["yier", "codex"]
+CodexWorkMode = Literal["plan", "build"]
 CodexApprovalPolicy = Literal["untrusted", "on-failure", "on-request", "never"]
 CodexSandboxMode = Literal["read-only", "workspace-write", "danger-full-access"]
 CodexPersonality = Literal["none", "friendly", "pragmatic"]
@@ -229,6 +230,7 @@ class SessionSummary(BaseModel):
     backend_id: BackendId = "yier"
     project_path: str = ""
     channel_meta: ChannelMetaPayload | None = None
+    codex_work_mode: CodexWorkMode | None = None
 
 
 class SessionListResponse(BaseModel):
@@ -260,6 +262,7 @@ class SessionTranscriptResponse(BaseModel):
     backend_id: BackendId = "yier"
     project_path: str = ""
     channel_meta: ChannelMetaPayload | None = None
+    codex_work_mode: CodexWorkMode | None = None
     backend_runtime: BackendRuntimePayload | None = None
     pending_approvals: list[PendingApproval] = Field(default_factory=list)
     messages: list[StoredSessionMessage] = Field(default_factory=list)
@@ -311,3 +314,43 @@ class ApprovalResponseRequest(BaseModel):
     request_id: str
     decision: ApprovalDecision
     content: dict[str, Any] | None = None
+
+
+class UpdateCodexSessionModeRequest(BaseModel):
+    codex_work_mode: CodexWorkMode
+
+
+class OpenCodexSessionRequest(BaseModel):
+    thread_id: str
+
+    @field_validator("thread_id")
+    @classmethod
+    def strip_thread_id(cls, value: str) -> str:
+        return value.strip()
+
+
+class OpenCodexSessionResponse(BaseModel):
+    session_id: str
+
+
+class CodexNativeSessionSummary(BaseModel):
+    thread_id: str
+    title: str
+    preview: str
+    updated_at: float
+    started_at: float
+    cwd: str
+    project: str
+    project_path: str
+    source: str = "active"
+
+
+class CodexProjectGroup(BaseModel):
+    project: str
+    project_path: str
+    session_count: int
+    sessions: list[CodexNativeSessionSummary] = Field(default_factory=list)
+
+
+class CodexWorkspaceResponse(BaseModel):
+    projects: list[CodexProjectGroup] = Field(default_factory=list)

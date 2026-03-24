@@ -1,5 +1,6 @@
 export type LlmProvider = '' | 'zai' | 'zai-coding-plan'
 export type BackendId = 'yier' | 'codex'
+export type CodexWorkMode = 'plan' | 'build'
 export type ApprovalDecision = 'accept' | 'accept_for_session' | 'decline' | 'cancel'
 
 export interface FrontendHealth {
@@ -107,6 +108,7 @@ export interface SessionTranscriptResponse {
   backend_id: BackendId
   project_path: string
   channel_meta?: ChannelMeta | null
+  codex_work_mode?: CodexWorkMode | null
   backend_runtime?: BackendRuntime | null
   pending_approvals: PendingApproval[]
   messages: StoredMessage[]
@@ -123,6 +125,7 @@ export interface SessionSummary {
   backend_id: BackendId
   project_path: string
   channel_meta?: ChannelMeta | null
+  codex_work_mode?: CodexWorkMode | null
 }
 
 export interface SessionListResponse {
@@ -203,6 +206,41 @@ export interface CreateSessionRequest {
 export interface SaveAppSettingsRequest {
   session_defaults: ConfigResponse['session_defaults']
   codex: ConfigResponse['codex']
+}
+
+export interface UpdateCodexSessionModeRequest {
+  codex_work_mode: CodexWorkMode
+}
+
+export interface OpenCodexSessionRequest {
+  thread_id: string
+}
+
+export interface OpenCodexSessionResponse {
+  session_id: string
+}
+
+export interface CodexNativeSessionSummary {
+  thread_id: string
+  title: string
+  preview: string
+  updated_at: number
+  started_at: number
+  cwd: string
+  project: string
+  project_path: string
+  source: string
+}
+
+export interface CodexProjectGroup {
+  project: string
+  project_path: string
+  session_count: number
+  sessions: CodexNativeSessionSummary[]
+}
+
+export interface CodexWorkspaceResponse {
+  projects: CodexProjectGroup[]
 }
 
 export interface ApprovalOption {
@@ -617,6 +655,16 @@ export interface ChatReasoningEvent {
   }
 }
 
+export interface ChatPlanEvent {
+  event: 'plan'
+  data: {
+    session_id: string
+    content: string
+    iteration: number
+    item_id?: string
+  }
+}
+
 export interface ChatAssistantEvent {
   event: 'assistant_message'
   data: {
@@ -739,6 +787,7 @@ export type ChatStreamEvent =
   | ChatBackgroundFollowupStartedEvent
   | ChatBackgroundFollowupFinishedEvent
   | ChatReasoningEvent
+  | ChatPlanEvent
   | ChatAssistantDeltaEvent
   | ChatAssistantEvent
   | ChatApprovalRequestedEvent
@@ -772,7 +821,7 @@ export interface ApprovalActivityState {
 
 export interface ChatActivity {
   id: string
-  kind: 'status' | 'reasoning' | 'tool' | 'command' | 'background' | 'approval'
+  kind: 'status' | 'reasoning' | 'plan' | 'tool' | 'command' | 'background' | 'approval'
   title: string
   detail: string
   state: 'running' | 'done' | 'error' | 'info' | 'queued'

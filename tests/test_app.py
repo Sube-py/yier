@@ -21,7 +21,7 @@ from yier_web.chat import ChatService
 from yier_web.config import AppConfigService, MCPValidationError
 from yier_web.event_stream import EventStreamBroker
 from yier_web.frontend import FrontendService
-from yier_web.schemas import MCPRuntimeEntry, SaveLLMRequest, StoredLLMSettings
+from yier_web.schemas import CodexWorkspaceResponse, MCPRuntimeEntry, SaveLLMRequest, StoredLLMSettings
 from yier_web.tool_events import reset_tool_event_emitter, set_tool_event_emitter
 
 
@@ -65,6 +65,7 @@ class FakeChatService:
                 "backend_id": "yier",
                 "project_path": "/tmp/project",
                 "channel_meta": None,
+                "codex_work_mode": None,
             }
         ]
 
@@ -117,6 +118,10 @@ class FakeChatService:
             "project_path": "/tmp/project",
             "channel_meta": None,
             "backend_state": {},
+            "codex_work_mode": None,
+            "title": "hello",
+            "preview": "hi there",
+            "updated_at": 123.0,
         }
 
     def get_backend_runtime(self, session_id: str) -> dict[str, Any]:
@@ -140,10 +145,22 @@ class FakeChatService:
     def get_session_activity_events(self, session_id: str) -> list[dict[str, Any]]:
         return self.activity_events.get(session_id, [])
 
+    def load_session_view(self, session_id: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        return (self.build_transcript_messages(session_id), self.get_session_activity_events(session_id))
+
     def list_session_summaries(self, source: str | None = None) -> list[dict[str, Any]]:
         if source is None:
             return self.session_summaries
         return [item for item in self.session_summaries if item["source"] == source]
+
+    def get_codex_workspace(self) -> CodexWorkspaceResponse:
+        return CodexWorkspaceResponse(projects=[])
+
+    def open_codex_native_session(self, thread_id: str) -> str | None:
+        return thread_id if thread_id else None
+
+    def update_codex_session_mode(self, session_id: str, codex_work_mode: str) -> bool:
+        return session_id == "session-a"
 
     async def delete_session(self, session_id: str) -> bool:
         self.sessions.pop(session_id, None)
@@ -495,6 +512,21 @@ def test_api_endpoints_cover_config_session_and_stream(tmp_path: Path) -> None:
         assert transcript_response.status_code == 200
         assert transcript_response.json()["messages"][0]["content"] == "hello"
         assert transcript_response.json()["activity_events"][0]["event"] == "tool_call_start"
+
+        codex_workspace_response = client.get("/api/codex/workspace")
+        assert codex_workspace_response.status_code == 200
+        assert codex_workspace_response.json()["projects"] == []
+
+        open_codex_response = client.post("/api/codex/sessions/open", json={"thread_id": "thread-a"})
+        assert open_codex_response.status_code == 201
+        assert open_codex_response.json()["session_id"] == "thread-a"
+
+        codex_mode_response = client.put(
+            "/api/chat/sessions/session-a/codex-mode",
+            json={"codex_work_mode": "plan"},
+        )
+        assert codex_mode_response.status_code == 200
+        assert codex_mode_response.json()["ok"] is True
 
         delete_response = client.delete("/api/chat/sessions/session-a")
         assert delete_response.status_code == 200

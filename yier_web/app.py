@@ -28,20 +28,24 @@ from yier_web.schemas import (
     ChannelLoginRequest,
     ChannelPlatformsResponse,
     ChannelWorkspaceResponse,
+    CodexWorkspaceResponse,
     CreateSessionRequest,
     CreateSessionResponse,
-    HealthResponse,
+    DeleteSessionResponse,
     LLMHealth,
     MCPConfigResponse,
     MCPHealth,
+    HealthResponse,
+    OpenCodexSessionRequest,
+    OpenCodexSessionResponse,
     SaveAppSettingsRequest,
     SaveAllowedRootsRequest,
     SaveChannelConfigRequest,
     SaveLLMRequest,
     SaveMCPConfigRequest,
-    DeleteSessionResponse,
     SessionListResponse,
     SessionTranscriptResponse,
+    UpdateCodexSessionModeRequest,
 )
 
 
@@ -207,12 +211,24 @@ async def list_sessions(state: State) -> SessionListResponse:
     return SessionListResponse(sessions=sessions)
 
 
+@get("/codex/workspace")
+async def get_codex_workspace(state: State) -> CodexWorkspaceResponse:
+    return get_services(state).chat_service.get_codex_workspace()
+
+
+@post("/codex/sessions/open")
+async def open_codex_session(data: OpenCodexSessionRequest, state: State) -> OpenCodexSessionResponse:
+    session_id = get_services(state).chat_service.open_codex_native_session(data.thread_id)
+    if session_id is None:
+        raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail="Codex session not found.")
+    return OpenCodexSessionResponse(session_id=session_id)
+
+
 @get("/chat/sessions/{session_id:str}")
 async def get_session(session_id: str, state: State) -> SessionTranscriptResponse:
     services = get_services(state)
+    messages, activity_events = services.chat_service.load_session_view(session_id)
     metadata = services.chat_service.get_session_metadata(session_id)
-    messages = services.chat_service.build_transcript_messages(session_id)
-    activity_events = services.chat_service.get_session_activity_events(session_id)
     return SessionTranscriptResponse(
         session_id=session_id,
         source=metadata["source"],
@@ -223,6 +239,7 @@ async def get_session(session_id: str, state: State) -> SessionTranscriptRespons
             if isinstance(metadata["channel_meta"], dict)
             else None
         ),
+        codex_work_mode=metadata["codex_work_mode"],
         backend_runtime=services.chat_service.get_backend_runtime(session_id),
         pending_approvals=services.chat_service.get_pending_approvals(session_id),
         messages=messages,
@@ -250,6 +267,21 @@ async def respond_to_approval(
     )
     if not handled:
         raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail="Approval request not found.")
+    return Response(content={"ok": True})
+
+
+@put("/chat/sessions/{session_id:str}/codex-mode")
+async def update_codex_session_mode(
+    session_id: str,
+    data: UpdateCodexSessionModeRequest,
+    state: State,
+) -> Response:
+    updated = get_services(state).chat_service.update_codex_session_mode(
+        session_id=session_id,
+        codex_work_mode=data.codex_work_mode,
+    )
+    if not updated:
+        raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail="Codex session not found.")
     return Response(content={"ok": True})
 
 
@@ -387,9 +419,12 @@ api_router = Router(
         reload_mcp_config,
         create_session,
         list_sessions,
+        get_codex_workspace,
+        open_codex_session,
         get_session,
         delete_session,
         respond_to_approval,
+        update_codex_session_mode,
         stream_chat,
         get_channel_workspace,
         get_channel_platforms,

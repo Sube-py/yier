@@ -14,12 +14,19 @@ from codex_app_server.models import Notification
 from yier_agents import Message
 
 from yier_web.agent_backends.base import ChatBackend, ChatSessionContext, StreamEmitter
+from yier_web.schemas import StoredSessionMessage
 
 if TYPE_CHECKING:
     from yier_web.chat import ChatService
 
 
 DEFAULT_CODEX_LAUNCHER = "codex app-server --listen stdio://"
+PLAN_MODE_PROMPT_PREFIX = "<yier-codex-plan-mode>"
+PLAN_MODE_PROMPT = (
+    f"{PLAN_MODE_PROMPT_PREFIX}\n"
+    "Work in planning mode for this request. Analyze the task, avoid making changes, "
+    "and return a concrete implementation plan that another engineer could execute."
+)
 CODEX_THREAD_SANDBOX_MODE_MAP = {
     "read-only": "read-only",
     "workspace-write": "workspace-write",
@@ -190,6 +197,24 @@ class CodexAppServerBackend(ChatBackend):
         pending.event.set()
         return True
 
+    def load_thread_view(self, context: ChatSessionContext) -> dict[str, Any]:
+        runtime = self._ensure_runtime_blocking(context)
+        assert runtime.client is not None
+        assert runtime.thread_id is not None
+        response = runtime.client.thread_read(runtime.thread_id, include_turns=True)
+        runtime.status = self._thread_status_value(response.thread.status)
+        runtime.active_flags = self._thread_active_flags(response.thread.status)
+        self.chat_service.update_session_backend_state(
+            context.session_id,
+            {
+                "thread_id": runtime.thread_id,
+                "status": runtime.status,
+                "active_flags": runtime.active_flags,
+                "detail": runtime.detail,
+            },
+        )
+        return self._thread_view_payload(context, response.thread)
+
     async def _ensure_runtime(self, context: ChatSessionContext) -> CodexSessionRuntime:
         runtime = self._runtimes.get(context.session_id)
         if runtime is None:
@@ -205,6 +230,23 @@ class CodexAppServerBackend(ChatBackend):
             await asyncio.to_thread(self._resume_thread_blocking, runtime, context, thread_id)
         else:
             await asyncio.to_thread(self._start_thread_blocking, runtime, context)
+        return runtime
+
+    def _ensure_runtime_blocking(self, context: ChatSessionContext) -> CodexSessionRuntime:
+        runtime = self._runtimes.get(context.session_id)
+        if runtime is None:
+            runtime = CodexSessionRuntime(session_id=context.session_id)
+            self._runtimes[context.session_id] = runtime
+            runtime.client = self._start_client(runtime, context)
+
+        if runtime.thread_id:
+            return runtime
+
+        thread_id = context.backend_state.get("thread_id")
+        if isinstance(thread_id, str) and thread_id:
+            self._resume_thread_blocking(runtime, context, thread_id)
+        else:
+            self._start_thread_blocking(runtime, context)
         return runtime
 
     def _start_client(
@@ -281,9 +323,12 @@ class CodexAppServerBackend(ChatBackend):
         assert runtime.thread_id is not None
         runtime.status = "active"
         runtime.detail = None
+        turn_input = user_message
+        if self._codex_work_mode(context) == "plan":
+            turn_input = f"{PLAN_MODE_PROMPT}\n\nUser request:\n{user_message}"
         turn_response = runtime.client.turn_start(
             runtime.thread_id,
-            user_message,
+            turn_input,
             params=self._turn_params(context),
         )
         turn_id = turn_response.turn.id
@@ -368,7 +413,6 @@ class CodexAppServerBackend(ChatBackend):
         if notification.method in {
             "item/reasoning/textDelta",
             "item/reasoning/summaryTextDelta",
-            "item/plan/delta",
         }:
             delta = self._notification_value(notification, "delta")
             if isinstance(delta, str) and delta.strip():
@@ -378,6 +422,51 @@ class CodexAppServerBackend(ChatBackend):
                     {
                         "session_id": context.session_id,
                         "content": delta,
+                        "iteration": 0,
+                    },
+                )
+            return
+
+        if notification.method == "item/plan/delta":
+            delta = self._notification_value(notification, "delta")
+            item_id = self._notification_value(notification, "item_id")
+            if isinstance(delta, str) and delta.strip():
+                self._emit_from_thread(
+                    runtime,
+                    "plan",
+                    {
+                        "session_id": context.session_id,
+                        "item_id": item_id if isinstance(item_id, str) else "",
+                        "content": delta,
+                        "iteration": 0,
+                    },
+                )
+            return
+
+        if notification.method == "turn/plan/updated":
+            explanation = self._notification_value(notification, "explanation")
+            plan = self._notification_value(notification, "plan")
+            turn_id = self._notification_value(notification, "turn_id")
+            lines: list[str] = []
+            if isinstance(explanation, str) and explanation.strip():
+                lines.append(explanation.strip())
+            if isinstance(plan, list):
+                for entry in plan:
+                    step = getattr(entry, "step", None)
+                    status = getattr(entry, "status", None)
+                    if isinstance(step, str) and step.strip():
+                        if status is not None:
+                            lines.append(f"[{status}] {step.strip()}")
+                        else:
+                            lines.append(step.strip())
+            if lines:
+                self._emit_from_thread(
+                    runtime,
+                    "plan",
+                    {
+                        "session_id": context.session_id,
+                        "item_id": turn_id if isinstance(turn_id, str) else "",
+                        "content": "\n".join(lines),
                         "iteration": 0,
                     },
                 )
@@ -514,6 +603,20 @@ class CodexAppServerBackend(ChatBackend):
                     "iteration": 0,
                 },
             )
+            return
+
+        if item_type == "webSearch":
+            self._emit_from_thread(
+                runtime,
+                "tool_call_start",
+                {
+                    "session_id": context.session_id,
+                    "tool_name": "web_search",
+                    "tool_call_id": item.id,
+                    "arguments": {"query": getattr(item, "query", "")},
+                    "iteration": 0,
+                },
+            )
 
     def _handle_item_completed(
         self,
@@ -637,6 +740,23 @@ class CodexAppServerBackend(ChatBackend):
                     "result": self._summarize_collab_result(item),
                     "is_error": getattr(item, "status", "") not in {"completed", "inProgress"},
                     "metadata": {"status": getattr(item, "status", "")},
+                    "raw": None,
+                    "iteration": 0,
+                },
+            )
+            return
+
+        if item_type == "webSearch":
+            self._emit_from_thread(
+                runtime,
+                "tool_call_end",
+                {
+                    "session_id": context.session_id,
+                    "tool_name": "web_search",
+                    "tool_call_id": item.id,
+                    "result": f"Searched the web for {getattr(item, 'query', '')}.",
+                    "is_error": False,
+                    "metadata": {},
                     "raw": None,
                     "iteration": 0,
                 },
@@ -879,6 +999,282 @@ class CodexAppServerBackend(ChatBackend):
         future = asyncio.run_coroutine_threadsafe(runtime.emit(event, data), runtime.loop)
         if wait:
             future.result()
+
+    def _codex_work_mode(self, context: ChatSessionContext) -> str:
+        metadata = self.chat_service.get_session_metadata(context.session_id)
+        work_mode = metadata.get("codex_work_mode")
+        return work_mode if work_mode in {"plan", "build"} else "build"
+
+    def _thread_view_payload(
+        self,
+        context: ChatSessionContext,
+        thread: Any,
+    ) -> dict[str, Any]:
+        messages: list[StoredSessionMessage] = []
+        activity_events: list[dict[str, Any]] = []
+
+        turns = getattr(thread, "turns", []) or []
+        for turn in turns:
+            for raw_item in getattr(turn, "items", []) or []:
+                item = self._unwrap_thread_item(raw_item)
+                if item is None:
+                    continue
+                self._append_thread_item_view(context, item, messages, activity_events)
+
+        title = getattr(thread, "name", None) or getattr(thread, "preview", None) or getattr(thread, "id", "Codex session")
+        preview = getattr(thread, "preview", None) or title
+        updated_at = float(getattr(thread, "updated_at", 0) or 0)
+        return {
+            "title": title,
+            "preview": preview,
+            "updated_at": updated_at,
+            "messages": messages,
+            "activity_events": activity_events,
+        }
+
+    def _append_thread_item_view(
+        self,
+        context: ChatSessionContext,
+        item: Any,
+        messages: list[StoredSessionMessage],
+        activity_events: list[dict[str, Any]],
+    ) -> None:
+        item_type = getattr(item, "type", "")
+        if item_type == "userMessage":
+            content = self._thread_user_message_text(getattr(item, "content", []))
+            if content:
+                messages.append(
+                    StoredSessionMessage(
+                        role="user",
+                        content=content,
+                        source=context.source,
+                        channel_meta=context.channel_meta,
+                    )
+                )
+            return
+
+        if item_type == "agentMessage":
+            content = getattr(item, "text", "") or ""
+            if content.strip():
+                messages.append(
+                    StoredSessionMessage(
+                        role="assistant",
+                        content=content,
+                        source=context.source,
+                        channel_meta=context.channel_meta,
+                    )
+                )
+            return
+
+        if item_type == "plan":
+            self._append_activity_event(
+                activity_events,
+                "plan",
+                {
+                    "session_id": context.session_id,
+                    "item_id": item.id,
+                    "content": getattr(item, "text", ""),
+                    "iteration": 0,
+                },
+            )
+            return
+
+        if item_type == "reasoning":
+            content = "\n".join(getattr(item, "summary", []) or getattr(item, "content", []) or [])
+            if content.strip():
+                self._append_activity_event(
+                    activity_events,
+                    "reasoning",
+                    {
+                        "session_id": context.session_id,
+                        "content": content,
+                        "iteration": 0,
+                    },
+                )
+            return
+
+        if item_type == "commandExecution":
+            self._append_activity_event(
+                activity_events,
+                "command_start",
+                {
+                    "session_id": context.session_id,
+                    "tool_call_id": item.id,
+                    "tool_name": "command_execution",
+                    "command": getattr(item, "command", ""),
+                    "cwd": getattr(item, "cwd", ""),
+                    "is_background": False,
+                },
+            )
+            output = getattr(item, "aggregated_output", None)
+            if isinstance(output, str) and output:
+                self._append_activity_event(
+                    activity_events,
+                    "command_output",
+                    {
+                        "session_id": context.session_id,
+                        "tool_call_id": item.id,
+                        "tool_name": "command_execution",
+                        "stream": "stdout",
+                        "content": output,
+                        "is_background": False,
+                    },
+                )
+            self._append_activity_event(
+                activity_events,
+                "command_end",
+                {
+                    "session_id": context.session_id,
+                    "tool_call_id": item.id,
+                    "tool_name": "command_execution",
+                    "command": getattr(item, "command", ""),
+                    "cwd": getattr(item, "cwd", ""),
+                    "exit_code": int(getattr(item, "exit_code", 0) or 0),
+                    "timed_out": False,
+                    "is_background": False,
+                },
+            )
+            return
+
+        if item_type == "fileChange":
+            self._append_tool_activity_events(
+                context.session_id,
+                activity_events,
+                tool_name="file_change",
+                tool_call_id=item.id,
+                arguments={"change_count": len(getattr(item, "changes", []) or [])},
+                result=self._summarize_file_change(item),
+                is_error=getattr(item, "status", "") not in {"completed", "inProgress"},
+                metadata={
+                    "status": getattr(item, "status", ""),
+                    "change_count": len(getattr(item, "changes", []) or []),
+                },
+            )
+            return
+
+        if item_type == "mcpToolCall":
+            self._append_tool_activity_events(
+                context.session_id,
+                activity_events,
+                tool_name=f"mcp:{getattr(item, 'server', 'unknown')}/{getattr(item, 'tool', 'tool')}",
+                tool_call_id=item.id,
+                arguments=self._safe_model_dump(getattr(item, "arguments", {})),
+                result=self._summarize_tool_result(item),
+                is_error=getattr(item, "error", None) is not None,
+                metadata={"status": getattr(item, "status", "")},
+            )
+            return
+
+        if item_type == "dynamicToolCall":
+            self._append_tool_activity_events(
+                context.session_id,
+                activity_events,
+                tool_name=f"dynamic:{getattr(item, 'tool', 'tool')}",
+                tool_call_id=item.id,
+                arguments=self._safe_model_dump(getattr(item, "arguments", {})),
+                result=self._summarize_tool_result(item),
+                is_error=getattr(item, "success", True) is False,
+                metadata={"status": getattr(item, "status", "")},
+            )
+            return
+
+        if item_type == "collabAgentToolCall":
+            self._append_tool_activity_events(
+                context.session_id,
+                activity_events,
+                tool_name=f"collab:{getattr(item, 'tool', 'tool')}",
+                tool_call_id=item.id,
+                arguments={
+                    "receiver_thread_ids": list(getattr(item, "receiver_thread_ids", []) or []),
+                    "prompt": getattr(item, "prompt", None),
+                },
+                result=self._summarize_collab_result(item),
+                is_error=getattr(item, "status", "") not in {"completed", "inProgress"},
+                metadata={"status": getattr(item, "status", "")},
+            )
+            return
+
+        if item_type == "webSearch":
+            self._append_tool_activity_events(
+                context.session_id,
+                activity_events,
+                tool_name="web_search",
+                tool_call_id=item.id,
+                arguments={"query": getattr(item, "query", "")},
+                result=f"Searched the web for {getattr(item, 'query', '')}.",
+                is_error=False,
+                metadata={},
+            )
+
+    def _append_tool_activity_events(
+        self,
+        session_id: str,
+        activity_events: list[dict[str, Any]],
+        *,
+        tool_name: str,
+        tool_call_id: str,
+        arguments: dict[str, Any],
+        result: str,
+        is_error: bool,
+        metadata: dict[str, Any],
+    ) -> None:
+        self._append_activity_event(
+            activity_events,
+            "tool_call_start",
+            {
+                "session_id": session_id,
+                "tool_name": tool_name,
+                "tool_call_id": tool_call_id,
+                "arguments": arguments,
+                "iteration": 0,
+            },
+        )
+        self._append_activity_event(
+            activity_events,
+            "tool_call_end",
+            {
+                "session_id": session_id,
+                "tool_name": tool_name,
+                "tool_call_id": tool_call_id,
+                "result": result,
+                "is_error": is_error,
+                "metadata": metadata,
+                "raw": None,
+                "iteration": 0,
+            },
+        )
+
+    def _append_activity_event(
+        self,
+        activity_events: list[dict[str, Any]],
+        event: str,
+        data: dict[str, Any],
+    ) -> None:
+        activity_events.append({"event": event, "data": data})
+
+    def _thread_user_message_text(self, contents: Any) -> str:
+        if not isinstance(contents, list):
+            return ""
+
+        parts: list[str] = []
+        for item in contents:
+            root = getattr(item, "root", item)
+            item_type = getattr(root, "type", None)
+            if item_type != "text":
+                continue
+            text = getattr(root, "text", None)
+            if isinstance(text, str) and text.strip():
+                parts.append(text.strip())
+        if not parts:
+            return ""
+        return self._strip_plan_mode_prompt("\n".join(parts))
+
+    def _strip_plan_mode_prompt(self, value: str) -> str:
+        normalized = value.strip()
+        if not normalized.startswith(PLAN_MODE_PROMPT_PREFIX):
+            return normalized
+        _, _, remainder = normalized.partition("User request:")
+        return remainder.strip() if remainder.strip() else normalized
 
     def _notification_belongs_to_turn(self, notification: Notification, turn_id: str) -> bool:
         notification_turn_id = self._notification_value(notification, "turn_id")

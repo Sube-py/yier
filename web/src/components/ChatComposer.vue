@@ -7,6 +7,7 @@ const model = defineModel<string>({ required: true })
 defineProps<{
   disabled: boolean
   isSending: boolean
+  placeholder?: string
 }>()
 
 const emit = defineEmits<{
@@ -28,7 +29,7 @@ function onKeydown(event: KeyboardEvent) {
         auto-resize
         fluid
         rows="3"
-        placeholder="Ask yier to inspect code, read files, or operate inside the allowed roots…"
+        :placeholder="placeholder ?? 'Ask yier to inspect code, read files, or operate inside the allowed roots…'"
         :disabled="disabled"
         @keydown="onKeydown"
       />

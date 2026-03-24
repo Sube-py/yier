@@ -240,6 +240,7 @@ describe('App', () => {
       },
     )
     vi.stubGlobal('EventSource', MockEventSource)
+    vi.stubGlobal('alert', vi.fn())
   })
 
   it('shows the setup empty state when the llm is not configured', async () => {
@@ -891,7 +892,7 @@ describe('App', () => {
     const wrapper = await mountApp()
     await flushPromises()
 
-    const projectAction = wrapper.find('.codex-project-action')
+    const projectAction = wrapper.find('.codex-project-start-action')
     expect(projectAction.exists()).toBe(true)
 
     await projectAction.trigger('click')
@@ -902,6 +903,311 @@ describe('App', () => {
       project_path: '/tmp/project-b',
     })
     expect(wrapper.text()).toContain('Started a fresh session.')
+  })
+
+  it('starts a codex session from a backend-picked project directory', async () => {
+    localStorage.setItem('yier.active-session-id', 'codex-thread-a')
+
+    let createPayload: Record<string, unknown> | null = null
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = input.toString()
+      if (path.endsWith('/api/health')) {
+        return jsonResponse({
+          frontend: { ready: true, mode: 'static' },
+          llm: { ready: true },
+          mcp: { ready: true, runtime: {} },
+          backends: {
+            yier: { ready: true },
+            codex: { ready: true },
+          },
+          allowed_roots: ['/tmp/project-b'],
+        })
+      }
+      if (path.endsWith('/api/config')) {
+        return jsonResponse({
+          llm: { provider: '', base_url: 'https://example.test', model: 'demo', has_api_key: true },
+          allowed_roots: ['/tmp/project-b'],
+          mcp_runtime: {},
+          session_defaults: {
+            default_backend_id: 'yier',
+            default_project_path: '/tmp/project-b',
+            channel_backend_id: 'yier',
+            channel_project_path: '/tmp/project-b',
+            channel_auto_approve_codex_requests: true,
+          },
+          codex: {
+            launcher_command: 'codex app-server --listen stdio://',
+            model: 'gpt-5.4',
+            sandbox: 'workspace-write',
+            approval_policy: 'on-request',
+            approvals_reviewer: 'user',
+            personality: 'friendly',
+            reasoning_effort: 'medium',
+            service_tier: '',
+          },
+        })
+      }
+      if (path.endsWith('/api/config/mcp')) {
+        return jsonResponse({ mcp_servers: {}, runtime: {} })
+      }
+      if (path.endsWith('/api/codex/workspace')) {
+        return jsonResponse({
+          projects: [
+            {
+              project: 'project-b',
+              project_path: '/tmp/project-b',
+              session_count: 1,
+              sessions: [
+                {
+                  thread_id: 'codex-thread-a',
+                  title: 'Current native session',
+                  preview: 'project preview',
+                  updated_at: 100,
+                  started_at: 90,
+                  cwd: '/tmp/project-b',
+                  project: 'project-b',
+                  project_path: '/tmp/project-b',
+                  source: 'active',
+                },
+              ],
+            },
+          ],
+          paired_editors: [],
+        })
+      }
+      if (isSessionListRequest(path, init)) {
+        return jsonResponse({
+          sessions: [
+            {
+              session_id: 'codex-thread-a',
+              title: 'Current native session',
+              preview: 'project preview',
+              updated_at: 100,
+              message_count: 2,
+              source: 'chat',
+              backend_id: 'codex',
+              project_path: '/tmp/project-b',
+              channel_meta: null,
+              codex_work_mode: 'build',
+            },
+          ],
+        })
+      }
+      if (path.endsWith('/api/chat/sessions/codex-thread-a')) {
+        return jsonResponse({
+          session_id: 'codex-thread-a',
+          source: 'chat',
+          backend_id: 'codex',
+          project_path: '/tmp/project-b',
+          codex_work_mode: 'build',
+          backend_runtime: {
+            backend_id: 'codex',
+            label: 'Codex App Server',
+            ready: true,
+            status: 'idle',
+            thread_id: 'codex-thread-a',
+            active_flags: [],
+            detail: null,
+            pending_approval_count: 0,
+          },
+          pending_approvals: [],
+          messages: [{ role: 'assistant', content: 'current transcript body' }],
+          activity_events: [],
+        })
+      }
+      if (path.endsWith('/api/system/select-directory') && init?.method === 'POST') {
+        expect(JSON.parse(String(init.body))).toEqual({ initial_path: '/tmp/project-b' })
+        return jsonResponse({
+          selected: true,
+          project_path: '/tmp/picked-project',
+        }, 201)
+      }
+      if (isSessionCreateRequest(path, init)) {
+        createPayload = JSON.parse(String(init?.body))
+        return jsonResponse({ session_id: 'codex-thread-created' }, 201)
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const wrapper = await mountApp()
+    await flushPromises()
+
+    const selectProjectAction = wrapper.find('.codex-select-project-action')
+    expect(selectProjectAction.exists()).toBe(true)
+
+    await selectProjectAction.trigger('click')
+    await flushPromises()
+
+    expect(createPayload).toEqual({
+      backend_id: 'codex',
+      project_path: '/tmp/picked-project',
+    })
+    expect(wrapper.text()).toContain('Started a fresh session.')
+  })
+
+  it('switches from the codex workspace to the yier workspace from the sidebar switcher', async () => {
+    localStorage.setItem('yier.active-session-id', 'codex-thread-a')
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = input.toString()
+      if (path.endsWith('/api/health')) {
+        return jsonResponse({
+          frontend: { ready: true, mode: 'static' },
+          llm: { ready: true },
+          mcp: { ready: true, runtime: {} },
+          backends: {
+            yier: { ready: true },
+            codex: { ready: true },
+          },
+          allowed_roots: ['/tmp/project-b'],
+        })
+      }
+      if (path.endsWith('/api/config')) {
+        return jsonResponse({
+          llm: { provider: '', base_url: 'https://example.test', model: 'demo', has_api_key: true },
+          allowed_roots: ['/tmp/project-b'],
+          mcp_runtime: {},
+          session_defaults: {
+            default_backend_id: 'yier',
+            default_project_path: '/tmp/project-b',
+            channel_backend_id: 'yier',
+            channel_project_path: '/tmp/project-b',
+            channel_auto_approve_codex_requests: true,
+          },
+          codex: {
+            launcher_command: 'codex app-server --listen stdio://',
+            model: 'gpt-5.4',
+            sandbox: 'workspace-write',
+            approval_policy: 'on-request',
+            approvals_reviewer: 'user',
+            personality: 'friendly',
+            reasoning_effort: 'medium',
+            service_tier: '',
+          },
+        })
+      }
+      if (path.endsWith('/api/config/mcp')) {
+        return jsonResponse({ mcp_servers: {}, runtime: {} })
+      }
+      if (path.endsWith('/api/codex/workspace')) {
+        return jsonResponse({
+          projects: [
+            {
+              project: 'project-b',
+              project_path: '/tmp/project-b',
+              session_count: 1,
+              sessions: [
+                {
+                  thread_id: 'codex-thread-a',
+                  title: 'Current native session',
+                  preview: 'project preview',
+                  updated_at: 100,
+                  started_at: 90,
+                  cwd: '/tmp/project-b',
+                  project: 'project-b',
+                  project_path: '/tmp/project-b',
+                  source: 'active',
+                },
+              ],
+            },
+          ],
+          paired_editors: [],
+        })
+      }
+      if (isSessionListRequest(path, init)) {
+        return jsonResponse({
+          sessions: [
+            {
+              session_id: 'codex-thread-a',
+              title: 'Current native session',
+              preview: 'project preview',
+              updated_at: 100,
+              message_count: 2,
+              source: 'chat',
+              backend_id: 'codex',
+              project_path: '/tmp/project-b',
+              channel_meta: null,
+              codex_work_mode: 'build',
+            },
+            {
+              session_id: 'yier-thread-a',
+              title: 'Yier session',
+              preview: 'yier preview',
+              updated_at: 80,
+              message_count: 2,
+              source: 'chat',
+              backend_id: 'yier',
+              project_path: '/tmp/project-b',
+              channel_meta: null,
+              codex_work_mode: null,
+            },
+          ],
+        })
+      }
+      if (path.endsWith('/api/chat/sessions/codex-thread-a')) {
+        return jsonResponse({
+          session_id: 'codex-thread-a',
+          source: 'chat',
+          backend_id: 'codex',
+          project_path: '/tmp/project-b',
+          codex_work_mode: 'build',
+          backend_runtime: {
+            backend_id: 'codex',
+            label: 'Codex App Server',
+            ready: true,
+            status: 'idle',
+            thread_id: 'codex-thread-a',
+            active_flags: [],
+            detail: null,
+            pending_approval_count: 0,
+          },
+          pending_approvals: [],
+          messages: [{ role: 'assistant', content: 'current codex transcript body' }],
+          activity_events: [],
+        })
+      }
+      if (path.endsWith('/api/chat/sessions/yier-thread-a')) {
+        return jsonResponse({
+          session_id: 'yier-thread-a',
+          source: 'chat',
+          backend_id: 'yier',
+          project_path: '/tmp/project-b',
+          codex_work_mode: null,
+          backend_runtime: {
+            backend_id: 'yier',
+            label: 'Yier Agent',
+            ready: true,
+            status: 'idle',
+            thread_id: null,
+            active_flags: [],
+            detail: null,
+            pending_approval_count: 0,
+          },
+          pending_approvals: [],
+          messages: [{ role: 'assistant', content: 'current yier transcript body' }],
+          activity_events: [],
+        })
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const wrapper = await mountApp()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('current codex transcript body')
+
+    const workspaceSwitcher = wrapper
+      .findAllComponents({ name: 'Select' })
+      .find((component) => component.classes().includes('workspace-switcher-control'))
+    expect(workspaceSwitcher).toBeTruthy()
+
+    workspaceSwitcher!.vm.$emit('update:modelValue', 'yier')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('current yier transcript body')
+    expect(wrapper.find('.rail-actions').exists()).toBe(true)
   })
 
   it('renders codex elicitation requests with schema details', async () => {
@@ -2261,9 +2567,11 @@ describe('App', () => {
     const wrapper = await mountApp('/settings')
     await flushPromises()
 
-    const providerSelect = wrapper.findComponent({ name: 'Select' })
-    expect(providerSelect.exists()).toBe(true)
-    expect(providerSelect.props('modelValue')).toBe('zai-coding-plan')
+    const providerSelect = wrapper
+      .findAllComponents({ name: 'Select' })
+      .find((component) => component.props('inputId') === 'provider')
+    expect(providerSelect).toBeTruthy()
+    expect(providerSelect!.props('modelValue')).toBe('zai-coding-plan')
     expect((wrapper.find('input#base-url').element as HTMLInputElement).value).toBe(
       'https://api.z.ai/api/coding/paas/v4',
     )
@@ -2371,9 +2679,11 @@ describe('App', () => {
     const wrapper = await mountApp('/settings')
     await flushPromises()
 
-    const providerSelect = wrapper.findComponent({ name: 'Select' })
-    expect(providerSelect.exists()).toBe(true)
-    providerSelect.vm.$emit('update:modelValue', 'zai-coding-plan')
+    const providerSelect = wrapper
+      .findAllComponents({ name: 'Select' })
+      .find((component) => component.props('inputId') === 'provider')
+    expect(providerSelect).toBeTruthy()
+    providerSelect!.vm.$emit('update:modelValue', 'zai-coding-plan')
     await flushPromises()
 
     expect((wrapper.find('input#base-url').element as HTMLInputElement).value).toBe(

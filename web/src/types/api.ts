@@ -1,5 +1,6 @@
 export type LlmProvider = '' | 'zai' | 'zai-coding-plan'
 export type BackendId = 'yier' | 'codex'
+export type WorkspaceSurface = 'yier' | 'codex' | 'claude'
 export type CodexWorkMode = 'plan' | 'build'
 export type ApprovalDecision = 'accept' | 'accept_for_session' | 'decline' | 'cancel'
 
@@ -51,6 +52,7 @@ export interface ConfigResponse {
     channel_backend_id: BackendId
     channel_project_path: string
     channel_auto_approve_codex_requests: boolean
+    workspace_surface?: WorkspaceSurface
   }
   codex: {
     launcher_command: string
@@ -201,6 +203,15 @@ export interface ChatStreamRequest {
 export interface CreateSessionRequest {
   backend_id?: BackendId | null
   project_path?: string | null
+}
+
+export interface SelectDirectoryRequest {
+  initial_path?: string | null
+}
+
+export interface SelectDirectoryResponse {
+  selected: boolean
+  project_path: string
 }
 
 export interface SaveAppSettingsRequest {

@@ -17,6 +17,7 @@ from litestar.status_codes import HTTP_400_BAD_REQUEST, HTTP_404_NOT_FOUND
 from yier_web.chat import ChatService
 from yier_web.channel_workspace import IntegratedChannelWorkspaceService
 from yier_web.config import AppConfigService, MCPValidationError
+from yier_web.directory_picker import LocalDirectoryPickerService
 from yier_web.event_stream import EventStreamBroker
 from yier_web.frontend import FrontendService
 from yier_web.schemas import (
@@ -41,6 +42,8 @@ from yier_web.schemas import (
     SaveAppSettingsRequest,
     SaveAllowedRootsRequest,
     SaveChannelConfigRequest,
+    SelectDirectoryRequest,
+    SelectDirectoryResponse,
     SaveLLMRequest,
     SaveMCPConfigRequest,
     SessionListResponse,
@@ -56,6 +59,7 @@ class AppServices:
     channel_workspace_service: IntegratedChannelWorkspaceService
     event_broker: EventStreamBroker
     frontend_service: FrontendService
+    directory_picker_service: LocalDirectoryPickerService
 
 
 def build_services(project_root: Path | None = None, home_dir: Path | None = None) -> AppServices:
@@ -77,6 +81,7 @@ def build_services(project_root: Path | None = None, home_dir: Path | None = Non
         ),
         event_broker=event_broker,
         frontend_service=FrontendService(project_root=resolved_root),
+        directory_picker_service=LocalDirectoryPickerService(),
     )
 
 
@@ -87,6 +92,7 @@ def get_services(state: State) -> AppServices:
         channel_workspace_service=state.channel_workspace_service,
         event_broker=state.event_broker,
         frontend_service=state.frontend_service,
+        directory_picker_service=state.directory_picker_service,
     )
 
 
@@ -202,6 +208,22 @@ async def create_session(request: Request[Any, Any, Any], state: State) -> Creat
             backend_id=payload.backend_id,
             project_path=payload.project_path,
         )
+    )
+
+
+@post("/system/select-directory")
+async def select_directory(
+    data: SelectDirectoryRequest,
+    state: State,
+) -> SelectDirectoryResponse:
+    services = get_services(state)
+    selected_path = await asyncio.to_thread(
+        services.directory_picker_service.select_directory,
+        data.initial_path,
+    )
+    return SelectDirectoryResponse(
+        selected=bool(selected_path),
+        project_path=selected_path or "",
     )
 
 
@@ -418,6 +440,7 @@ api_router = Router(
         save_mcp_config,
         reload_mcp_config,
         create_session,
+        select_directory,
         list_sessions,
         get_codex_workspace,
         open_codex_session,
@@ -463,6 +486,7 @@ def create_app(
         app.state.channel_workspace_service = app_services.channel_workspace_service
         app.state.event_broker = app_services.event_broker
         app.state.frontend_service = app_services.frontend_service
+        app.state.directory_picker_service = app_services.directory_picker_service
         await app_services.chat_service.start()
         await app_services.channel_workspace_service.start()
         try:

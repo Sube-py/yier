@@ -108,7 +108,7 @@ describe('CodexSessionExplorer', () => {
     expect(wrapper.findAll('.codex-session-item')).toHaveLength(2)
     expect(wrapper.find('.codex-session-title').attributes('title')).toBe('Alpha second thread')
 
-    const projectAction = wrapper.find('.codex-project-action')
+    const projectAction = wrapper.find('.codex-project-start-action')
     await projectAction.trigger('click')
     expect(wrapper.emitted('startSession')).toEqual([['/tmp/alpha-service']])
 

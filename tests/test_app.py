@@ -269,6 +269,16 @@ class FakeChannelWorkspaceService:
         return []
 
 
+class FakeDirectoryPickerService:
+    def __init__(self) -> None:
+        self.selected_path = "/tmp/picked-project"
+        self.calls: list[str | None] = []
+
+    def select_directory(self, initial_path: str | None = None) -> str | None:
+        self.calls.append(initial_path)
+        return self.selected_path
+
+
 class FakeMCPManager:
     def __init__(self) -> None:
         self.version = 0
@@ -300,6 +310,7 @@ def build_test_client(tmp_path: Path) -> TestClient[Any]:
     config_service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
     chat_service = FakeChatService()
     frontend_service = FrontendService(project_root=project_root)
+    directory_picker_service = FakeDirectoryPickerService()
     app = create_app(
         project_root=project_root,
         home_dir=tmp_path / "home",
@@ -309,6 +320,7 @@ def build_test_client(tmp_path: Path) -> TestClient[Any]:
             channel_workspace_service=FakeChannelWorkspaceService(),  # type: ignore[arg-type]
             event_broker=EventStreamBroker(),
             frontend_service=frontend_service,
+            directory_picker_service=directory_picker_service,
         ),
     )
     return TestClient(app)
@@ -478,6 +490,7 @@ def test_api_endpoints_cover_config_session_and_stream(tmp_path: Path) -> None:
         assert config_response.status_code == 200
         assert config_response.json()["llm"]["provider"] == ""
         assert config_response.json()["llm"]["has_api_key"] is False
+        assert config_response.json()["session_defaults"]["workspace_surface"] == "yier"
 
         save_response = client.put(
             "/api/config/llm",
@@ -501,9 +514,45 @@ def test_api_endpoints_cover_config_session_and_stream(tmp_path: Path) -> None:
         assert roots_response.status_code == 200
         assert roots_response.json()["allowed_roots"]
 
+        app_config_response = client.put(
+            "/api/config/app",
+            json={
+                "session_defaults": {
+                    "default_backend_id": "yier",
+                    "default_project_path": "./workspace",
+                    "channel_backend_id": "yier",
+                    "channel_project_path": "./workspace",
+                    "channel_auto_approve_codex_requests": True,
+                    "workspace_surface": "codex",
+                },
+                "codex": {
+                    "launcher_command": "codex app-server --listen stdio://",
+                    "model": "",
+                    "sandbox": "workspace-write",
+                    "approval_policy": "on-request",
+                    "approvals_reviewer": "user",
+                    "personality": "friendly",
+                    "reasoning_effort": "medium",
+                    "service_tier": "",
+                },
+            },
+        )
+        assert app_config_response.status_code == 200
+        assert app_config_response.json()["session_defaults"]["workspace_surface"] == "codex"
+
         session_response = client.post("/api/chat/sessions")
         assert session_response.status_code == 201
         assert session_response.json()["session_id"] == "session-created"
+
+        select_directory_response = client.post(
+            "/api/system/select-directory",
+            json={"initial_path": "/tmp/project"},
+        )
+        assert select_directory_response.status_code == 201
+        assert select_directory_response.json() == {
+            "selected": True,
+            "project_path": "/tmp/picked-project",
+        }
 
         list_response = client.get("/api/chat/sessions")
         assert list_response.status_code == 200

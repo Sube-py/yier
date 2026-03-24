@@ -6,6 +6,7 @@ import Button from 'primevue/button'
 import Message from 'primevue/message'
 import ProgressSpinner from 'primevue/progressspinner'
 import ScrollPanel from 'primevue/scrollpanel'
+import Select from 'primevue/select'
 import Tag from 'primevue/tag'
 
 import ChatComposer from './components/ChatComposer.vue'
@@ -69,9 +70,11 @@ import type {
   ToolDigestRawPayload,
   ToolRawPayload,
   UiChatMessage,
+  WorkspaceSurface,
 } from './types/api'
 
 const SESSION_STORAGE_KEY = 'yier.active-session-id'
+const WORKSPACE_SURFACE_STORAGE_KEY = 'yier.workspace-surface'
 const LLM_PROVIDER_DEFAULTS: Record<
   Exclude<LlmProvider, ''>,
   { baseUrl: string; model: string }
@@ -87,6 +90,18 @@ const LLM_PROVIDER_DEFAULTS: Record<
 }
 const route = useRoute()
 const router = useRouter()
+
+function normalizeWorkspaceSurface(value: string | null | undefined): WorkspaceSurface {
+  if (value === 'codex' || value === 'yier' || value === 'claude') {
+    return value
+  }
+  return 'yier'
+}
+
+function readCachedWorkspaceSurface(): WorkspaceSurface {
+  return normalizeWorkspaceSurface(localStorage.getItem(WORKSPACE_SURFACE_STORAGE_KEY))
+}
+
 const isBooting = ref(true)
 const isSending = ref(false)
 const errorMessage = ref('')
@@ -127,6 +142,7 @@ const appForm = reactive({
   channelBackendId: 'yier' as BackendId,
   channelProjectPath: '',
   channelAutoApproveCodexRequests: true,
+  workspaceSurface: readCachedWorkspaceSurface(),
   codexLauncherCommand: '',
   codexModel: '',
   codexSandbox: 'workspace-write' as 'read-only' | 'workspace-write' | 'danger-full-access',
@@ -197,7 +213,9 @@ const sessionLabel = computed(() => {
 
 const llmReady = computed(() => health.value?.llm.ready ?? false)
 const frontendMode = computed(() => health.value?.frontend.mode ?? 'missing')
-const activeBackendId = computed<BackendId>(() => activeSession.value?.backend_id ?? newSessionDraft.backendId)
+const activeBackendId = computed<BackendId>(() =>
+  activeSession.value?.backend_id ?? backendIdForWorkspaceSurface(appForm.workspaceSurface),
+)
 const activeBackendReady = computed(
   () => {
     const backendHealth = health.value?.backends?.[activeBackendId.value]
@@ -233,6 +251,32 @@ const isCodexWorkspace = computed(() => isChatRoute.value && activeBackendId.val
 const activeCodexProjects = computed(() => codexWorkspace.value?.projects ?? [])
 const activeCodexPairedEditors = computed(() => codexWorkspace.value?.paired_editors ?? [])
 const assistantLabel = computed(() => (activeBackendId.value === 'codex' ? 'Codex' : 'Yier'))
+const activeWorkspaceSurface = computed<WorkspaceSurface>(() => {
+  if (activeSession.value?.backend_id === 'codex') {
+    return 'codex'
+  }
+  if (activeSession.value?.backend_id === 'yier') {
+    return 'yier'
+  }
+  return appForm.workspaceSurface
+})
+const workspaceSurfaceOptions: Array<{
+  label: string
+  value: WorkspaceSurface
+  disabled: boolean
+}> = [
+  { label: 'Codex', value: 'codex', disabled: false },
+  { label: 'Yier Agent', value: 'yier', disabled: false },
+  { label: 'Claude Code', value: 'claude', disabled: true },
+]
+const workspaceSurfaceModel = computed<WorkspaceSurface>({
+  get() {
+    return activeWorkspaceSurface.value
+  },
+  set(value) {
+    void switchWorkspaceSurface(value)
+  },
+})
 const composerPlaceholder = computed(() =>
   activeBackendId.value === 'codex'
     ? activeCodexWorkMode.value === 'plan'
@@ -248,6 +292,13 @@ watch(activeSessionId, (value) => {
   }
   localStorage.setItem(SESSION_STORAGE_KEY, value)
 })
+
+watch(
+  () => appForm.workspaceSurface,
+  (value) => {
+    localStorage.setItem(WORKSPACE_SURFACE_STORAGE_KEY, value)
+  },
+)
 
 watch(
   () => llmForm.provider,
@@ -401,9 +452,94 @@ function handleNewChatClick() {
   void startNewSession()
 }
 
+function latestChatSessionIdForBackend(backendId: BackendId) {
+  return sessionHistory.value.find(
+    (session) => session.source === 'chat' && session.backend_id === backendId,
+  )?.session_id
+}
+
 function startNewCodexSession(projectPath: string) {
   const nextProjectPath = projectPath.trim() || activeProjectPath.value || newSessionDraft.projectPath
   void createSession('codex', nextProjectPath, true)
+}
+
+function backendIdForWorkspaceSurface(surface: WorkspaceSurface): BackendId {
+  return surface === 'codex' ? 'codex' : 'yier'
+}
+
+function buildDefaultSessionDefaults() {
+  return {
+    default_backend_id: 'yier' as BackendId,
+    default_project_path: defaultAllowedRoots.value[0] ?? '',
+    channel_backend_id: 'yier' as BackendId,
+    channel_project_path: defaultAllowedRoots.value[0] ?? '',
+    channel_auto_approve_codex_requests: true,
+    workspace_surface: 'yier' as WorkspaceSurface,
+  }
+}
+
+function buildDefaultCodexConfig() {
+  return {
+    launcher_command: 'codex app-server --listen stdio://',
+    model: '',
+    sandbox: 'workspace-write' as const,
+    approval_policy: 'on-request' as const,
+    approvals_reviewer: 'user' as const,
+    personality: 'friendly' as const,
+    reasoning_effort: 'medium' as const,
+    service_tier: '' as const,
+  }
+}
+
+async function persistWorkspaceSurfacePreference(surface: WorkspaceSurface) {
+  const persistedSessionDefaults = config.value?.session_defaults ?? buildDefaultSessionDefaults()
+  const persistedCodex = config.value?.codex ?? buildDefaultCodexConfig()
+
+  config.value = await apiPut<ConfigResponse>('/api/config/app', {
+    session_defaults: {
+      ...persistedSessionDefaults,
+      workspace_surface: surface,
+    },
+    codex: persistedCodex,
+  } satisfies SaveAppSettingsRequest)
+  hydrateAppForm(config.value)
+  initializeNewSessionDraft(config.value)
+}
+
+async function switchWorkspaceSurface(target: WorkspaceSurface) {
+  errorMessage.value = ''
+  successMessage.value = ''
+
+  if (target === 'claude') {
+    successMessage.value = 'Claude Code workspace is coming soon.'
+    return
+  }
+
+  const previousWorkspaceSurface = appForm.workspaceSurface
+  const previousDraftBackendId = newSessionDraft.backendId
+  const backendId = backendIdForWorkspaceSurface(target)
+  appForm.workspaceSurface = target
+  newSessionDraft.backendId = backendId
+
+  try {
+    const existingSessionId = latestChatSessionIdForBackend(backendId)
+    if (existingSessionId) {
+      await openSessionFromHistory(existingSessionId)
+    } else {
+      const nextProjectPath = activeProjectPath.value || newSessionDraft.projectPath
+      await createSession(backendId, nextProjectPath, true)
+    }
+  } catch (error) {
+    appForm.workspaceSurface = previousWorkspaceSurface
+    newSessionDraft.backendId = previousDraftBackendId
+    throw error
+  }
+
+  try {
+    await persistWorkspaceSurfacePreference(target)
+  } catch (error) {
+    errorMessage.value = `Switched workspace, but failed to save that preference: ${toErrorMessage(error)}`
+  }
 }
 
 async function submitMessage() {
@@ -1751,29 +1887,18 @@ function hydrateLlmForm(configPayload: ConfigResponse['llm']) {
 }
 
 function hydrateAppForm(configPayload: ConfigResponse) {
-  const sessionDefaults = configPayload.session_defaults ?? {
-    default_backend_id: 'yier',
-    default_project_path: defaultAllowedRoots.value[0] ?? '',
-    channel_backend_id: 'yier',
-    channel_project_path: defaultAllowedRoots.value[0] ?? '',
-    channel_auto_approve_codex_requests: true,
-  }
-  const codex = configPayload.codex ?? {
-    launcher_command: 'codex app-server --listen stdio://',
-    model: '',
-    sandbox: 'workspace-write',
-    approval_policy: 'on-request',
-    approvals_reviewer: 'user',
-    personality: 'friendly',
-    reasoning_effort: 'medium',
-    service_tier: '',
-  }
+  const sessionDefaults = configPayload.session_defaults ?? buildDefaultSessionDefaults()
+  const codex = configPayload.codex ?? buildDefaultCodexConfig()
+  const workspaceSurface = normalizeWorkspaceSurface(
+    sessionDefaults.workspace_surface ?? readCachedWorkspaceSurface(),
+  )
 
   appForm.defaultBackendId = sessionDefaults.default_backend_id
   appForm.defaultProjectPath = sessionDefaults.default_project_path
   appForm.channelBackendId = sessionDefaults.channel_backend_id
   appForm.channelProjectPath = sessionDefaults.channel_project_path
   appForm.channelAutoApproveCodexRequests = sessionDefaults.channel_auto_approve_codex_requests
+  appForm.workspaceSurface = workspaceSurface
   appForm.codexLauncherCommand = codex.launcher_command
   appForm.codexModel = codex.model
   appForm.codexSandbox = codex.sandbox
@@ -1785,10 +1910,15 @@ function hydrateAppForm(configPayload: ConfigResponse) {
 }
 
 function initializeNewSessionDraft(configPayload: ConfigResponse) {
-  const defaultBackendId = configPayload.session_defaults?.default_backend_id ?? 'yier'
+  const workspaceSurface = normalizeWorkspaceSurface(
+    configPayload.session_defaults?.workspace_surface ?? readCachedWorkspaceSurface(),
+  )
+  const defaultBackendId = backendIdForWorkspaceSurface(workspaceSurface)
   const defaultProjectPath =
     configPayload.session_defaults?.default_project_path ?? defaultAllowedRoots.value[0] ?? ''
-  if (!newSessionDraft.backendId) {
+  if (!activeSessionId.value) {
+    newSessionDraft.backendId = defaultBackendId
+  } else if (!newSessionDraft.backendId) {
     newSessionDraft.backendId = defaultBackendId
   }
   if (!newSessionDraft.projectPath.trim()) {
@@ -1831,6 +1961,7 @@ function buildAppSettingsPayload() {
       channel_backend_id: appForm.channelBackendId,
       channel_project_path: appForm.channelProjectPath,
       channel_auto_approve_codex_requests: appForm.channelAutoApproveCodexRequests,
+      workspace_surface: appForm.workspaceSurface,
     },
     codex: {
       launcher_command: appForm.codexLauncherCommand,
@@ -2821,7 +2952,7 @@ function toErrorMessage(error: unknown) {
         </div>
       </div>
 
-      <div v-if="!isCodexWorkspace" class="rail-actions">
+      <div v-if="!isBooting && !isCodexWorkspace" class="rail-actions">
         <select v-model="newSessionDraft.backendId" class="session-target-select">
           <option v-for="backend in backendOptions" :key="backend.id" :value="backend.id">
             {{ backend.label }}
@@ -2837,7 +2968,7 @@ function toErrorMessage(error: unknown) {
       </div>
 
       <CodexSessionExplorer
-        v-if="isCodexWorkspace"
+        v-if="!isBooting && isCodexWorkspace"
         :projects="activeCodexProjects"
         :active-session-id="activeSessionId"
         :active-session-status="activeSessionRuntime?.status ?? null"
@@ -2845,7 +2976,7 @@ function toErrorMessage(error: unknown) {
         @open-session="openCodexNativeSession"
         @start-session="startNewCodexSession"
       />
-      <div v-else class="side-card side-card--history">
+      <div v-else-if="!isBooting" class="side-card side-card--history">
         <div class="side-card-row">
           <p class="side-card-label">Recent sessions</p>
           <Tag :value="String(sessionHistoryCount)" severity="secondary" rounded />
@@ -2902,7 +3033,7 @@ function toErrorMessage(error: unknown) {
         <p v-else class="side-card-empty">No saved sessions yet.</p>
       </div>
 
-      <div v-if="!isCodexWorkspace" class="side-card side-card--nav">
+      <div v-if="!isBooting && !isCodexWorkspace" class="side-card side-card--nav">
         <Button
           label="Chat"
           icon="pi pi-comment"
@@ -2929,7 +3060,23 @@ function toErrorMessage(error: unknown) {
         />
       </div>
 
-      <div v-if="!isCodexWorkspace" class="side-card side-card--muted">
+      <div class="side-card side-card--workspace-switcher">
+        <p class="side-card-label">Workspaces</p>
+        <Select
+          v-if="!isBooting"
+          v-model="workspaceSurfaceModel"
+          :options="workspaceSurfaceOptions"
+          option-label="label"
+          option-value="value"
+          option-disabled="disabled"
+          class="workspace-switcher-control"
+          size="small"
+          aria-label="Switch workspace"
+        />
+        <div v-else class="workspace-switcher-placeholder">Loading workspace…</div>
+      </div>
+
+      <div v-if="!isBooting && !isCodexWorkspace" class="side-card side-card--muted">
         <p class="side-card-label">Allowed roots</p>
         <ul class="root-list">
           <li v-for="root in config?.allowed_roots ?? []" :key="root">{{ root }}</li>

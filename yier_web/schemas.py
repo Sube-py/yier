@@ -16,6 +16,7 @@ FrontendMode = Literal["proxy", "static", "missing"]
 SessionSource = Literal["chat", "channel"]
 LLMProvider = Literal["", "zai", "zai-coding-plan"]
 BackendId = Literal["yier", "codex"]
+WorkspaceSurface = Literal["yier", "codex", "claude"]
 CodexWorkMode = Literal["plan", "build"]
 CodexApprovalPolicy = Literal["untrusted", "on-failure", "on-request", "never"]
 CodexSandboxMode = Literal["read-only", "workspace-write", "danger-full-access"]
@@ -58,6 +59,7 @@ class SessionDefaultsSettings(BaseModel):
     channel_backend_id: BackendId = "yier"
     channel_project_path: str = ""
     channel_auto_approve_codex_requests: bool = True
+    workspace_surface: WorkspaceSurface = "yier"
 
 
 class StoredCodexSettings(BaseModel):
@@ -218,6 +220,23 @@ class CreateSessionRequest(BaseModel):
 
 class CreateSessionResponse(BaseModel):
     session_id: str
+
+
+class SelectDirectoryRequest(BaseModel):
+    initial_path: str | None = None
+
+    @field_validator("initial_path")
+    @classmethod
+    def strip_initial_path(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
+
+
+class SelectDirectoryResponse(BaseModel):
+    selected: bool = False
+    project_path: str = ""
 
 
 class SessionSummary(BaseModel):

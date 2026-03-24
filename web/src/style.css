@@ -147,6 +147,61 @@ select {
   gap: 0.75rem;
 }
 
+.side-card--workspace-switcher {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.workspace-switcher-control {
+  width: 100%;
+  min-height: 2.65rem;
+  border: none !important;
+  border-radius: 1rem !important;
+  background: rgba(248, 243, 234, 0.94) !important;
+  box-shadow: none !important;
+  transition: background-color 140ms ease, color 140ms ease;
+}
+
+.workspace-switcher-control:not(.p-disabled):hover {
+  background: rgba(242, 235, 223, 0.98) !important;
+}
+
+.workspace-switcher-control:not(.p-disabled).p-focus {
+  border: none !important;
+  box-shadow: 0 0 0 2px rgba(172, 130, 83, 0.16) !important;
+}
+
+.workspace-switcher-control .p-select-label {
+  padding: 0.78rem 0.95rem !important;
+  color: var(--app-text) !important;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.workspace-switcher-control .p-select-dropdown {
+  width: 2.5rem !important;
+  color: var(--app-text-soft) !important;
+}
+
+.workspace-switcher-control .p-select-dropdown-icon {
+  font-size: 0.85rem;
+}
+
+.workspace-switcher-control .p-placeholder {
+  color: var(--app-text-soft) !important;
+}
+
+.workspace-switcher-placeholder {
+  min-height: 2.65rem;
+  display: flex;
+  align-items: center;
+  padding: 0.78rem 0.95rem;
+  border-radius: 1rem;
+  background: rgba(248, 243, 234, 0.7);
+  color: var(--app-text-soft);
+  font-size: 0.93rem;
+}
+
 .side-card--history {
   display: flex;
   flex: 1;
@@ -291,15 +346,61 @@ select {
 
 .codex-sidebar-toolbar {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
+  align-items: stretch;
   gap: 0.85rem;
 }
 
-.codex-toolbar-primary {
-  flex-shrink: 0;
-  border-radius: 999px;
-  white-space: nowrap;
+.codex-toolbar-primary.p-button {
+  width: 100%;
+  justify-content: flex-start;
+  gap: 0.6rem;
+  border: 1px solid transparent;
+  box-shadow: none;
+  background: rgba(255, 255, 255, 0.52);
+  color: var(--app-text-strong);
+  padding: 0.72rem 0.82rem;
+}
+
+.codex-toolbar-primary.p-button:hover,
+.codex-toolbar-primary.p-button:focus-visible {
+  border-color: transparent;
+  box-shadow: none;
+  outline: none;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.codex-toolbar-primary .p-button-label {
+  flex: 1 1 auto;
+  text-align: left;
+  font-weight: 600;
+}
+
+.codex-toolbar-primary .p-button-icon {
+  margin: 0;
+}
+
+.codex-threads-toolbar {
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.1rem 0.1rem 0.1rem 0.8rem;
+  border-radius: 1rem;
+  background: rgba(255, 255, 255, 0.32);
+}
+
+.codex-threads-title {
+  margin: 0;
+  color: var(--app-text-soft);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.codex-toolbar-action.p-button {
+  color: var(--app-text-soft);
 }
 
 .codex-project-list {
@@ -319,10 +420,22 @@ select {
 }
 
 .codex-project-row {
+  box-sizing: border-box;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 0.5rem;
+  padding: 0.1rem;
+  border-radius: 1rem;
+  background: transparent;
+  transition:
+    background-color 160ms ease,
+    transform 160ms ease;
+}
+
+.codex-project-group:hover .codex-project-row,
+.codex-project-group:focus-within .codex-project-row {
+  background: rgba(255, 255, 255, 0.44);
 }
 
 .codex-project-toggle {
@@ -331,26 +444,23 @@ select {
   align-items: flex-start;
   gap: 0.65rem;
   width: 100%;
-  padding: 0.72rem 0.8rem;
-  border: 1px solid transparent;
-  border-radius: 1rem;
+  padding: 0.62rem 0.7rem;
+  border: none;
+  border-radius: 0.9rem;
   background: transparent;
   color: inherit;
   text-align: left;
   cursor: pointer;
   transition:
-    border-color 160ms ease,
     background-color 160ms ease,
     transform 160ms ease;
 }
 
-.codex-project-toggle:hover,
-.codex-project-toggle:focus-visible {
-  border-color: rgba(21, 94, 99, 0.1);
-  background: rgba(255, 255, 255, 0.44);
+.codex-project-toggle--expanded {
+  background: rgba(255, 255, 255, 0.36);
 }
 
-.codex-project-toggle--expanded {
+.codex-project-group--expanded .codex-project-row {
   background: rgba(255, 255, 255, 0.52);
 }
 
@@ -368,8 +478,7 @@ select {
 }
 
 .codex-project-group:hover .codex-project-actions,
-.codex-project-group:focus-within .codex-project-actions,
-.codex-project-group--expanded .codex-project-actions {
+.codex-project-group:focus-within .codex-project-actions {
   opacity: 1;
   pointer-events: auto;
 }
@@ -380,9 +489,50 @@ select {
 
 .codex-project-chevron {
   color: var(--app-text-soft);
-  font-size: 0.9rem;
+  font-size: 0.92rem;
   line-height: 1;
-  padding-top: 0.16rem;
+}
+
+.codex-project-chevron-wrap {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 1rem;
+  align-items: center;
+  justify-content: center;
+  width: 1rem;
+  height: 1.2rem;
+  margin-top: 0.12rem;
+}
+
+.codex-project-chevron-wrap .codex-project-chevron {
+  position: absolute;
+  inset: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition:
+    opacity 160ms ease,
+    transform 160ms ease;
+}
+
+.codex-project-chevron--default {
+  opacity: 1;
+}
+
+.codex-project-chevron--hover {
+  opacity: 0;
+  transform: translateY(1px);
+}
+
+.codex-project-row:hover .codex-project-chevron--default,
+.codex-project-row:focus-within .codex-project-chevron--default {
+  opacity: 0;
+}
+
+.codex-project-row:hover .codex-project-chevron--hover,
+.codex-project-row:focus-within .codex-project-chevron--hover {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 .codex-session-tree {
@@ -413,26 +563,22 @@ select {
   align-items: flex-start;
   width: 100%;
   padding: 0.5rem 0.72rem 0.5rem 0.5rem;
-  border: 1px solid transparent;
   border-radius: 0.95rem;
   background: transparent;
   color: inherit;
   text-align: left;
   cursor: pointer;
   transition:
-    border-color 160ms ease,
     background-color 160ms ease,
     transform 160ms ease;
 }
 
 .codex-session-item:hover,
 .codex-session-item:focus-visible {
-  border-color: rgba(21, 94, 99, 0.08);
   background: rgba(255, 255, 255, 0.48);
 }
 
 .codex-session-item--active {
-  border-color: rgba(21, 94, 99, 0.14);
   background: rgba(232, 244, 241, 0.72);
   box-shadow: inset 3px 0 0 rgba(21, 94, 99, 0.52);
 }

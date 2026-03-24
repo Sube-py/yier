@@ -4,7 +4,8 @@ import { computed, ref, watch } from 'vue'
 import Button from 'primevue/button'
 import ScrollPanel from 'primevue/scrollpanel'
 
-import type { CodexProjectGroup } from '../types/api'
+import { apiPost } from '../lib/api'
+import type { CodexProjectGroup, SelectDirectoryResponse } from '../types/api'
 
 const props = defineProps<{
   projects: CodexProjectGroup[]
@@ -143,20 +144,49 @@ function projectLabel(project: CodexProjectGroup) {
 function startNewChat(projectPath?: string) {
   emit('startSession', projectPath?.trim() || props.activeProjectPath?.trim() || '')
 }
+
+const selectNewProject = async () => {
+  try {
+    const payload = await apiPost<SelectDirectoryResponse>('/api/system/select-directory', {
+      initial_path: props.activeProjectPath?.trim() || null,
+    })
+    if (!payload.selected) {
+      return
+    }
+
+    const projectPath = payload.project_path.trim()
+    if (!projectPath) {
+      return
+    }
+
+    emit('startSession', projectPath)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to select a project directory.'
+    window.alert(message)
+  }
+}
 </script>
 
 <template>
   <div class="side-card side-card--history side-card--codex">
     <div class="codex-sidebar-toolbar">
-      <div>
-        <p class="side-card-label">Codex workspace</p>
-        <p class="codex-sidebar-copy">Native projects and active sessions</p>
-      </div>
       <Button
-        label="New chat"
-        icon="pi pi-plus"
+        label="New thread"
+        icon="pi pi-pen-to-square"
         class="codex-toolbar-primary"
         @click="startNewChat()"
+      />
+    </div>
+
+    <div class="codex-threads-toolbar">
+      <p class="codex-threads-title">Threads</p>
+      <Button
+        rounded
+        text
+        icon="pi pi-folder-plus"
+        class="codex-project-action codex-toolbar-action codex-select-project-action"
+        aria-label="Open thread actions"
+        @click="selectNewProject"
       />
     </div>
 
@@ -181,10 +211,16 @@ function startNewChat(projectPath?: string) {
               @click="toggleProject(project.project_path)"
             >
               <span
-                class="codex-project-chevron"
+                class="codex-project-chevron-wrap"
                 aria-hidden="true"
               >
-                {{ isProjectExpanded(project.project_path) ? '▾' : '▸' }}
+                <i class="pi pi-folder-open codex-project-chevron codex-project-chevron--default" />
+                <i
+                  class="pi codex-project-chevron codex-project-chevron--hover"
+                  :class="[
+                    isProjectExpanded(project.project_path) ? 'pi-chevron-down' : 'pi-chevron-right'
+                  ]"
+                />
               </span>
               <div class="codex-project-toggle-copy">
                 <p class="codex-project-title">{{ projectLabel(project) }}</p>
@@ -195,8 +231,8 @@ function startNewChat(projectPath?: string) {
               <Button
                 rounded
                 text
-                icon="pi pi-plus"
-                class="codex-project-action"
+                icon="pi pi-pen-to-square"
+                class="codex-project-action codex-project-start-action"
                 :title="`Start a new chat in ${projectLabel(project)}`"
                 @click.stop="startNewChat(project.project_path)"
               />

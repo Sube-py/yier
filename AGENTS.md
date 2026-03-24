@@ -37,6 +37,21 @@
 - Frontend app code lives in [`web/src`](/Users/sube/me/yier/web/src).
 - The repo is a `uv` workspace and includes [`packages/yier-channel`](/Users/sube/me/yier/packages/yier-channel).
 
+## Frontend Conventions
+
+- Prefer Tailwind CSS for new frontend styling work. Reuse existing semantic classes when touching old code, but do not default to adding more large hand-written CSS blocks if Tailwind utilities or small extracted components can express the change cleanly.
+- Do not keep expanding [`web/src/App.vue`](/Users/sube/me/yier/web/src/App.vue) with unrelated UI concerns.
+- Frontend structure should prefer module-based splitting:
+  - page-level or workspace-level UI should live in a `views` layer
+  - module-specific subparts should stay close to that module
+  - truly reusable UI pieces should go into [`web/src/components`](/Users/sube/me/yier/web/src/components)
+- Do not treat `components` as the default destination for every new Vue file. Shared pieces go to `components`; feature and page composition should be split by module.
+- If a piece of UI state has long-term product meaning, persist it through the backend config surface when appropriate instead of leaving it only in local component state.
+- If a piece of UI state affects first paint or workspace routing, do not rely only on async `/api/config` hydration plus a hardcoded default. Provide a boot-safe strategy such as:
+  - a loading guard that avoids rendering the wrong surface before hydration
+  - or a small local bootstrap cache that is reconciled after config loads
+- When using local bootstrap cache for UX, keep the backend config as the durable source of truth and treat the cache only as a first-paint hint.
+
 ## Codex SDK Notes
 
 - `codex-app-server-sdk==0.2.0` is sourced from a local path:
@@ -87,8 +102,14 @@
 - Do not assume local `.codex` session files are the primary source of truth anymore; SDK listing is the preferred path.
 - Do not mix SDK snake_case params with lower-level wire camelCase in the same change without checking the call site carefully.
 - `thread_list()` and `Thread.read()` are good SDK-level entry points; streaming approval interception still depends on the lower-level client flow in this app.
+- If you add or change persisted config fields, update the full chain together:
+  - backend schemas in [`yier_web/schemas.py`](/Users/sube/me/yier/yier_web/schemas.py)
+  - backend config read/write logic in [`yier_web/config.py`](/Users/sube/me/yier/yier_web/config.py)
+  - frontend API types in [`web/src/types/api.ts`](/Users/sube/me/yier/web/src/types/api.ts)
+  - frontend hydration/save logic
+  - relevant backend and frontend tests
+- After backend schema/config changes, do not trust a hot frontend refresh alone. Restart the backend process before judging whether `/api/config` or `settings.json` behavior is correct.
 - If you change approval payload structure, also update:
   - [`web/src/types/api.ts`](/Users/sube/me/yier/web/src/types/api.ts)
   - [`web/src/App.vue`](/Users/sube/me/yier/web/src/App.vue)
   - frontend tests in [`web/src/__tests__/App.spec.ts`](/Users/sube/me/yier/web/src/__tests__/App.spec.ts)
-

@@ -546,6 +546,10 @@ describe('App', () => {
     expect(wrapper.text()).toContain('Codex workspace')
     expect(wrapper.text()).toContain('Global sandbox default')
     expect(wrapper.text()).toContain('Current build mode.')
+    expect(wrapper.find('.brand-panel').exists()).toBe(false)
+    expect(wrapper.find('.side-card--status').exists()).toBe(false)
+    expect(wrapper.find('.side-card--nav').exists()).toBe(false)
+    expect(wrapper.find('.side-card--muted').exists()).toBe(false)
 
     const planButton = wrapper
       .findAll('.codex-mode-button')
@@ -722,8 +726,20 @@ describe('App', () => {
     await flushPromises()
     expect(wrapper.text()).toContain('first transcript body')
 
+    const projectToggle = wrapper.find('.codex-project-toggle')
+    expect(projectToggle.exists()).toBe(true)
+
+    expect(wrapper.findAll('.codex-session-item')).toHaveLength(2)
+
+    await projectToggle.trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('.codex-session-item')).toHaveLength(0)
+
+    await projectToggle.trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('.codex-session-item')).toHaveLength(2)
+
     const nativeButtons = wrapper.findAll('.codex-session-item')
-    expect(nativeButtons).toHaveLength(2)
     await nativeButtons[0]!.trigger('click')
     await flushPromises()
 

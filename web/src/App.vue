@@ -2433,7 +2433,7 @@ function toErrorMessage(error: unknown) {
 <template>
   <div class="app-shell">
     <aside class="side-rail">
-      <div class="brand-panel">
+      <div v-if="!isCodexWorkspace" class="brand-panel">
         <p class="eyebrow">Local-first assistant</p>
         <h1>yier</h1>
         <p class="brand-copy">
@@ -2442,7 +2442,7 @@ function toErrorMessage(error: unknown) {
         </p>
       </div>
 
-      <div class="side-card">
+      <div v-if="!isCodexWorkspace" class="side-card side-card--status">
         <div class="side-card-row">
           <span class="side-card-label">Session</span>
           <Tag :value="sessionLabel" rounded />
@@ -2553,7 +2553,7 @@ function toErrorMessage(error: unknown) {
         <p v-else class="side-card-empty">No saved sessions yet.</p>
       </div>
 
-      <div class="side-card side-card--nav">
+      <div v-if="!isCodexWorkspace" class="side-card side-card--nav">
         <Button
           label="Chat"
           icon="pi pi-comment"
@@ -2580,7 +2580,7 @@ function toErrorMessage(error: unknown) {
         />
       </div>
 
-      <div class="side-card side-card--muted">
+      <div v-if="!isCodexWorkspace" class="side-card side-card--muted">
         <p class="side-card-label">Allowed roots</p>
         <ul class="root-list">
           <li v-for="root in config?.allowed_roots ?? []" :key="root">{{ root }}</li>

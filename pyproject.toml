@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "codex-app-server-sdk==0.2.0",
     "granian[reload]>=2.7.2",
     "httpx>=0.28.1",
     "litestar>=2.21.1",
@@ -19,3 +20,4 @@ members = ["packages/yier-channel"]
 
 [tool.uv.sources]
 yier-channel = { workspace = true }
+codex-app-server-sdk = { path = "../codex/sdk/python" }

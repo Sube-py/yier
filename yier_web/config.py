@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import shlex
+import shutil
 from typing import Any
 
 from pydantic import ValidationError
@@ -13,7 +15,17 @@ from yier_agents.src.config import (
     YIERConfig,
 )
 
-from yier_web.schemas import ConfigResponse, LLMConfigPayload, MCPRuntimeEntry, SaveLLMRequest, WebSettings
+from yier_web.schemas import (
+    BackendHealth,
+    BackendOption,
+    CodexConfigPayload,
+    ConfigResponse,
+    LLMConfigPayload,
+    MCPRuntimeEntry,
+    SaveAppSettingsRequest,
+    SaveLLMRequest,
+    WebSettings,
+)
 
 
 RUNTIME_STATUSES = {
@@ -78,21 +90,15 @@ class AppConfigService:
 
     def load_web_settings(self) -> WebSettings:
         if not self.settings_path.exists():
-            return WebSettings(allowed_roots=self.default_allowed_roots())
+            return self._finalize_web_settings(WebSettings(allowed_roots=self.default_allowed_roots()))
 
         try:
             payload = json.loads(self.settings_path.read_text(encoding="utf-8"))
             settings = WebSettings.model_validate(payload)
         except (json.JSONDecodeError, ValidationError):
-            return WebSettings(allowed_roots=self.default_allowed_roots())
+            return self._finalize_web_settings(WebSettings(allowed_roots=self.default_allowed_roots()))
 
-        settings.allowed_roots = self._normalize_allowed_roots(settings.allowed_roots)
-        if not settings.allowed_roots:
-            settings.allowed_roots = self.default_allowed_roots()
-        inferred_provider = self._infer_provider_from_base_url(settings.llm.base_url)
-        if not settings.llm.provider and inferred_provider:
-            settings.llm = settings.llm.model_copy(update={"provider": inferred_provider})
-        return settings
+        return self._finalize_web_settings(settings)
 
     def save_llm_settings(self, payload: SaveLLMRequest) -> WebSettings:
         settings = self.load_web_settings()
@@ -113,6 +119,17 @@ class AppConfigService:
         settings = self.load_web_settings()
         normalized_roots = self._normalize_allowed_roots(allowed_roots)
         settings.allowed_roots = normalized_roots or self.default_allowed_roots()
+        self._write_json(self.settings_path, settings.model_dump())
+        return settings
+
+    def save_app_settings(self, payload: SaveAppSettingsRequest) -> WebSettings:
+        settings = self.load_web_settings()
+        settings.session_defaults = payload.session_defaults
+        settings.codex = payload.codex
+        settings.allowed_roots = self._normalize_allowed_roots(settings.allowed_roots)
+        if not settings.allowed_roots:
+            settings.allowed_roots = self.default_allowed_roots()
+        settings = self._finalize_web_settings(settings)
         self._write_json(self.settings_path, settings.model_dump())
         return settings
 
@@ -174,9 +191,50 @@ class AppConfigService:
                 model=settings.llm.model,
                 has_api_key=bool(settings.llm.api_key),
             ),
+            backends=self.backend_options(),
+            session_defaults=settings.session_defaults,
+            codex=CodexConfigPayload(
+                launcher_command=settings.codex.launcher_command,
+                model=settings.codex.model,
+                sandbox=settings.codex.sandbox,
+                approval_policy=settings.codex.approval_policy,
+                approvals_reviewer=settings.codex.approvals_reviewer,
+                personality=settings.codex.personality,
+                reasoning_effort=settings.codex.reasoning_effort,
+                service_tier=settings.codex.service_tier,
+            ),
             allowed_roots=settings.allowed_roots,
             mcp_runtime=mcp_runtime,
         )
+
+    def backend_options(self) -> list[BackendOption]:
+        return [
+            BackendOption(id="yier", label="Yier Agent"),
+            BackendOption(id="codex", label="Codex App Server"),
+        ]
+
+    def build_backend_health(self) -> dict[str, BackendHealth]:
+        settings = self.load_web_settings()
+        codex_command = settings.codex.launcher_command or "codex app-server --listen stdio://"
+        codex_binary = self._resolve_command_binary(codex_command)
+        return {
+            "yier": BackendHealth(
+                ready=settings.llm.is_ready,
+                detail=(
+                    None
+                    if settings.llm.is_ready
+                    else "Configure provider/API key/model in Settings to use the built-in Yier backend."
+                ),
+            ),
+            "codex": BackendHealth(
+                ready=codex_binary is not None,
+                detail=(
+                    None
+                    if codex_binary is not None
+                    else f"Cannot find the launcher for `{codex_command}`. Install Codex or update the launcher command."
+                ),
+            ),
+        }
 
     def _normalize_mcp_servers(
         self,
@@ -275,6 +333,28 @@ class AppConfigService:
             normalized_roots.append(resolved)
         return normalized_roots
 
+    def resolve_project_path(self, raw_path: str | None) -> str:
+        candidate = raw_path.strip() if isinstance(raw_path, str) else ""
+        resolved = self._resolve_user_path(candidate) if candidate else self.project_root
+        return str(resolved.resolve())
+
+    def _finalize_web_settings(self, settings: WebSettings) -> WebSettings:
+        settings.allowed_roots = self._normalize_allowed_roots(settings.allowed_roots)
+        if not settings.allowed_roots:
+            settings.allowed_roots = self.default_allowed_roots()
+        inferred_provider = self._infer_provider_from_base_url(settings.llm.base_url)
+        if not settings.llm.provider and inferred_provider:
+            settings.llm = settings.llm.model_copy(update={"provider": inferred_provider})
+        settings.session_defaults.default_project_path = self.resolve_project_path(
+            settings.session_defaults.default_project_path
+        )
+        settings.session_defaults.channel_project_path = self.resolve_project_path(
+            settings.session_defaults.channel_project_path
+        )
+        if not settings.codex.launcher_command:
+            settings.codex.launcher_command = "codex app-server --listen stdio://"
+        return settings
+
     def _resolve_user_path(self, raw_path: str) -> Path:
         if raw_path == "~":
             return self.home_dir.resolve()
@@ -284,6 +364,18 @@ class AppConfigService:
         if candidate.is_absolute():
             return candidate.resolve()
         return (self.project_root / candidate).resolve()
+
+    def _resolve_command_binary(self, launcher_command: str) -> str | None:
+        try:
+            parts = shlex.split(launcher_command)
+        except ValueError:
+            return None
+        if not parts:
+            return None
+        binary = parts[0]
+        if binary.startswith("/"):
+            return binary if Path(binary).exists() else None
+        return shutil.which(binary)
 
     def _write_json(self, path: Path, payload: dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

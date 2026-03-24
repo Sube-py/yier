@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import MarkdownIt from 'markdown-it'
+import Button from 'primevue/button'
 import ProgressSpinner from 'primevue/progressspinner'
 import ScrollPanel from 'primevue/scrollpanel'
 import Tag from 'primevue/tag'
+import Textarea from 'primevue/textarea'
 import Timeline from 'primevue/timeline'
 
-import type { ChatActivity, UiChatMessage } from '../types/api'
+import type { ApprovalDecision, BackendRuntime, ChatActivity, UiChatMessage } from '../types/api'
 
 const markdown = new MarkdownIt({
   html: false,
@@ -19,6 +21,12 @@ const props = defineProps<{
   activities: ChatActivity[]
   isSending: boolean
   sessionLabel: string
+  sessionRuntime: BackendRuntime | null
+  projectPath: string
+}>()
+
+const emit = defineEmits<{
+  approvalAction: [requestId: string, decision: ApprovalDecision, contentText: string]
 }>()
 
 const HIDDEN_TOOL_TITLES = new Set([
@@ -138,6 +146,9 @@ function activityMarkerClass(activity: ChatActivity) {
 }
 
 function isHiddenActivity(activity: ChatActivity) {
+  if (activity.kind === 'approval') {
+    return false
+  }
   if (activity.kind === 'reasoning') {
     return true
   }
@@ -151,6 +162,25 @@ function isHiddenActivity(activity: ChatActivity) {
   }
 
   return false
+}
+
+function isApprovalActivity(activity: ChatActivity) {
+  return activity.kind === 'approval' && Boolean(activity.approval)
+}
+
+function approvalNeedsInput(activity: ChatActivity) {
+  const request = activity.approval?.payload.request
+  if (!request || typeof request !== 'object' || Array.isArray(request)) {
+    return false
+  }
+  return (request as Record<string, unknown>).mode === 'form'
+}
+
+function submitApproval(activity: ChatActivity, decision: ApprovalDecision) {
+  if (!activity.approval) {
+    return
+  }
+  emit('approvalAction', activity.approval.requestId, decision, activity.approval.responseDraft)
 }
 
 const visibleActivities = computed(() =>
@@ -239,6 +269,11 @@ watch(
             severity="secondary"
           />
         </div>
+        <p v-if="sessionRuntime" class="activity-meta">
+          {{ sessionRuntime.label }} · {{ sessionRuntime.status }}
+          <span v-if="sessionRuntime.thread_id"> · {{ sessionRuntime.thread_id }}</span>
+        </p>
+        <p v-if="projectPath" class="activity-meta">{{ projectPath }}</p>
       </div>
       <div v-if="isSending" class="timeline-processing">
         <ProgressSpinner stroke-width="4" />
@@ -368,6 +403,33 @@ watch(
               </div>
 
               <div v-else class="activity-body">
+                <div v-if="isApprovalActivity(slotProps.item)" class="approval-card">
+                  <p
+                    v-if="approvalNeedsInput(slotProps.item)"
+                    class="activity-stream-label"
+                  >
+                    JSON response
+                  </p>
+                  <Textarea
+                    v-if="approvalNeedsInput(slotProps.item) && slotProps.item.approval"
+                    v-model="slotProps.item.approval.responseDraft"
+                    auto-resize
+                    fluid
+                    rows="5"
+                  />
+                  <div v-if="slotProps.item.approval" class="approval-actions">
+                    <Button
+                      v-for="option in slotProps.item.approval.options"
+                      :key="`${slotProps.item.id}-${option.value}`"
+                      :label="option.label"
+                      size="small"
+                      :severity="option.value === 'decline' || option.value === 'cancel' ? 'secondary' : undefined"
+                      :outlined="option.value === 'decline' || option.value === 'cancel'"
+                      @click="submitApproval(slotProps.item, option.value)"
+                    />
+                  </div>
+                </div>
+
                 <p v-if="slotProps.item.command" class="activity-command">
                   {{ slotProps.item.command }}
                 </p>

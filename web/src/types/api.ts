@@ -1,4 +1,6 @@
 export type LlmProvider = '' | 'zai' | 'zai-coding-plan'
+export type BackendId = 'yier' | 'codex'
+export type ApprovalDecision = 'accept' | 'accept_for_session' | 'decline' | 'cancel'
 
 export interface FrontendHealth {
   ready: boolean
@@ -27,6 +29,7 @@ export interface HealthResponse {
   frontend: FrontendHealth
   llm: LlmHealth
   mcp: McpHealth
+  backends: Record<BackendId, { ready: boolean; detail?: string | null }>
   allowed_roots: string[]
 }
 
@@ -36,6 +39,27 @@ export interface ConfigResponse {
     base_url: string
     model: string
     has_api_key: boolean
+  }
+  backends: Array<{
+    id: BackendId
+    label: string
+  }>
+  session_defaults: {
+    default_backend_id: BackendId
+    default_project_path: string
+    channel_backend_id: BackendId
+    channel_project_path: string
+    channel_auto_approve_codex_requests: boolean
+  }
+  codex: {
+    launcher_command: string
+    model: string
+    sandbox: 'read-only' | 'workspace-write' | 'danger-full-access'
+    approval_policy: 'untrusted' | 'on-failure' | 'on-request' | 'never'
+    approvals_reviewer: 'user' | 'guardian_subagent'
+    personality: 'none' | 'friendly' | 'pragmatic'
+    reasoning_effort: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+    service_tier: '' | 'fast' | 'flex'
   }
   allowed_roots: string[]
   mcp_runtime: Record<string, McpRuntimeEntry>
@@ -80,7 +104,11 @@ export interface StoredActivityEvent {
 export interface SessionTranscriptResponse {
   session_id: string
   source: 'chat' | 'channel'
+  backend_id: BackendId
+  project_path: string
   channel_meta?: ChannelMeta | null
+  backend_runtime?: BackendRuntime | null
+  pending_approvals: PendingApproval[]
   messages: StoredMessage[]
   activity_events: StoredActivityEvent[]
 }
@@ -92,6 +120,8 @@ export interface SessionSummary {
   updated_at: number
   message_count: number
   source: 'chat' | 'channel'
+  backend_id: BackendId
+  project_path: string
   channel_meta?: ChannelMeta | null
 }
 
@@ -163,6 +193,48 @@ export interface ChannelAccountActionResponse {
 export interface ChatStreamRequest {
   session_id: string
   message: string
+}
+
+export interface CreateSessionRequest {
+  backend_id?: BackendId | null
+  project_path?: string | null
+}
+
+export interface SaveAppSettingsRequest {
+  session_defaults: ConfigResponse['session_defaults']
+  codex: ConfigResponse['codex']
+}
+
+export interface ApprovalOption {
+  value: ApprovalDecision
+  label: string
+}
+
+export interface PendingApproval {
+  request_id: string
+  method: string
+  kind: string
+  title: string
+  detail: string
+  options: ApprovalOption[]
+  payload: Record<string, unknown>
+}
+
+export interface BackendRuntime {
+  backend_id: BackendId
+  label: string
+  ready: boolean
+  status: string
+  thread_id?: string | null
+  active_flags: string[]
+  detail?: string | null
+  pending_approval_count: number
+}
+
+export interface ApprovalResponseRequest {
+  request_id: string
+  decision: ApprovalDecision
+  content?: Record<string, unknown> | null
 }
 
 export interface ChatRunStartedEvent {
@@ -551,6 +623,40 @@ export interface ChatAssistantEvent {
     session_id: string
     content: string
     iteration: number
+    item_id?: string
+  }
+}
+
+export interface ChatAssistantDeltaEvent {
+  event: 'assistant_delta'
+  data: {
+    session_id: string
+    item_id: string
+    delta: string
+  }
+}
+
+export interface ChatApprovalRequestedEvent {
+  event: 'approval_requested'
+  data: {
+    session_id: string
+    request_id: string
+    method: string
+    kind: string
+    title: string
+    detail: string
+    options: ApprovalOption[]
+    payload: Record<string, unknown>
+    item_id?: string | null
+  }
+}
+
+export interface ChatApprovalResolvedEvent {
+  event: 'approval_resolved'
+  data: {
+    session_id: string
+    request_id: string
+    decision: string
   }
 }
 
@@ -633,7 +739,10 @@ export type ChatStreamEvent =
   | ChatBackgroundFollowupStartedEvent
   | ChatBackgroundFollowupFinishedEvent
   | ChatReasoningEvent
+  | ChatAssistantDeltaEvent
   | ChatAssistantEvent
+  | ChatApprovalRequestedEvent
+  | ChatApprovalResolvedEvent
   | ChatErrorEvent
   | ChatStreamDoneEvent
   | ChannelAccountStateEvent
@@ -648,11 +757,22 @@ export interface UiChatMessage {
   content: string
   source: 'chat' | 'channel'
   channelMeta?: ChannelMeta | null
+  draftId?: string | null
+}
+
+export interface ApprovalActivityState {
+  requestId: string
+  method: string
+  kind: string
+  options: ApprovalOption[]
+  payload: Record<string, unknown>
+  responseDraft: string
+  submittedDecision?: ApprovalDecision | null
 }
 
 export interface ChatActivity {
   id: string
-  kind: 'status' | 'reasoning' | 'tool' | 'command' | 'background'
+  kind: 'status' | 'reasoning' | 'tool' | 'command' | 'background' | 'approval'
   title: string
   detail: string
   state: 'running' | 'done' | 'error' | 'info' | 'queued'
@@ -663,6 +783,7 @@ export interface ChatActivity {
   meta: string[]
   shell: ShellActivityState | null
   tool: ToolActivityState | null
+  approval?: ApprovalActivityState | null
 }
 
 export interface EditableMcpServer {

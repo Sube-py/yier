@@ -22,6 +22,10 @@ import {
   streamChat,
 } from './lib/api'
 import type {
+  ApprovalDecision,
+  ApprovalResponseRequest,
+  BackendId,
+  BackendRuntime,
   BackgroundCommandListRawPayload,
   ChannelAccountActionResponse,
   ChannelConfigResponse,
@@ -29,16 +33,21 @@ import type {
   ChannelPlatformsResponse,
   ChannelWorkspaceResponse,
   ChatActivity,
+  ChatApprovalRequestedEvent,
+  ChatAssistantDeltaEvent,
   ChatStreamDoneEvent,
   ChatStreamEvent,
   ChatStreamRequest,
   ConfigResponse,
+  CreateSessionRequest,
   DeleteSessionResponse,
   EditableAllowedRoot,
   EditableMcpServer,
   HealthResponse,
   LlmProvider,
   McpConfigResponse,
+  PendingApproval,
+  SaveAppSettingsRequest,
   SessionListResponse,
   SessionSummary,
   SessionTranscriptResponse,
@@ -85,6 +94,7 @@ const channelLoginState = reactive({
   accountId: '',
   status: '',
 })
+const activeSessionRuntime = ref<BackendRuntime | null>(null)
 const activeSessionId = ref(localStorage.getItem(SESSION_STORAGE_KEY) ?? '')
 const chatMessages = ref<UiChatMessage[]>([])
 const activities = ref<ChatActivity[]>([])
@@ -92,10 +102,30 @@ const sessionHistory = ref<SessionSummary[]>([])
 const composerText = ref('')
 const deletingSessionId = ref('')
 const savingState = reactive({
+  app: false,
   llm: false,
   roots: false,
   mcp: false,
   reloadingMcp: false,
+})
+const appForm = reactive({
+  defaultBackendId: 'yier' as BackendId,
+  defaultProjectPath: '',
+  channelBackendId: 'yier' as BackendId,
+  channelProjectPath: '',
+  channelAutoApproveCodexRequests: true,
+  codexLauncherCommand: '',
+  codexModel: '',
+  codexSandbox: 'workspace-write' as 'read-only' | 'workspace-write' | 'danger-full-access',
+  codexApprovalPolicy: 'on-request' as 'untrusted' | 'on-failure' | 'on-request' | 'never',
+  codexApprovalsReviewer: 'user' as 'user' | 'guardian_subagent',
+  codexPersonality: 'friendly' as 'none' | 'friendly' | 'pragmatic',
+  codexReasoningEffort: 'medium' as 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh',
+  codexServiceTier: '' as '' | 'fast' | 'flex',
+})
+const newSessionDraft = reactive({
+  backendId: 'yier' as BackendId,
+  projectPath: '',
 })
 const llmForm = reactive({
   provider: '' as LlmProvider,
@@ -115,6 +145,13 @@ const isChatRoute = computed(() => route.name === 'chat')
 const activeSession = computed(
   () =>
     sessionHistory.value.find((session) => session.session_id === activeSessionId.value) ?? null,
+)
+const backendOptions = computed(
+  () =>
+    config.value?.backends ?? [
+      { id: 'yier' as BackendId, label: 'Yier Agent' },
+      { id: 'codex' as BackendId, label: 'Codex App Server' },
+    ],
 )
 const defaultAllowedRoots = computed(() => health.value?.allowed_roots ?? [])
 let closePersistentEventStream: (() => void) | null = null
@@ -147,8 +184,19 @@ const sessionLabel = computed(() => {
 
 const llmReady = computed(() => health.value?.llm.ready ?? false)
 const frontendMode = computed(() => health.value?.frontend.mode ?? 'missing')
-const canSend = computed(() => llmReady.value && !isSending.value && Boolean(activeSessionId.value))
+const activeBackendId = computed<BackendId>(() => activeSession.value?.backend_id ?? newSessionDraft.backendId)
+const activeBackendReady = computed(
+  () => {
+    const backendHealth = health.value?.backends?.[activeBackendId.value]
+    if (backendHealth) {
+      return backendHealth.ready
+    }
+    return activeBackendId.value === 'codex' ? Boolean(appForm.codexLauncherCommand.trim()) : llmReady.value
+  },
+)
+const canSend = computed(() => activeBackendReady.value && !isSending.value && Boolean(activeSessionId.value))
 const canSendToSession = computed(() => canSend.value && activeSession.value?.source !== 'channel')
+const activeProjectPath = computed(() => activeSession.value?.project_path ?? newSessionDraft.projectPath)
 const workspaceEyebrow = computed(() =>
   isSettingsRoute.value
     ? 'Configuration workspace'
@@ -254,6 +302,8 @@ async function refreshDashboard() {
   channelMonitorSessions.value = normalizeSessionSummaries(channelMonitorSessionsPayload)
   sessionHistory.value = normalizeSessionSummaries(sessionsPayload)
   hydrateLlmForm(configPayload.llm)
+  hydrateAppForm(configPayload)
+  initializeNewSessionDraft(configPayload)
   rootsDraft.value = toEditableAllowedRoots(configPayload.allowed_roots)
   mcpDraft.value = toEditableMcpServers(mcpPayload)
 }
@@ -266,13 +316,23 @@ async function ensureSession() {
       )
       chatMessages.value = toUiMessages(transcript.messages)
       activities.value = []
+      activeSessionRuntime.value = transcript.backend_runtime ?? null
       backgroundActivityIdsByToolCallId.clear()
       replaySessionActivityEvents(
         Array.isArray(transcript.activity_events) ? transcript.activity_events : [],
       )
+      appendPendingApprovalActivities(transcript.pending_approvals ?? [])
       return
     } catch {
       activeSessionId.value = ''
+    }
+  }
+
+  if (sessionHistory.value.length) {
+    activeSessionId.value = sessionHistory.value[0]?.session_id ?? ''
+    if (activeSessionId.value) {
+      await ensureSession()
+      return
     }
   }
 
@@ -280,10 +340,14 @@ async function ensureSession() {
 }
 
 async function startNewSession(navigateToChat = true) {
-  const payload = await apiPost<{ session_id: string }>('/api/chat/sessions', {})
+  const payload = await apiPost<{ session_id: string }>('/api/chat/sessions', {
+    backend_id: newSessionDraft.backendId,
+    project_path: newSessionDraft.projectPath,
+  } satisfies CreateSessionRequest)
   activeSessionId.value = payload.session_id
   chatMessages.value = []
   activities.value = []
+  activeSessionRuntime.value = null
   backgroundActivityIdsByToolCallId.clear()
   await refreshSessionHistory()
   successMessage.value = 'Started a fresh session.'
@@ -350,6 +414,7 @@ async function openSessionFromHistory(sessionId: string) {
   activeSessionId.value = sessionId
   chatMessages.value = []
   activities.value = []
+  activeSessionRuntime.value = null
   backgroundActivityIdsByToolCallId.clear()
   await ensureSession()
   if (!isChatRoute.value) {
@@ -450,6 +515,9 @@ function handleStreamEvent(event: ChatStreamEvent) {
   }
 
   if (event.event === 'run_started') {
+    if (activeSessionRuntime.value) {
+      activeSessionRuntime.value.status = 'active'
+    }
     activities.value.push(
       makeActivity({
         title: 'Thinking',
@@ -755,6 +823,11 @@ function handleStreamEvent(event: ChatStreamEvent) {
     return
   }
 
+  if (event.event === 'assistant_delta') {
+    appendAssistantDelta(event.data)
+    return
+  }
+
   if (event.event === 'reasoning') {
     activities.value.push(
       makeActivity({
@@ -767,8 +840,28 @@ function handleStreamEvent(event: ChatStreamEvent) {
     return
   }
 
+  if (event.event === 'approval_requested') {
+    if (activeSessionRuntime.value) {
+      activeSessionRuntime.value.pending_approval_count += 1
+      activeSessionRuntime.value.status = 'active'
+    }
+    upsertApprovalActivity(event.data)
+    return
+  }
+
+  if (event.event === 'approval_resolved') {
+    if (activeSessionRuntime.value) {
+      activeSessionRuntime.value.pending_approval_count = Math.max(
+        0,
+        activeSessionRuntime.value.pending_approval_count - 1,
+      )
+    }
+    resolveApprovalActivity(event.data.request_id, event.data.decision)
+    return
+  }
+
   if (event.event === 'assistant_message') {
-    chatMessages.value.push(makeUiMessage('assistant', event.data.content))
+    finalizeAssistantMessage(event.data)
     return
   }
 
@@ -786,6 +879,10 @@ function handleStreamEvent(event: ChatStreamEvent) {
   }
 
   const doneEvent = event as ChatStreamDoneEvent
+  if (activeSessionRuntime.value) {
+    activeSessionRuntime.value.status =
+      doneEvent.data.finish_reason === 'stop' ? 'idle' : doneEvent.data.finish_reason
+  }
   if (doneEvent.data.finish_reason === 'stop') {
     successMessage.value = 'Response ready.'
   }
@@ -810,6 +907,41 @@ async function saveLlmSettings() {
     errorMessage.value = toErrorMessage(error)
   } finally {
     savingState.llm = false
+  }
+}
+
+async function saveAppSettings() {
+  savingState.app = true
+  errorMessage.value = ''
+  successMessage.value = ''
+  try {
+    config.value = await apiPut<ConfigResponse>('/api/config/app', {
+      session_defaults: {
+        default_backend_id: appForm.defaultBackendId,
+        default_project_path: appForm.defaultProjectPath,
+        channel_backend_id: appForm.channelBackendId,
+        channel_project_path: appForm.channelProjectPath,
+        channel_auto_approve_codex_requests: appForm.channelAutoApproveCodexRequests,
+      },
+      codex: {
+        launcher_command: appForm.codexLauncherCommand,
+        model: appForm.codexModel,
+        sandbox: appForm.codexSandbox,
+        approval_policy: appForm.codexApprovalPolicy,
+        approvals_reviewer: appForm.codexApprovalsReviewer,
+        personality: appForm.codexPersonality,
+        reasoning_effort: appForm.codexReasoningEffort,
+        service_tier: appForm.codexServiceTier,
+      },
+    } satisfies SaveAppSettingsRequest)
+    health.value = await apiGet<HealthResponse>('/api/health')
+    hydrateAppForm(config.value)
+    initializeNewSessionDraft(config.value)
+    successMessage.value = 'Backend settings saved.'
+  } catch (error) {
+    errorMessage.value = toErrorMessage(error)
+  } finally {
+    savingState.app = false
   }
 }
 
@@ -975,6 +1107,7 @@ function makeUiMessage(
   content: string,
   source: 'chat' | 'channel' = 'chat',
   channelMeta: UiChatMessage['channelMeta'] = null,
+  options: { draftId?: string | null } = {},
 ): UiChatMessage {
   return {
     id: crypto.randomUUID(),
@@ -982,6 +1115,159 @@ function makeUiMessage(
     content,
     source,
     channelMeta,
+    draftId: options.draftId ?? null,
+  }
+}
+
+function appendAssistantDelta(event: ChatAssistantDeltaEvent['data']) {
+  const existingDraft = chatMessages.value.find(
+    (message) => message.role === 'assistant' && message.draftId === event.item_id,
+  )
+  if (existingDraft) {
+    existingDraft.content += event.delta
+    return
+  }
+  chatMessages.value.push(
+    makeUiMessage(
+      'assistant',
+      event.delta,
+      activeSession.value?.source ?? 'chat',
+      activeSession.value?.channel_meta ?? null,
+      {
+        draftId: event.item_id,
+      },
+    ),
+  )
+}
+
+function finalizeAssistantMessage(event: {
+  content: string
+  item_id?: string
+}) {
+  if (event.item_id) {
+    chatMessages.value = chatMessages.value.filter((message) => message.draftId !== event.item_id)
+  }
+  chatMessages.value.push(
+    makeUiMessage(
+      'assistant',
+      event.content,
+      activeSession.value?.source ?? 'chat',
+      activeSession.value?.channel_meta ?? null,
+    ),
+  )
+}
+
+function defaultApprovalResponseDraft(approval: PendingApproval) {
+  const request = approval.payload.request
+  if (!request || typeof request !== 'object' || Array.isArray(request)) {
+    return ''
+  }
+  return (request as Record<string, unknown>).mode === 'form' ? '{}' : ''
+}
+
+function approvalActivityId(requestId: string) {
+  return `approval:${requestId}`
+}
+
+function upsertApprovalActivity(event: ChatApprovalRequestedEvent['data']) {
+  const activityId = approvalActivityId(event.request_id)
+  upsertActivity(
+    activityId,
+    makeActivity({
+      id: activityId,
+      title: event.title,
+      detail: event.detail,
+      state: 'queued',
+      kind: 'approval',
+      approval: {
+        requestId: event.request_id,
+        method: event.method,
+        kind: event.kind,
+        options: event.options,
+        payload: event.payload,
+        responseDraft: defaultApprovalResponseDraft({
+          request_id: event.request_id,
+          method: event.method,
+          kind: event.kind,
+          title: event.title,
+          detail: event.detail,
+          options: event.options,
+          payload: event.payload,
+        }),
+        submittedDecision: null,
+      },
+    }),
+  )
+}
+
+function appendPendingApprovalActivities(pendingApprovals: PendingApproval[] | null | undefined) {
+  if (!Array.isArray(pendingApprovals)) {
+    return
+  }
+  for (const approval of pendingApprovals) {
+    upsertApprovalActivity({
+      session_id: activeSessionId.value,
+      request_id: approval.request_id,
+      method: approval.method,
+      kind: approval.kind,
+      title: approval.title,
+      detail: approval.detail,
+      options: approval.options,
+      payload: approval.payload,
+    })
+  }
+}
+
+function resolveApprovalActivity(requestId: string, decision: string) {
+  upsertActivity(approvalActivityId(requestId), {
+    id: approvalActivityId(requestId),
+    kind: 'approval',
+    title: 'Approval resolved',
+    detail: `Decision: ${decision}.`,
+    state: 'done',
+    command: '',
+    cwd: '',
+    stdout: '',
+    stderr: '',
+    meta: [],
+    shell: null,
+    tool: null,
+    approval: null,
+  })
+}
+
+async function submitApprovalDecision(
+  requestId: string,
+  decision: ApprovalDecision,
+  contentText: string,
+) {
+  errorMessage.value = ''
+  let content: Record<string, unknown> | null | undefined = undefined
+  if (contentText.trim()) {
+    try {
+      content = JSON.parse(contentText) as Record<string, unknown>
+    } catch (error) {
+      errorMessage.value = `Invalid JSON approval response: ${toErrorMessage(error)}`
+      return
+    }
+  }
+  try {
+    await apiPost<{ ok: boolean }>(
+      `/api/chat/sessions/${activeSessionId.value}/approvals/respond`,
+      {
+        request_id: requestId,
+        decision,
+        content,
+      } satisfies ApprovalResponseRequest,
+    )
+    const activity = activities.value.find((item) => item.id === approvalActivityId(requestId))
+    if (activity?.approval) {
+      activity.approval.submittedDecision = decision
+      activity.state = 'running'
+      activity.detail = `Submitted ${decision}. Waiting for Codex to continue.`
+    }
+  } catch (error) {
+    errorMessage.value = toErrorMessage(error)
   }
 }
 
@@ -1020,6 +1306,52 @@ function hydrateLlmForm(configPayload: ConfigResponse['llm']) {
     lastCustomLlmForm.model = llmForm.model
   }
   hydratingLlmForm = false
+}
+
+function hydrateAppForm(configPayload: ConfigResponse) {
+  const sessionDefaults = configPayload.session_defaults ?? {
+    default_backend_id: 'yier',
+    default_project_path: defaultAllowedRoots.value[0] ?? '',
+    channel_backend_id: 'yier',
+    channel_project_path: defaultAllowedRoots.value[0] ?? '',
+    channel_auto_approve_codex_requests: true,
+  }
+  const codex = configPayload.codex ?? {
+    launcher_command: 'codex app-server --listen stdio://',
+    model: '',
+    sandbox: 'workspace-write',
+    approval_policy: 'on-request',
+    approvals_reviewer: 'user',
+    personality: 'friendly',
+    reasoning_effort: 'medium',
+    service_tier: '',
+  }
+
+  appForm.defaultBackendId = sessionDefaults.default_backend_id
+  appForm.defaultProjectPath = sessionDefaults.default_project_path
+  appForm.channelBackendId = sessionDefaults.channel_backend_id
+  appForm.channelProjectPath = sessionDefaults.channel_project_path
+  appForm.channelAutoApproveCodexRequests = sessionDefaults.channel_auto_approve_codex_requests
+  appForm.codexLauncherCommand = codex.launcher_command
+  appForm.codexModel = codex.model
+  appForm.codexSandbox = codex.sandbox
+  appForm.codexApprovalPolicy = codex.approval_policy
+  appForm.codexApprovalsReviewer = codex.approvals_reviewer
+  appForm.codexPersonality = codex.personality
+  appForm.codexReasoningEffort = codex.reasoning_effort
+  appForm.codexServiceTier = codex.service_tier
+}
+
+function initializeNewSessionDraft(configPayload: ConfigResponse) {
+  const defaultBackendId = configPayload.session_defaults?.default_backend_id ?? 'yier'
+  const defaultProjectPath =
+    configPayload.session_defaults?.default_project_path ?? defaultAllowedRoots.value[0] ?? ''
+  if (!newSessionDraft.backendId) {
+    newSessionDraft.backendId = defaultBackendId
+  }
+  if (!newSessionDraft.projectPath.trim()) {
+    newSessionDraft.projectPath = defaultProjectPath
+  }
 }
 
 function resolveProviderDefaultBaseUrl(provider: LlmProvider) {
@@ -1065,6 +1397,7 @@ function makeActivity(
     meta: overrides.meta ?? [],
     shell: overrides.shell ?? null,
     tool: overrides.tool ?? null,
+    approval: overrides.approval ?? null,
   }
 }
 
@@ -1561,6 +1894,7 @@ function upsertActivity(activityId: string, nextValue: ChatActivity) {
   }
   target.shell = nextValue.shell
   target.tool = nextValue.tool
+  target.approval = nextValue.approval ?? target.approval
 }
 
 function upsertShellActivity(activityId: string, nextValue: ChatActivity) {
@@ -1583,6 +1917,7 @@ function upsertShellActivity(activityId: string, nextValue: ChatActivity) {
   }
   target.shell = mergeShellState(target.shell, nextValue.shell)
   target.tool = nextValue.tool ?? target.tool
+  target.approval = nextValue.approval ?? target.approval
 }
 
 function rekeyActivity(sourceId: string, targetId: string) {
@@ -2012,9 +2347,28 @@ function toErrorMessage(error: unknown) {
             rounded
           />
         </div>
+        <div class="side-card-row">
+          <span class="side-card-label">Backend</span>
+          <Tag
+            :value="activeBackendId"
+            :severity="activeBackendReady ? 'success' : 'warn'"
+            rounded
+          />
+        </div>
       </div>
 
       <div class="rail-actions">
+        <select v-model="newSessionDraft.backendId" class="session-target-select">
+          <option v-for="backend in backendOptions" :key="backend.id" :value="backend.id">
+            {{ backend.label }}
+          </option>
+        </select>
+        <input
+          v-model="newSessionDraft.projectPath"
+          class="session-target-input"
+          type="text"
+          placeholder="Project path for the next session"
+        />
         <Button label="New Chat" icon="pi pi-plus" fluid @click="handleNewChatClick" />
       </div>
 
@@ -2044,6 +2398,8 @@ function toErrorMessage(error: unknown) {
                   </p>
                   <p class="session-history-meta">
                     <span>{{ session.source }}</span>
+                    <span> · {{ session.backend_id }}</span>
+                    <span v-if="session.project_path"> · {{ displayNameForPath(session.project_path) }}</span>
                     <span v-if="session.channel_meta?.platform">
                       · {{ session.channel_meta.platform }}</span
                     >
@@ -2136,12 +2492,21 @@ function toErrorMessage(error: unknown) {
       </section>
 
       <template v-else>
-        <section v-if="!llmReady && isChatRoute" class="empty-state">
+        <section v-if="!activeBackendReady && isChatRoute" class="empty-state">
           <p class="eyebrow">Setup needed</p>
-          <h3>Configure the LLM connection before sending messages.</h3>
+          <h3>
+            {{
+              activeBackendId === 'codex'
+                ? 'Configure the Codex backend before sending messages.'
+                : 'Configure the LLM connection before sending messages.'
+            }}
+          </h3>
           <p>
-            Add a provider or `base_url`, plus `api_key` and `model`, in Settings. Your values stay
-            on this machine in `~/.yier/web/settings.json`.
+            {{
+              activeBackendId === 'codex'
+                ? 'Set the Codex launcher command in Settings and make sure the executable is on your PATH.'
+                : 'Add a provider or `base_url`, plus `api_key` and `model`, in Settings. Your values stay on this machine in `~/.yier/web/settings.json`.'
+            }}
           </p>
           <Button label="Open Settings" icon="pi pi-cog" @click="openSettings" />
         </section>
@@ -2153,6 +2518,9 @@ function toErrorMessage(error: unknown) {
               :activities="activities"
               :is-sending="isSending"
               :session-label="sessionLabel"
+              :session-runtime="activeSessionRuntime"
+              :project-path="activeProjectPath"
+              @approval-action="submitApprovalDecision"
             />
             <Message
               v-if="activeSession?.source === 'channel'"
@@ -2186,14 +2554,18 @@ function toErrorMessage(error: unknown) {
             :health="health"
             :config="config"
             :mcp-config="mcpConfig"
+            :backend-options="backendOptions"
             :llm-form="llmForm"
+            :app-form="appForm"
             :roots-draft="rootsDraft"
             :mcp-draft="mcpDraft"
+            :saving-app="savingState.app"
             :saving-llm="savingState.llm"
             :saving-roots="savingState.roots"
             :saving-mcp="savingState.mcp"
             :reloading-mcp="savingState.reloadingMcp"
             @save-llm="saveLlmSettings"
+            @save-app="saveAppSettings"
             @save-roots="saveAllowedRoots"
             @reset-roots="resetAllowedRoots"
             @add-root="addAllowedRoot"

@@ -20,6 +20,7 @@ from yier_web.config import AppConfigService, MCPValidationError
 from yier_web.event_stream import EventStreamBroker
 from yier_web.frontend import FrontendService
 from yier_web.schemas import (
+    ApprovalResponseRequest,
     ChatStreamRequest,
     ChannelAccountActionResponse,
     ChannelAccountsResponse,
@@ -27,11 +28,13 @@ from yier_web.schemas import (
     ChannelLoginRequest,
     ChannelPlatformsResponse,
     ChannelWorkspaceResponse,
+    CreateSessionRequest,
     CreateSessionResponse,
     HealthResponse,
     LLMHealth,
     MCPConfigResponse,
     MCPHealth,
+    SaveAppSettingsRequest,
     SaveAllowedRootsRequest,
     SaveChannelConfigRequest,
     SaveLLMRequest,
@@ -113,6 +116,7 @@ async def health(state: State) -> HealthResponse:
             detail=None if mcp_ready else f"Problematic MCP servers: {', '.join(failing_servers)}",
             runtime=runtime,
         ),
+        backends=services.config_service.build_backend_health(),
         allowed_roots=settings.allowed_roots,
     )
 
@@ -138,6 +142,14 @@ async def save_allowed_roots_config(data: SaveAllowedRootsRequest, state: State)
     services = get_services(state)
     services.config_service.save_allowed_roots(data.allowed_roots)
     await services.chat_service.reload_agent()
+    runtime = await services.chat_service.get_mcp_status()
+    return Response(content=services.config_service.build_public_config(runtime).model_dump())
+
+
+@put("/config/app")
+async def save_app_config(data: SaveAppSettingsRequest, state: State) -> Response:
+    services = get_services(state)
+    services.config_service.save_app_settings(data)
     runtime = await services.chat_service.get_mcp_status()
     return Response(content=services.config_service.build_public_config(runtime).model_dump())
 
@@ -175,8 +187,18 @@ async def reload_mcp_config(state: State) -> MCPConfigResponse:
 
 
 @post("/chat/sessions")
-async def create_session(state: State) -> CreateSessionResponse:
-    return CreateSessionResponse(session_id=get_services(state).chat_service.create_session())
+async def create_session(request: Request[Any, Any, Any], state: State) -> CreateSessionResponse:
+    try:
+        raw_payload = await request.json()
+    except Exception:
+        raw_payload = {}
+    payload = CreateSessionRequest.model_validate(raw_payload or {})
+    return CreateSessionResponse(
+        session_id=get_services(state).chat_service.create_session(
+            backend_id=payload.backend_id,
+            project_path=payload.project_path,
+        )
+    )
 
 
 @get("/chat/sessions")
@@ -194,11 +216,15 @@ async def get_session(session_id: str, state: State) -> SessionTranscriptRespons
     return SessionTranscriptResponse(
         session_id=session_id,
         source=metadata["source"],
+        backend_id=metadata["backend_id"],
+        project_path=metadata["project_path"],
         channel_meta=(
             metadata["channel_meta"]
             if isinstance(metadata["channel_meta"], dict)
             else None
         ),
+        backend_runtime=services.chat_service.get_backend_runtime(session_id),
+        pending_approvals=services.chat_service.get_pending_approvals(session_id),
         messages=messages,
         activity_events=activity_events,
     )
@@ -206,8 +232,25 @@ async def get_session(session_id: str, state: State) -> SessionTranscriptRespons
 
 @delete("/chat/sessions/{session_id:str}", status_code=200)
 async def delete_session(session_id: str, state: State) -> DeleteSessionResponse:
-    deleted = get_services(state).chat_service.delete_session(session_id)
+    deleted = await get_services(state).chat_service.delete_session(session_id)
     return DeleteSessionResponse(session_id=session_id, deleted=deleted)
+
+
+@post("/chat/sessions/{session_id:str}/approvals/respond")
+async def respond_to_approval(
+    session_id: str,
+    data: ApprovalResponseRequest,
+    state: State,
+) -> Response:
+    handled = await get_services(state).chat_service.respond_to_approval(
+        session_id=session_id,
+        request_id=data.request_id,
+        decision=data.decision,
+        content=data.content,
+    )
+    if not handled:
+        raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail="Approval request not found.")
+    return Response(content={"ok": True})
 
 
 @post("/chat/stream", status_code=200)
@@ -338,6 +381,7 @@ api_router = Router(
         get_config,
         save_llm_config,
         save_allowed_roots_config,
+        save_app_config,
         get_mcp_config,
         save_mcp_config,
         reload_mcp_config,
@@ -345,6 +389,7 @@ api_router = Router(
         list_sessions,
         get_session,
         delete_session,
+        respond_to_approval,
         stream_chat,
         get_channel_workspace,
         get_channel_platforms,

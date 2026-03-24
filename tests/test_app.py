@@ -62,6 +62,8 @@ class FakeChatService:
                 "updated_at": 123.0,
                 "message_count": 2,
                 "source": "chat",
+                "backend_id": "yier",
+                "project_path": "/tmp/project",
                 "channel_meta": None,
             }
         ]
@@ -89,7 +91,7 @@ class FakeChatService:
         self.reloaded += 1
         return self.runtime
 
-    def create_session(self) -> str:
+    def create_session(self, backend_id: str | None = None, project_path: str | None = None) -> str:
         return "session-created"
 
     def get_session_messages(self, session_id: str) -> list[Message]:
@@ -109,7 +111,28 @@ class FakeChatService:
         ]
 
     def get_session_metadata(self, session_id: str) -> dict[str, Any]:
-        return {"source": "chat", "channel_meta": None}
+        return {
+            "source": "chat",
+            "backend_id": "yier",
+            "project_path": "/tmp/project",
+            "channel_meta": None,
+            "backend_state": {},
+        }
+
+    def get_backend_runtime(self, session_id: str) -> dict[str, Any]:
+        return {
+            "backend_id": "yier",
+            "label": "Yier Agent",
+            "ready": True,
+            "status": "idle",
+            "thread_id": None,
+            "active_flags": [],
+            "detail": None,
+            "pending_approval_count": 0,
+        }
+
+    def get_pending_approvals(self, session_id: str) -> list[dict[str, Any]]:
+        return []
 
     def is_channel_session(self, session_id: str) -> bool:
         return False
@@ -122,12 +145,21 @@ class FakeChatService:
             return self.session_summaries
         return [item for item in self.session_summaries if item["source"] == source]
 
-    def delete_session(self, session_id: str) -> bool:
+    async def delete_session(self, session_id: str) -> bool:
         self.sessions.pop(session_id, None)
         self.activity_events.pop(session_id, None)
         self.session_summaries = [
             item for item in self.session_summaries if item["session_id"] != session_id
         ]
+        return True
+
+    async def respond_to_approval(
+        self,
+        session_id: str,
+        request_id: str,
+        decision: str,
+        content: dict[str, Any] | None = None,
+    ) -> bool:
         return True
 
     async def stream_chat(self, session_id: str, user_message: str):

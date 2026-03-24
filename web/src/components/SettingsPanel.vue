@@ -15,6 +15,7 @@ import TabPanels from 'primevue/tabpanels'
 import Textarea from 'primevue/textarea'
 
 import type {
+  BackendId,
   ConfigResponse,
   EditableAllowedRoot,
   EditableMcpServer,
@@ -26,14 +27,31 @@ const props = defineProps<{
   health: HealthResponse | null
   config: ConfigResponse | null
   mcpConfig: McpConfigResponse | null
+  backendOptions: Array<{ id: BackendId; label: string }>
   llmForm: {
     provider: '' | 'zai' | 'zai-coding-plan'
     baseUrl: string
     model: string
     apiKey: string
   }
+  appForm: {
+    defaultBackendId: BackendId
+    defaultProjectPath: string
+    channelBackendId: BackendId
+    channelProjectPath: string
+    channelAutoApproveCodexRequests: boolean
+    codexLauncherCommand: string
+    codexModel: string
+    codexSandbox: 'read-only' | 'workspace-write' | 'danger-full-access'
+    codexApprovalPolicy: 'untrusted' | 'on-failure' | 'on-request' | 'never'
+    codexApprovalsReviewer: 'user' | 'guardian_subagent'
+    codexPersonality: 'none' | 'friendly' | 'pragmatic'
+    codexReasoningEffort: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+    codexServiceTier: '' | 'fast' | 'flex'
+  }
   rootsDraft: EditableAllowedRoot[]
   mcpDraft: EditableMcpServer[]
+  savingApp: boolean
   savingLlm: boolean
   savingRoots: boolean
   savingMcp: boolean
@@ -46,8 +64,11 @@ const {
   llmForm,
   mcpConfig,
   mcpDraft,
+  backendOptions,
+  appForm,
   reloadingMcp,
   rootsDraft,
+  savingApp,
   savingLlm,
   savingMcp,
   savingRoots,
@@ -63,6 +84,7 @@ const providerOptions = [
 
 const emit = defineEmits<{
   saveLlm: []
+  saveApp: []
   saveRoots: []
   resetRoots: []
   addRoot: []
@@ -96,6 +118,7 @@ const emit = defineEmits<{
         <Tabs v-model:value="activeTab" class="settings-tabs">
           <TabList>
             <Tab value="llm">LLM</Tab>
+            <Tab value="backends">Backends</Tab>
             <Tab value="workspace">Workspace</Tab>
             <Tab value="mcp">MCP</Tab>
             <Tab value="runtime">Runtime</Tab>
@@ -153,6 +176,163 @@ const emit = defineEmits<{
                   icon="pi pi-check"
                   :loading="savingLlm"
                   @click="emit('saveLlm')"
+                />
+              </section>
+            </TabPanel>
+
+            <TabPanel value="backends">
+              <section class="settings-section">
+                <p class="eyebrow">Session defaults</p>
+                <label class="field-label" for="default-backend">New chat backend</label>
+                <Select
+                  input-id="default-backend"
+                  v-model="appForm.defaultBackendId"
+                  :options="backendOptions"
+                  option-label="label"
+                  option-value="id"
+                  fluid
+                />
+
+                <label class="field-label" for="default-project-path">New chat project path</label>
+                <InputText
+                  id="default-project-path"
+                  v-model="appForm.defaultProjectPath"
+                  fluid
+                  placeholder="project/root or ./relative/path"
+                />
+
+                <label class="field-label" for="channel-backend">Channel backend</label>
+                <Select
+                  input-id="channel-backend"
+                  v-model="appForm.channelBackendId"
+                  :options="backendOptions"
+                  option-label="label"
+                  option-value="id"
+                  fluid
+                />
+
+                <label class="field-label" for="channel-project-path">Channel project path</label>
+                <InputText
+                  id="channel-project-path"
+                  v-model="appForm.channelProjectPath"
+                  fluid
+                  placeholder="channel/root or ./relative/path"
+                />
+
+                <label class="mcp-toggle">
+                  <input v-model="appForm.channelAutoApproveCodexRequests" type="checkbox" />
+                  Auto-resolve Codex approvals in channel sessions
+                </label>
+
+                <p class="eyebrow">Codex app-server</p>
+                <label class="field-label" for="codex-launcher-command">Launcher command</label>
+                <InputText
+                  id="codex-launcher-command"
+                  v-model="appForm.codexLauncherCommand"
+                  fluid
+                  placeholder="codex app-server --listen stdio://"
+                />
+
+                <label class="field-label" for="codex-model">Default model</label>
+                <InputText
+                  id="codex-model"
+                  v-model="appForm.codexModel"
+                  fluid
+                  placeholder="gpt-5.4"
+                />
+
+                <label class="field-label" for="codex-sandbox">Sandbox</label>
+                <Select
+                  input-id="codex-sandbox"
+                  v-model="appForm.codexSandbox"
+                  :options="[
+                    { label: 'Read only', value: 'read-only' },
+                    { label: 'Workspace write', value: 'workspace-write' },
+                    { label: 'Danger full access', value: 'danger-full-access' },
+                  ]"
+                  option-label="label"
+                  option-value="value"
+                  fluid
+                />
+
+                <label class="field-label" for="codex-approval-policy">Approval policy</label>
+                <Select
+                  input-id="codex-approval-policy"
+                  v-model="appForm.codexApprovalPolicy"
+                  :options="[
+                    { label: 'Untrusted', value: 'untrusted' },
+                    { label: 'On failure', value: 'on-failure' },
+                    { label: 'On request', value: 'on-request' },
+                    { label: 'Never', value: 'never' },
+                  ]"
+                  option-label="label"
+                  option-value="value"
+                  fluid
+                />
+
+                <label class="field-label" for="codex-reviewer">Approvals reviewer</label>
+                <Select
+                  input-id="codex-reviewer"
+                  v-model="appForm.codexApprovalsReviewer"
+                  :options="[
+                    { label: 'User', value: 'user' },
+                    { label: 'Guardian subagent', value: 'guardian_subagent' },
+                  ]"
+                  option-label="label"
+                  option-value="value"
+                  fluid
+                />
+
+                <label class="field-label" for="codex-personality">Personality</label>
+                <Select
+                  input-id="codex-personality"
+                  v-model="appForm.codexPersonality"
+                  :options="[
+                    { label: 'None', value: 'none' },
+                    { label: 'Friendly', value: 'friendly' },
+                    { label: 'Pragmatic', value: 'pragmatic' },
+                  ]"
+                  option-label="label"
+                  option-value="value"
+                  fluid
+                />
+
+                <label class="field-label" for="codex-effort">Reasoning effort</label>
+                <Select
+                  input-id="codex-effort"
+                  v-model="appForm.codexReasoningEffort"
+                  :options="[
+                    { label: 'None', value: 'none' },
+                    { label: 'Minimal', value: 'minimal' },
+                    { label: 'Low', value: 'low' },
+                    { label: 'Medium', value: 'medium' },
+                    { label: 'High', value: 'high' },
+                    { label: 'Extra high', value: 'xhigh' },
+                  ]"
+                  option-label="label"
+                  option-value="value"
+                  fluid
+                />
+
+                <label class="field-label" for="codex-service-tier">Service tier</label>
+                <Select
+                  input-id="codex-service-tier"
+                  v-model="appForm.codexServiceTier"
+                  :options="[
+                    { label: 'Default', value: '' },
+                    { label: 'Fast', value: 'fast' },
+                    { label: 'Flex', value: 'flex' },
+                  ]"
+                  option-label="label"
+                  option-value="value"
+                  fluid
+                />
+
+                <Button
+                  label="Save Backend Settings"
+                  icon="pi pi-check"
+                  :loading="savingApp"
+                  @click="emit('saveApp')"
                 />
               </section>
             </TabPanel>

@@ -15,6 +15,14 @@ MCPRuntimeStatus = Literal[
 FrontendMode = Literal["proxy", "static", "missing"]
 SessionSource = Literal["chat", "channel"]
 LLMProvider = Literal["", "zai", "zai-coding-plan"]
+BackendId = Literal["yier", "codex"]
+CodexApprovalPolicy = Literal["untrusted", "on-failure", "on-request", "never"]
+CodexSandboxMode = Literal["read-only", "workspace-write", "danger-full-access"]
+CodexPersonality = Literal["none", "friendly", "pragmatic"]
+CodexReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "xhigh"]
+CodexServiceTier = Literal["", "fast", "flex"]
+CodexApprovalsReviewer = Literal["user", "guardian_subagent"]
+ApprovalDecision = Literal["accept", "accept_for_session", "decline", "cancel"]
 
 
 class StoredLLMSettings(BaseModel):
@@ -38,7 +46,54 @@ class StoredLLMSettings(BaseModel):
 
 class WebSettings(BaseModel):
     llm: StoredLLMSettings = Field(default_factory=StoredLLMSettings)
+    session_defaults: "SessionDefaultsSettings" = Field(default_factory=lambda: SessionDefaultsSettings())
+    codex: "StoredCodexSettings" = Field(default_factory=lambda: StoredCodexSettings())
     allowed_roots: list[str] = Field(default_factory=list)
+
+
+class SessionDefaultsSettings(BaseModel):
+    default_backend_id: BackendId = "yier"
+    default_project_path: str = ""
+    channel_backend_id: BackendId = "yier"
+    channel_project_path: str = ""
+    channel_auto_approve_codex_requests: bool = True
+
+
+class StoredCodexSettings(BaseModel):
+    launcher_command: str = "codex app-server --listen stdio://"
+    model: str = ""
+    sandbox: CodexSandboxMode = "workspace-write"
+    approval_policy: CodexApprovalPolicy = "on-request"
+    approvals_reviewer: CodexApprovalsReviewer = "user"
+    personality: CodexPersonality = "friendly"
+    reasoning_effort: CodexReasoningEffort = "medium"
+    service_tier: CodexServiceTier = ""
+
+    @field_validator("launcher_command", "model")
+    @classmethod
+    def strip_string_fields(cls, value: str) -> str:
+        return value.strip()
+
+
+class BackendHealth(BaseModel):
+    ready: bool
+    detail: str | None = None
+
+
+class BackendOption(BaseModel):
+    id: BackendId
+    label: str
+
+
+class CodexConfigPayload(BaseModel):
+    launcher_command: str = ""
+    model: str = ""
+    sandbox: CodexSandboxMode = "workspace-write"
+    approval_policy: CodexApprovalPolicy = "on-request"
+    approvals_reviewer: CodexApprovalsReviewer = "user"
+    personality: CodexPersonality = "friendly"
+    reasoning_effort: CodexReasoningEffort = "medium"
+    service_tier: CodexServiceTier = ""
 
 
 class LLMConfigPayload(BaseModel):
@@ -75,11 +130,15 @@ class HealthResponse(BaseModel):
     frontend: FrontendHealth
     llm: LLMHealth
     mcp: MCPHealth
+    backends: dict[BackendId, BackendHealth] = Field(default_factory=dict)
     allowed_roots: list[str] = Field(default_factory=list)
 
 
 class ConfigResponse(BaseModel):
     llm: LLMConfigPayload
+    backends: list[BackendOption] = Field(default_factory=list)
+    session_defaults: SessionDefaultsSettings = Field(default_factory=SessionDefaultsSettings)
+    codex: CodexConfigPayload = Field(default_factory=CodexConfigPayload)
     allowed_roots: list[str] = Field(default_factory=list)
     mcp_runtime: dict[str, MCPRuntimeEntry] = Field(default_factory=dict)
 
@@ -114,10 +173,46 @@ class SaveMCPConfigRequest(BaseModel):
     mcp_servers: dict[str, dict[str, Any]]
 
 
+class SaveAppSettingsRequest(BaseModel):
+    session_defaults: SessionDefaultsSettings = Field(default_factory=SessionDefaultsSettings)
+    codex: StoredCodexSettings = Field(default_factory=StoredCodexSettings)
+
+
 class ChannelMetaPayload(BaseModel):
     platform: str
     account_id: str
     peer_id: str
+
+
+class ApprovalOption(BaseModel):
+    value: ApprovalDecision
+    label: str
+
+
+class PendingApproval(BaseModel):
+    request_id: str
+    method: str
+    kind: str
+    title: str
+    detail: str
+    options: list[ApprovalOption] = Field(default_factory=list)
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class BackendRuntimePayload(BaseModel):
+    backend_id: BackendId
+    label: str
+    ready: bool = True
+    status: str = "idle"
+    thread_id: str | None = None
+    active_flags: list[str] = Field(default_factory=list)
+    detail: str | None = None
+    pending_approval_count: int = 0
+
+
+class CreateSessionRequest(BaseModel):
+    backend_id: BackendId | None = None
+    project_path: str | None = None
 
 
 class CreateSessionResponse(BaseModel):
@@ -131,6 +226,8 @@ class SessionSummary(BaseModel):
     updated_at: float
     message_count: int = 0
     source: SessionSource = "chat"
+    backend_id: BackendId = "yier"
+    project_path: str = ""
     channel_meta: ChannelMetaPayload | None = None
 
 
@@ -160,7 +257,11 @@ class StoredSessionMessage(BaseModel):
 class SessionTranscriptResponse(BaseModel):
     session_id: str
     source: SessionSource = "chat"
+    backend_id: BackendId = "yier"
+    project_path: str = ""
     channel_meta: ChannelMetaPayload | None = None
+    backend_runtime: BackendRuntimePayload | None = None
+    pending_approvals: list[PendingApproval] = Field(default_factory=list)
     messages: list[StoredSessionMessage] = Field(default_factory=list)
     activity_events: list[StoredActivityEvent] = Field(default_factory=list)
 
@@ -204,3 +305,9 @@ class ChannelLoginRequest(BaseModel):
 
 class ChannelAccountActionResponse(BaseModel):
     account: dict[str, Any]
+
+
+class ApprovalResponseRequest(BaseModel):
+    request_id: str
+    decision: ApprovalDecision
+    content: dict[str, Any] | None = None

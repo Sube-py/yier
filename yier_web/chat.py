@@ -36,13 +36,16 @@ from yier_agents import (
 )
 from yier_agents.src.config import AssistantSettings
 
+from yier_web.agent_backends import ChatSessionContext, CodexAppServerBackend, YierAgentBackend
 from yier_web.background_followups import FollowupQueueManager, create_queue_background_followup_tool
 from yier_web.config import AppConfigService
 from yier_web.event_stream import EventStreamBroker
 from yier_web.session_metadata_store import SessionMetadataStore
 from yier_web.session_ui_store import SessionUIStore
 from yier_web.schemas import (
+    BackendRuntimePayload,
     ChannelMetaPayload,
+    PendingApproval,
     MCPRuntimeEntry,
     SessionSummary,
     StoredLLMSettings,
@@ -80,6 +83,10 @@ class ChatService:
         )
         self.followup_queue = FollowupQueueManager()
         self.event_broker = event_broker or EventStreamBroker()
+        self.backends = {
+            "yier": YierAgentBackend(self),
+            "codex": CodexAppServerBackend(self),
+        }
         self._agent: Agent | None = None
         self._agent_signature: tuple[Any, ...] | None = None
         self._lock = asyncio.Lock()
@@ -107,6 +114,8 @@ class ChatService:
             self._background_supervisor_task = None
         await self.background_manager.close()
         await self.mcp_manager.stop()
+        for backend in self.backends.values():
+            await backend.stop()
         self._started = False
         self._agent = None
         self._agent_signature = None
@@ -144,9 +153,22 @@ class ChatService:
             for name, payload in snapshot.items()
         }
 
-    def create_session(self) -> str:
+    def create_session(
+        self,
+        backend_id: str | None = None,
+        project_path: str | None = None,
+    ) -> str:
         session_id = str(uuid4())
-        self.ensure_session_metadata(session_id)
+        settings = self.config_service.load_web_settings()
+        resolved_backend_id = backend_id or settings.session_defaults.default_backend_id
+        resolved_project_path = self.config_service.resolve_project_path(
+            project_path or settings.session_defaults.default_project_path
+        )
+        self.ensure_session_metadata(
+            session_id,
+            backend_id=resolved_backend_id,
+            project_path=resolved_project_path,
+        )
         return session_id
 
     def get_session_messages(self, session_id: str) -> list[Message]:
@@ -157,28 +179,43 @@ class ChatService:
 
     def get_session_metadata(self, session_id: str) -> dict[str, Any]:
         payload = self.session_metadata_store.load(session_id) or {}
-        source = payload.get("source")
-        if source not in {"chat", "channel"}:
-            source = "chat"
-        channel_meta = payload.get("channel_meta")
-        if not isinstance(channel_meta, dict):
-            channel_meta = None
-        return {
-            "source": source,
-            "channel_meta": channel_meta,
-        }
+        return self._normalize_session_metadata_payload(payload)
 
     def ensure_session_metadata(
         self,
         session_id: str,
         source: str = "chat",
         channel_meta: dict[str, Any] | None = None,
+        backend_id: str | None = None,
+        project_path: str | None = None,
+        backend_state: dict[str, Any] | None = None,
     ) -> None:
-        existing = self.session_metadata_store.load(session_id) or {}
+        existing = self.get_session_metadata(session_id)
+        settings = self.config_service.load_web_settings()
+        normalized_source = source if source in {"chat", "channel"} else existing["source"]
+        default_backend_id = (
+            settings.session_defaults.channel_backend_id
+            if normalized_source == "channel"
+            else settings.session_defaults.default_backend_id
+        )
+        default_project_path = (
+            settings.session_defaults.channel_project_path
+            if normalized_source == "channel"
+            else settings.session_defaults.default_project_path
+        )
         payload = {
             "session_id": session_id,
-            "source": source if source in {"chat", "channel"} else "chat",
+            "source": normalized_source,
+            "backend_id": backend_id or existing["backend_id"] or default_backend_id,
+            "project_path": self.config_service.resolve_project_path(
+                project_path or existing["project_path"] or default_project_path
+            ),
             "channel_meta": channel_meta if isinstance(channel_meta, dict) else existing.get("channel_meta"),
+            "backend_state": (
+                backend_state
+                if isinstance(backend_state, dict)
+                else existing.get("backend_state", {})
+            ),
         }
         self.session_metadata_store.save(session_id, payload)
 
@@ -191,6 +228,69 @@ class ChatService:
 
     def is_channel_session(self, session_id: str) -> bool:
         return self.get_session_metadata(session_id)["source"] == "channel"
+
+    def update_session_backend_state(self, session_id: str, updates: dict[str, Any]) -> None:
+        metadata = self.get_session_metadata(session_id)
+        next_backend_state = {
+            **metadata["backend_state"],
+            **updates,
+        }
+        self.ensure_session_metadata(
+            session_id,
+            source=metadata["source"],
+            channel_meta=metadata["channel_meta"],
+            backend_id=metadata["backend_id"],
+            project_path=metadata["project_path"],
+            backend_state=next_backend_state,
+        )
+
+    def get_session_context(self, session_id: str) -> ChatSessionContext:
+        metadata = self.get_session_metadata(session_id)
+        return ChatSessionContext(
+            session_id=session_id,
+            source=metadata["source"],
+            backend_id=metadata["backend_id"],
+            project_path=Path(metadata["project_path"]).resolve(),
+            channel_meta=metadata["channel_meta"],
+            backend_state=metadata["backend_state"],
+        )
+
+    def _normalize_session_metadata_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        settings = self.config_service.load_web_settings()
+        source = payload.get("source")
+        if source not in {"chat", "channel"}:
+            source = "chat"
+
+        channel_meta = payload.get("channel_meta")
+        if not isinstance(channel_meta, dict):
+            channel_meta = None
+
+        backend_id = payload.get("backend_id")
+        if backend_id not in self.backends:
+            backend_id = (
+                settings.session_defaults.channel_backend_id
+                if source == "channel"
+                else settings.session_defaults.default_backend_id
+            )
+
+        default_project_path = (
+            settings.session_defaults.channel_project_path
+            if source == "channel"
+            else settings.session_defaults.default_project_path
+        )
+        backend_state = payload.get("backend_state")
+        if not isinstance(backend_state, dict):
+            backend_state = {}
+
+        return {
+            "source": source,
+            "backend_id": backend_id,
+            "project_path": self.config_service.resolve_project_path(
+                payload.get("project_path") or default_project_path
+            ),
+            "channel_meta": channel_meta,
+            "backend_state": backend_state,
+        }
 
     def build_transcript_messages(self, session_id: str) -> list[StoredSessionMessage]:
         session_meta = self.get_session_metadata(session_id)
@@ -259,6 +359,8 @@ class ChatService:
                     updated_at=float(entry["updated_at"]),
                     message_count=self._message_count(messages),
                     source=session_meta["source"],
+                    backend_id=session_meta["backend_id"],
+                    project_path=session_meta["project_path"],
                     channel_meta=(
                         ChannelMetaPayload.model_validate(session_meta["channel_meta"])
                         if isinstance(session_meta["channel_meta"], dict)
@@ -269,7 +371,8 @@ class ChatService:
 
         return sorted(summaries, key=lambda item: item.updated_at, reverse=True)
 
-    def delete_session(self, session_id: str) -> bool:
+    async def delete_session(self, session_id: str) -> bool:
+        metadata = self.get_session_metadata(session_id)
         deleted = False
         deleted = self.session_store.clear_session(session_id) or deleted
         deleted = self.transcript_store.clear_session(session_id) or deleted
@@ -290,25 +393,15 @@ class ChatService:
             self._background_cursors.pop(background_session_id, None)
 
         self._session_run_locks.pop(session_id, None)
+        backend = self.backends.get(metadata["backend_id"])
+        if backend is not None:
+            await backend.close_session(session_id)
         return deleted
 
     async def stream_chat(self, session_id: str, user_message: str) -> AsyncIterator[dict[str, Any]]:
-        agent = await self._get_agent()
-        if agent is None:
-            yield {
-                "event": "error",
-                "data": {
-                    "session_id": session_id,
-                    "message": "LLM configuration is incomplete. Update settings before chatting.",
-                },
-            }
-            yield {"event": "done", "data": {"session_id": session_id, "finish_reason": "error"}}
-            return
-
         event_queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
         producer = asyncio.create_task(
             self._produce_stream_events(
-                agent=agent,
                 session_id=session_id,
                 user_message=user_message,
                 event_queue=event_queue,
@@ -329,7 +422,6 @@ class ChatService:
 
     async def _produce_stream_events(
         self,
-        agent: Agent,
         session_id: str,
         user_message: str,
         event_queue: asyncio.Queue[dict[str, Any] | None],
@@ -343,18 +435,24 @@ class ChatService:
         token = set_tool_event_emitter(emit)
 
         try:
-            self.ensure_session_metadata(session_id)
+            context = self.get_session_context(session_id)
+            self.ensure_session_metadata(
+                session_id,
+                source=context.source,
+                channel_meta=context.channel_meta,
+                backend_id=context.backend_id,
+                project_path=str(context.project_path),
+                backend_state=context.backend_state,
+            )
             self._append_transcript_message(
                 session_id,
                 Message(role="user", content=user_message),
             )
             await emit("run_started", {"session_id": session_id})
-            finish_reason = await self._run_agent_prompt(
-                agent=agent,
-                session_id=session_id,
-                prompt=user_message,
-                emit=emit,
-            )
+            backend = self.backends.get(context.backend_id)
+            if backend is None:
+                raise RuntimeError(f"Unknown backend: {context.backend_id}")
+            finish_reason = await backend.stream_chat(context, user_message, emit)
         except Exception as exc:
             finish_reason = "error"
             await emit(
@@ -374,6 +472,63 @@ class ChatService:
                 },
             )
             await event_queue.put(None)
+
+    def get_backend_runtime(self, session_id: str) -> BackendRuntimePayload:
+        context = self.get_session_context(session_id)
+        backend = self.backends.get(context.backend_id)
+        if backend is None:
+            return BackendRuntimePayload(
+                backend_id="yier",
+                label="Unknown backend",
+                ready=False,
+                status="error",
+                detail=f"Unknown backend: {context.backend_id}",
+            )
+        return BackendRuntimePayload.model_validate(backend.runtime_payload(context))
+
+    def get_pending_approvals(self, session_id: str) -> list[PendingApproval]:
+        context = self.get_session_context(session_id)
+        backend = self.backends.get(context.backend_id)
+        if backend is None:
+            return []
+        return [PendingApproval.model_validate(item) for item in backend.pending_approvals(context)]
+
+    async def respond_to_approval(
+        self,
+        session_id: str,
+        request_id: str,
+        decision: str,
+        content: dict[str, Any] | None = None,
+    ) -> bool:
+        context = self.get_session_context(session_id)
+        backend = self.backends.get(context.backend_id)
+        if backend is None:
+            return False
+        return await backend.respond_to_approval(context, request_id, decision, content)
+
+    async def _stream_with_yier_backend(
+        self,
+        session_id: str,
+        prompt: str,
+        emit: StreamEmitter,
+    ) -> str:
+        agent = await self._get_agent()
+        if agent is None:
+            await emit(
+                "error",
+                {
+                    "session_id": session_id,
+                    "message": "LLM configuration is incomplete. Update settings before chatting.",
+                },
+            )
+            return "error"
+
+        return await self._run_agent_prompt(
+            agent=agent,
+            session_id=session_id,
+            prompt=prompt,
+            emit=emit,
+        )
 
     async def _run_agent_prompt(
         self,
@@ -546,6 +701,8 @@ class ChatService:
             "background_followup_queued",
             "background_followup_started",
             "background_followup_finished",
+            "approval_requested",
+            "approval_resolved",
         }:
             return
 

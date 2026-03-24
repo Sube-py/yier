@@ -371,16 +371,20 @@ async function ensureSession() {
   await startNewSession(false)
 }
 
-async function startNewSession(navigateToChat = true) {
+async function createSession(
+  backendId: BackendId,
+  projectPath: string,
+  navigateToChat = true,
+) {
   const payload = await apiPost<{ session_id: string }>('/api/chat/sessions', {
-    backend_id: newSessionDraft.backendId,
-    project_path: newSessionDraft.projectPath,
+    backend_id: backendId,
+    project_path: projectPath,
   } satisfies CreateSessionRequest)
   activeSessionId.value = payload.session_id
   chatMessages.value = []
   activities.value = []
   activeSessionRuntime.value = null
-  activeCodexWorkMode.value = newSessionDraft.backendId === 'codex' ? 'build' : 'build'
+  activeCodexWorkMode.value = 'build'
   backgroundActivityIdsByToolCallId.clear()
   await refreshSessionHistory()
   successMessage.value = 'Started a fresh session.'
@@ -389,8 +393,17 @@ async function startNewSession(navigateToChat = true) {
   }
 }
 
+async function startNewSession(navigateToChat = true) {
+  await createSession(newSessionDraft.backendId, newSessionDraft.projectPath, navigateToChat)
+}
+
 function handleNewChatClick() {
   void startNewSession()
+}
+
+function startNewCodexSession(projectPath: string) {
+  const nextProjectPath = projectPath.trim() || activeProjectPath.value || newSessionDraft.projectPath
+  void createSession('codex', nextProjectPath, true)
 }
 
 async function submitMessage() {
@@ -2808,7 +2821,7 @@ function toErrorMessage(error: unknown) {
         </div>
       </div>
 
-      <div class="rail-actions">
+      <div v-if="!isCodexWorkspace" class="rail-actions">
         <select v-model="newSessionDraft.backendId" class="session-target-select">
           <option v-for="backend in backendOptions" :key="backend.id" :value="backend.id">
             {{ backend.label }}
@@ -2828,7 +2841,9 @@ function toErrorMessage(error: unknown) {
         :projects="activeCodexProjects"
         :active-session-id="activeSessionId"
         :active-session-status="activeSessionRuntime?.status ?? null"
+        :active-project-path="activeProjectPath"
         @open-session="openCodexNativeSession"
+        @start-session="startNewCodexSession"
       />
       <div v-else class="side-card side-card--history">
         <div class="side-card-row">

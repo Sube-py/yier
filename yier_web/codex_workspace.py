@@ -1,13 +1,30 @@
 from __future__ import annotations
 
 import json
+import shlex
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from yier_web.schemas import CodexNativeSessionSummary, CodexProjectGroup, CodexWorkspaceResponse
+from codex_app_server import AppServerConfig, Codex, ThreadSortKey, ThreadSourceKind
+
+from yier_web.schemas import (
+    CodexNativeSessionSummary,
+    CodexPairingExtensionSummary,
+    CodexProjectGroup,
+    CodexWorkspaceResponse,
+)
+
+
+DEFAULT_CODEX_LAUNCHER = "codex app-server --listen stdio://"
+INTERACTIVE_THREAD_SOURCE_KINDS = [
+    ThreadSourceKind.cli,
+    ThreadSourceKind.vscode,
+    ThreadSourceKind.exec,
+    ThreadSourceKind.app_server,
+]
 
 
 @dataclass(slots=True)
@@ -17,11 +34,25 @@ class _IndexEntry:
 
 
 class CodexWorkspaceService:
-    def __init__(self, home_dir: Path) -> None:
+    def __init__(
+        self,
+        home_dir: Path,
+        config_service: Any | None = None,
+        codex_factory: Any | None = None,
+    ) -> None:
         self.home_dir = home_dir.resolve()
+        self.config_service = config_service
         self.codex_home = self.home_dir / ".codex"
         self.index_path = self.codex_home / "session_index.jsonl"
         self.sessions_dir = self.codex_home / "sessions"
+        self.app_pairing_extensions_dir = (
+            self.home_dir
+            / "Library"
+            / "Application Support"
+            / "com.openai.chat"
+            / "app_pairing_extensions"
+        )
+        self.codex_factory = codex_factory or Codex
 
     def load_workspace(self) -> CodexWorkspaceResponse:
         sessions = self.list_active_sessions()
@@ -48,7 +79,10 @@ class CodexWorkspaceService:
             ),
             reverse=True,
         )
-        return CodexWorkspaceResponse(projects=project_groups)
+        return CodexWorkspaceResponse(
+            projects=project_groups,
+            paired_editors=self.list_paired_editors(),
+        )
 
     def get_active_session(self, thread_id: str) -> CodexNativeSessionSummary | None:
         normalized_thread_id = thread_id.strip()
@@ -60,6 +94,218 @@ class CodexWorkspaceService:
         return None
 
     def list_active_sessions(self) -> list[CodexNativeSessionSummary]:
+        sdk_sessions = self._list_active_sessions_from_sdk()
+        if sdk_sessions is not None:
+            return sdk_sessions
+        return self._list_active_sessions_from_disk()
+
+    def list_paired_editors(self) -> list[CodexPairingExtensionSummary]:
+        if not self.app_pairing_extensions_dir.exists():
+            return []
+
+        editors: list[CodexPairingExtensionSummary] = []
+        for descriptor_file in sorted(self.app_pairing_extensions_dir.iterdir()):
+            if not descriptor_file.is_file():
+                continue
+            editor = self._extract_paired_editor(descriptor_file)
+            if editor is not None:
+                editors.append(editor)
+
+        editors.sort(
+            key=lambda item: (
+                item.last_seen_at,
+                item.workspace_name.lower(),
+                item.id.lower(),
+            ),
+            reverse=True,
+        )
+        return editors
+
+    def _list_active_sessions_from_sdk(self) -> list[CodexNativeSessionSummary] | None:
+        config = self._sdk_config()
+        if config is None:
+            return None
+
+        try:
+            sessions: dict[str, CodexNativeSessionSummary] = {}
+            cursor: str | None = None
+            with self.codex_factory(config=config) as codex:
+                while True:
+                    response = codex.thread_list(
+                        archived=False,
+                        cursor=cursor,
+                        limit=100,
+                        sort_key=ThreadSortKey.updated_at,
+                        source_kinds=INTERACTIVE_THREAD_SOURCE_KINDS,
+                    )
+                    for thread in response.data:
+                        session = self._extract_sdk_session(thread)
+                        if session is None:
+                            continue
+                        sessions[session.thread_id] = session
+
+                    cursor = response.next_cursor
+                    if not cursor:
+                        break
+        except Exception:
+            return None
+
+        ordered = list(sessions.values())
+        ordered.sort(
+            key=lambda item: (
+                item.updated_at,
+                item.started_at,
+                item.thread_id,
+            ),
+            reverse=True,
+        )
+        return ordered
+
+    def _extract_paired_editor(self, descriptor_file: Path) -> CodexPairingExtensionSummary | None:
+        try:
+            payload = json.loads(descriptor_file.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return None
+
+        if not isinstance(payload, dict):
+            return None
+
+        socket_path_value = payload.get("socketPath")
+        if not isinstance(socket_path_value, str) or not socket_path_value.strip():
+            return None
+
+        socket_path = Path(socket_path_value)
+        try:
+            is_online = socket_path.exists() and socket_path.is_socket()
+        except OSError:
+            is_online = False
+
+        if not is_online:
+            return None
+
+        capabilities_payload = payload.get("capabilities")
+        if isinstance(capabilities_payload, dict):
+            capability_names = [
+                str(name)
+                for name, enabled in capabilities_payload.items()
+                if enabled
+            ]
+        else:
+            capability_names = []
+        capability_names.sort()
+
+        timestamp = payload.get("timestamp")
+        if isinstance(timestamp, (int, float)):
+            last_seen_at = float(timestamp)
+        else:
+            last_seen_at = descriptor_file.stat().st_mtime * 1000
+
+        descriptor_id = payload.get("id")
+        if not isinstance(descriptor_id, str) or not descriptor_id.strip():
+            descriptor_id = descriptor_file.name
+
+        app_name = payload.get("appName")
+        workspace_name = payload.get("workspaceName")
+        extension_name = payload.get("extensionName")
+        extension_version = payload.get("extensionVersion")
+        bundle_id = payload.get("bundleID")
+        marketplace_id = payload.get("marketplaceID")
+
+        return CodexPairingExtensionSummary(
+            id=descriptor_id,
+            app_name=app_name.strip() if isinstance(app_name, str) else "Unknown editor",
+            workspace_name=workspace_name.strip() if isinstance(workspace_name, str) else "",
+            extension_name=extension_name.strip() if isinstance(extension_name, str) else "",
+            extension_version=extension_version.strip() if isinstance(extension_version, str) else "",
+            bundle_id=bundle_id.strip() if isinstance(bundle_id, str) else "",
+            marketplace_id=marketplace_id.strip() if isinstance(marketplace_id, str) else "",
+            capability_names=capability_names,
+            capability_count=len(capability_names),
+            socket_path=str(socket_path),
+            is_online=is_online,
+            needs_reload=bool(payload.get("needsReload")),
+            last_seen_at=last_seen_at,
+        )
+
+    def _sdk_config(self) -> AppServerConfig | None:
+        launcher_command = DEFAULT_CODEX_LAUNCHER
+        client_cwd: str | None = None
+        if self.config_service is not None:
+            settings = self.config_service.load_web_settings().codex
+            launcher_command = settings.launcher_command or DEFAULT_CODEX_LAUNCHER
+            project_root = getattr(self.config_service, "project_root", None)
+            if isinstance(project_root, Path):
+                client_cwd = str(project_root)
+
+        try:
+            launch_args = tuple(shlex.split(launcher_command))
+        except ValueError:
+            return None
+
+        if not launch_args:
+            return None
+
+        return AppServerConfig(
+            launch_args_override=launch_args,
+            cwd=client_cwd,
+            client_name="yier_web_workspace",
+            client_title="Yier Web Workspace",
+        )
+
+    def _extract_sdk_session(self, thread: Any) -> CodexNativeSessionSummary | None:
+        thread_id = getattr(thread, "id", None)
+        if not isinstance(thread_id, str) or not thread_id.strip():
+            return None
+
+        if bool(getattr(thread, "ephemeral", False)):
+            return None
+
+        cwd = getattr(thread, "cwd", "")
+        if not isinstance(cwd, str):
+            cwd = ""
+
+        name = self._compact_text(getattr(thread, "name", None))
+        preview = self._compact_text(getattr(thread, "preview", None))
+        if preview is None:
+            preview = name or thread_id
+        title = name or preview or thread_id
+        project, project_path = self._derive_project_root(cwd)
+
+        return CodexNativeSessionSummary(
+            thread_id=thread_id,
+            title=title,
+            preview=preview,
+            updated_at=float(getattr(thread, "updated_at", 0) or 0),
+            started_at=float(getattr(thread, "created_at", 0) or 0),
+            status=self._thread_status(thread),
+            cwd=cwd,
+            project=project,
+            project_path=project_path,
+            source=self._thread_source(thread),
+        )
+
+    def _thread_source(self, thread: Any) -> str:
+        source = getattr(thread, "source", None)
+        root = getattr(source, "root", None)
+        if root is None:
+            return "active"
+        value = getattr(root, "value", None)
+        if isinstance(value, str) and value:
+            return value
+        kind = getattr(root, "type", None)
+        if isinstance(kind, str) and kind:
+            return kind
+        return str(root)
+
+    def _thread_status(self, thread: Any) -> str:
+        status = getattr(thread, "status", None)
+        root = getattr(status, "root", status)
+        value = getattr(root, "type", None)
+        if isinstance(value, str) and value:
+            return value
+        return "idle"
+
+    def _list_active_sessions_from_disk(self) -> list[CodexNativeSessionSummary]:
         if not self.sessions_dir.exists():
             return []
 
@@ -170,6 +416,7 @@ class CodexWorkspaceService:
             preview=preview,
             updated_at=updated_at,
             started_at=started_at,
+            status="idle",
             cwd=cwd,
             project=project,
             project_path=project_path,

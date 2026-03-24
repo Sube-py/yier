@@ -30,6 +30,9 @@ const STREAM_EVENT_NAMES = [
   'approval_requested',
   'approval_resolved',
   'error',
+  'turn_completed',
+  'turn_aborted',
+  'stream_error',
   'done',
   'channel_account_state',
   'channel_inbound_message',
@@ -96,6 +99,10 @@ export async function streamChat(
       const event = parseEventFrame(frame)
       if (event) {
         onEvent(event)
+        if (event.event === 'done') {
+          await reader.cancel()
+          return
+        }
       }
     }
 
@@ -108,6 +115,9 @@ export async function streamChat(
     const event = parseEventFrame(buffer)
     if (event) {
       onEvent(event)
+      if (event.event === 'done') {
+        await reader.cancel()
+      }
     }
   }
 }

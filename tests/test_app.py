@@ -16,6 +16,7 @@ from yier_agents import (
     ToolContext,
 )
 from yier_agents.src.skill import SkillCatalog
+from yier_web.agent_backends.codex_backend import CodexAppServerBackend
 from yier_web.app import AppServices, create_app
 from yier_web.chat import ChatService
 from yier_web.config import AppConfigService, MCPValidationError
@@ -607,6 +608,43 @@ def test_chat_service_build_llm_passes_provider_and_optional_base_url(tmp_path: 
     assert llm.base_url == "https://api.z.ai/api/coding/paas/v4"
     assert llm.api_key == "secret-token"
     assert llm.model == "glm-4.7-flash"
+
+
+def test_chat_service_create_codex_session_uses_native_thread_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog())
+
+    project_root = tmp_path / "project"
+    project_root.mkdir(parents=True)
+    service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
+    chat_service = ChatService(
+        project_root=project_root,
+        config_service=service,
+        mcp_manager=FakeMCPManager(),  # type: ignore[arg-type]
+    )
+    codex_backend = chat_service.backends["codex"]
+    assert isinstance(codex_backend, CodexAppServerBackend)
+
+    monkeypatch.setattr(
+        codex_backend,
+        "bootstrap_session",
+        lambda project_path, source="chat", channel_meta=None: {
+            "thread_id": "thread-native-42",
+            "status": "idle",
+            "active_flags": [],
+            "detail": None,
+        },
+    )
+
+    session_id = chat_service.create_session(backend_id="codex")
+    metadata = chat_service.get_session_metadata(session_id)
+
+    assert session_id == "thread-native-42"
+    assert metadata["backend_id"] == "codex"
+    assert metadata["backend_state"]["thread_id"] == "thread-native-42"
+    assert metadata["codex_work_mode"] == "build"
 
 
 def test_chat_service_run_command_tool_supports_shell_pipes(

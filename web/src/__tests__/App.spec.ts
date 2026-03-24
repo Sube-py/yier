@@ -487,6 +487,23 @@ describe('App', () => {
               ],
             },
           ],
+          paired_editors: [
+            {
+              id: 'editor-yier',
+              app_name: 'Visual Studio Code',
+              workspace_name: 'yier',
+              extension_name: 'oai_pwai Visual Studio Code',
+              extension_version: '0.0.1731016154',
+              bundle_id: 'com.microsoft.VSCode',
+              marketplace_id: 'openai.chatgpt',
+              capability_names: ['content', 'highlightLines', 'replaceSelection'],
+              capability_count: 3,
+              socket_path: '/tmp/Visual Studio Code-yier.sock',
+              is_online: true,
+              needs_reload: false,
+              last_seen_at: 1774324184458,
+            },
+          ],
         })
       }
       if (isSessionListRequest(path, init)) {
@@ -545,7 +562,12 @@ describe('App', () => {
 
     expect(wrapper.text()).toContain('Codex workspace')
     expect(wrapper.text()).toContain('Global sandbox default')
+    expect(wrapper.text()).toContain('Paired editors')
+    expect(wrapper.text()).toContain('3 linked actions')
+    expect(wrapper.text()).toContain('Visual Studio Code')
+    expect(wrapper.text()).toContain('/tmp/Visual Studio Code-yier.sock')
     expect(wrapper.text()).toContain('Current build mode.')
+    expect(wrapper.find('.codex-session-status').text()).toContain('Ready')
     expect(wrapper.find('.brand-panel').exists()).toBe(false)
     expect(wrapper.find('.side-card--status').exists()).toBe(false)
     expect(wrapper.find('.side-card--nav').exists()).toBe(false)
@@ -744,6 +766,133 @@ describe('App', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('second transcript body')
+  })
+
+  it('renders codex elicitation requests with schema details', async () => {
+    localStorage.setItem('yier.active-session-id', 'codex-thread')
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = input.toString()
+      if (path.endsWith('/api/health')) {
+        return jsonResponse({
+          frontend: { ready: true, mode: 'static' },
+          llm: { ready: true },
+          mcp: { ready: true, runtime: {} },
+          backends: {
+            yier: { ready: true },
+            codex: { ready: true },
+          },
+          allowed_roots: ['/tmp/project'],
+        })
+      }
+      if (path.endsWith('/api/config') && (!init || init.method === 'GET')) {
+        return jsonResponse({
+          llm: { provider: '', base_url: 'https://example.test', model: 'demo', has_api_key: true },
+          allowed_roots: ['/tmp/project'],
+          mcp_runtime: {},
+          session_defaults: {
+            default_backend_id: 'yier',
+            default_project_path: '/tmp/project',
+            channel_backend_id: 'yier',
+            channel_project_path: '/tmp/project',
+            channel_auto_approve_codex_requests: true,
+          },
+          codex: {
+            launcher_command: 'codex app-server --listen stdio://',
+            model: 'gpt-5.4',
+            sandbox: 'workspace-write',
+            approval_policy: 'on-request',
+            approvals_reviewer: 'user',
+            personality: 'friendly',
+            reasoning_effort: 'medium',
+            service_tier: '',
+          },
+        })
+      }
+      if (path.endsWith('/api/config/mcp')) {
+        return jsonResponse({ mcp_servers: {}, runtime: {} })
+      }
+      if (path.endsWith('/api/codex/workspace')) {
+        return jsonResponse({ projects: [] })
+      }
+      if (isSessionListRequest(path, init)) {
+        return jsonResponse({
+          sessions: [
+            {
+              session_id: 'codex-thread',
+              title: 'Codex session',
+              preview: 'Native preview',
+              updated_at: 100,
+              message_count: 2,
+              source: 'chat',
+              backend_id: 'codex',
+              project_path: '/tmp/project',
+              channel_meta: null,
+              codex_work_mode: 'build',
+            },
+          ],
+        })
+      }
+      if (path.endsWith('/api/chat/sessions/codex-thread')) {
+        return jsonResponse({
+          session_id: 'codex-thread',
+          source: 'chat',
+          backend_id: 'codex',
+          project_path: '/tmp/project',
+          codex_work_mode: 'build',
+          backend_runtime: {
+            backend_id: 'codex',
+            label: 'Codex App Server',
+            ready: true,
+            status: 'active',
+            thread_id: 'codex-thread',
+            active_flags: [],
+            detail: null,
+            pending_approval_count: 1,
+          },
+          pending_approvals: [
+            {
+              request_id: 'approval-1',
+              method: 'mcpServer/elicitation/request',
+              kind: 'mcp_elicitation',
+              title: 'MCP server input',
+              detail: 'Need confirmation.',
+              options: [
+                { value: 'accept', label: 'Accept' },
+                { value: 'decline', label: 'Decline' },
+                { value: 'cancel', label: 'Cancel' },
+              ],
+              payload: {
+                request: {
+                  mode: 'form',
+                  message: 'Allow this request?',
+                  requestedSchema: {
+                    type: 'object',
+                    properties: {
+                      confirmed: { type: 'boolean' },
+                    },
+                    required: ['confirmed'],
+                  },
+                },
+              },
+            },
+          ],
+          messages: [{ role: 'assistant', content: 'waiting for approval' }],
+          activity_events: [],
+        })
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const wrapper = await mountApp()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Requested schema')
+    expect(wrapper.text()).toContain('Allow this request?')
+    expect(wrapper.text()).toContain('confirmed')
+    expect(wrapper.find('.approval-card textarea').exists()).toBe(false)
+    expect(wrapper.find('.approval-select').exists()).toBe(true)
   })
 
   it('deletes the active session and switches to the next saved session', async () => {
@@ -1152,6 +1301,210 @@ describe('App', () => {
 
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith('printf "hello"')
     expect(copyButton.text()).toBe('Copied')
+  })
+
+  it('merges reasoning updates into one activity card and renders markdown', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const path = input.toString()
+        if (path.endsWith('/api/health')) {
+          return jsonResponse({
+            frontend: { ready: true, mode: 'static' },
+            llm: { ready: true },
+            mcp: { ready: true, runtime: {} },
+            allowed_roots: ['/tmp/project'],
+          })
+        }
+        if (path.endsWith('/api/config')) {
+          return jsonResponse({
+            llm: { base_url: 'https://example.test', model: 'demo', has_api_key: true },
+            allowed_roots: ['/tmp/project'],
+            mcp_runtime: {},
+          })
+        }
+        if (path.endsWith('/api/config/mcp')) {
+          return jsonResponse({ mcp_servers: {}, runtime: {} })
+        }
+        if (isSessionListRequest(path, init)) {
+          return jsonResponse({ sessions: [] })
+        }
+        if (isSessionCreateRequest(path, init)) {
+          return jsonResponse({ session_id: 'session-1' }, 201)
+        }
+        if (path.includes('/api/chat/sessions/')) {
+          return jsonResponse({ session_id: 'session-1', messages: [] })
+        }
+        if (path.endsWith('/api/chat/stream') && init?.method === 'POST') {
+          return sseResponse(
+            [
+              'event: run_started',
+              'data: {"session_id":"session-1"}',
+              '',
+              'event: reasoning',
+              'data: {"session_id":"session-1","item_id":"reasoning-1","content":"Inspect **repo**","iteration":0}',
+              '',
+              'event: reasoning',
+              'data: {"session_id":"session-1","item_id":"reasoning-1","content":"Inspect **repo**\\n\\n- list files","iteration":0}',
+              '',
+              'event: done',
+              'data: {"session_id":"session-1","finish_reason":"stop"}',
+              '',
+            ].join('\r\n'),
+          )
+        }
+        throw new Error(`Unexpected request: ${path}`)
+      }),
+    )
+
+    const wrapper = await mountApp()
+    await flushPromises()
+
+    const textarea = wrapper.get('textarea')
+    await textarea.setValue('Inspect the repo')
+    const sendButton = wrapper.findAll('button').find((item) => item.text().includes('Send'))
+    expect(sendButton).toBeTruthy()
+    await sendButton!.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.findAll('.activity-item')).toHaveLength(1)
+    expect(wrapper.html()).toContain('<strong>repo</strong>')
+    expect(wrapper.html()).toContain('<li>list files</li>')
+  })
+
+  it('replaces a streamed assistant draft when the final message arrives without item_id', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const path = input.toString()
+        if (path.endsWith('/api/health')) {
+          return jsonResponse({
+            frontend: { ready: true, mode: 'static' },
+            llm: { ready: true },
+            mcp: { ready: true, runtime: {} },
+            allowed_roots: ['/tmp/project'],
+          })
+        }
+        if (path.endsWith('/api/config')) {
+          return jsonResponse({
+            llm: { base_url: 'https://example.test', model: 'demo', has_api_key: true },
+            allowed_roots: ['/tmp/project'],
+            mcp_runtime: {},
+          })
+        }
+        if (path.endsWith('/api/config/mcp')) {
+          return jsonResponse({ mcp_servers: {}, runtime: {} })
+        }
+        if (isSessionListRequest(path, init)) {
+          return jsonResponse({ sessions: [] })
+        }
+        if (isSessionCreateRequest(path, init)) {
+          return jsonResponse({ session_id: 'session-1' }, 201)
+        }
+        if (path.includes('/api/chat/sessions/')) {
+          return jsonResponse({ session_id: 'session-1', messages: [] })
+        }
+        if (path.endsWith('/api/chat/stream') && init?.method === 'POST') {
+          return sseResponse(
+            [
+              'event: assistant_delta',
+              'data: {"session_id":"session-1","item_id":"msg-1","delta":"你好！"}',
+              '',
+              'event: assistant_delta',
+              'data: {"session_id":"session-1","item_id":"msg-1","delta":"我在这儿。"}',
+              '',
+              'event: assistant_message',
+              'data: {"session_id":"session-1","content":"你好！我在这儿。","iteration":0}',
+              '',
+              'event: done',
+              'data: {"session_id":"session-1","finish_reason":"stop"}',
+              '',
+            ].join('\r\n'),
+          )
+        }
+        throw new Error(`Unexpected request: ${path}`)
+      }),
+    )
+
+    const wrapper = await mountApp()
+    await flushPromises()
+
+    const textarea = wrapper.get('textarea')
+    await textarea.setValue('Say hello')
+    const sendButton = wrapper.findAll('button').find((item) => item.text().includes('Send'))
+    expect(sendButton).toBeTruthy()
+    await sendButton!.trigger('click')
+    await flushPromises()
+
+    const assistantBubbles = wrapper.findAll('.message-bubble--assistant')
+    expect(assistantBubbles).toHaveLength(1)
+    expect(wrapper.text().match(/你好！我在这儿。/g)?.length).toBe(1)
+  })
+
+  it('shows explicit stream error activity for codex stream failures', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const path = input.toString()
+        if (path.endsWith('/api/health')) {
+          return jsonResponse({
+            frontend: { ready: true, mode: 'static' },
+            llm: { ready: true },
+            mcp: { ready: true, runtime: {} },
+            allowed_roots: ['/tmp/project'],
+          })
+        }
+        if (path.endsWith('/api/config')) {
+          return jsonResponse({
+            llm: { base_url: 'https://example.test', model: 'demo', has_api_key: true },
+            allowed_roots: ['/tmp/project'],
+            mcp_runtime: {},
+          })
+        }
+        if (path.endsWith('/api/config/mcp')) {
+          return jsonResponse({ mcp_servers: {}, runtime: {} })
+        }
+        if (isSessionListRequest(path, init)) {
+          return jsonResponse({ sessions: [] })
+        }
+        if (isSessionCreateRequest(path, init)) {
+          return jsonResponse({ session_id: 'session-1' }, 201)
+        }
+        if (path.includes('/api/chat/sessions/')) {
+          return jsonResponse({ session_id: 'session-1', messages: [] })
+        }
+        if (path.endsWith('/api/chat/stream') && init?.method === 'POST') {
+          return sseResponse(
+            [
+              'event: run_started',
+              'data: {"session_id":"session-1"}',
+              '',
+              'event: stream_error',
+              'data: {"session_id":"session-1","message":"socket closed","thread_id":"thread-1","turn_id":"turn-1","code":"sandboxError","will_retry":false}',
+              '',
+              'event: done',
+              'data: {"session_id":"session-1","finish_reason":"error"}',
+              '',
+            ].join('\r\n'),
+          )
+        }
+        throw new Error(`Unexpected request: ${path}`)
+      }),
+    )
+
+    const wrapper = await mountApp()
+    await flushPromises()
+
+    const textarea = wrapper.get('textarea')
+    await textarea.setValue('Run codex')
+    const sendButton = wrapper.findAll('button').find((item) => item.text().includes('Send'))
+    expect(sendButton).toBeTruthy()
+    await sendButton!.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Stream error')
+    expect(wrapper.text()).toContain('socket closed')
+    expect(wrapper.text()).toContain('code sandboxError')
   })
 
   it('renders compact digests for successful non-shell tools', async () => {

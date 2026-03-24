@@ -8,6 +8,7 @@ import pytest
 from yier_web.agent_backends.base import ChatSessionContext
 from yier_web.agent_backends.codex_backend import (
     CodexAppServerBackend,
+    CodexSessionRuntime,
     _codex_thread_sandbox_mode,
     _codex_turn_sandbox_policy_type,
 )
@@ -73,4 +74,339 @@ def test_codex_backend_uses_normalized_sandbox_in_thread_and_turn_params() -> No
     turn_params = backend._turn_params(context)
 
     assert thread_params["sandbox"] == "workspace-write"
-    assert turn_params["sandboxPolicy"] == {"type": "workspaceWrite"}
+    assert turn_params["sandbox_policy"] == {"type": "workspaceWrite"}
+    assert thread_params["approval_policy"] == "on-request"
+    assert turn_params["approval_policy"] == "on-request"
+
+
+def test_codex_backend_treats_elicitation_create_as_mcp_elicitation() -> None:
+    backend = CodexAppServerBackend(SimpleNamespace())
+
+    assert backend._approval_kind("elicitation/create") == "mcp_elicitation"
+    assert backend._build_approval_response(
+        "elicitation/create",
+        {},
+        "accept",
+        {"confirmed": True},
+    ) == {"action": "accept", "content": {"confirmed": True}}
+
+
+def test_codex_backend_normalizes_raw_elicitation_create_payload() -> None:
+    backend = CodexAppServerBackend(SimpleNamespace())
+
+    payload = backend._approval_payload(
+        "elicitation/create",
+        {
+            "message": "Allow this request?",
+            "requestedSchema": {
+                "type": "object",
+                "properties": {
+                    "confirmed": {"type": "boolean"},
+                },
+                "required": ["confirmed"],
+            },
+        },
+    )
+
+    assert payload["request"] == {
+        "mode": "form",
+        "message": "Allow this request?",
+        "requestedSchema": {
+            "type": "object",
+            "properties": {
+                "confirmed": {"type": "boolean"},
+            },
+            "required": ["confirmed"],
+        },
+    }
+
+
+def test_codex_backend_bootstrap_session_returns_native_thread_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = WebSettings(codex=StoredCodexSettings(sandbox="workspace-write"))
+    chat_service = SimpleNamespace(
+        config_service=SimpleNamespace(load_web_settings=lambda: settings)
+    )
+    backend = CodexAppServerBackend(chat_service)
+
+    monkeypatch.setattr(backend, "_start_client", lambda runtime, context: object())
+
+    def fake_start_thread(
+        runtime,
+        context,
+        *,
+        persist: bool = True,
+    ) -> None:
+        assert persist is False
+        runtime.thread_id = "thread-native-1"
+        runtime.status = "idle"
+        runtime.active_flags = ["interactive"]
+        runtime.detail = "Ready"
+
+    monkeypatch.setattr(backend, "_start_thread_blocking", fake_start_thread)
+
+    payload = backend.bootstrap_session(Path("/tmp/project"))
+
+    assert payload == {
+        "thread_id": "thread-native-1",
+        "status": "idle",
+        "active_flags": ["interactive"],
+        "detail": "Ready",
+    }
+    assert "thread-native-1" in backend._runtimes
+    assert backend._runtimes["thread-native-1"].session_id == "thread-native-1"
+
+
+def test_codex_backend_reasoning_notifications_keep_item_identity_and_accumulate_content() -> None:
+    chat_service = SimpleNamespace(update_session_backend_state=lambda session_id, state: None)
+    backend = CodexAppServerBackend(chat_service)
+    context = ChatSessionContext(
+        session_id="session-1",
+        source="chat",
+        backend_id="codex",
+        project_path=Path("/tmp/project"),
+        channel_meta=None,
+    )
+    runtime = CodexSessionRuntime(session_id="session-1")
+    emitted: list[tuple[str, dict[str, object]]] = []
+
+    backend._emit_from_thread = lambda runtime, event, data: emitted.append((event, data))  # type: ignore[method-assign]
+
+    backend._handle_turn_notification(
+        runtime,
+        context,
+        SimpleNamespace(
+            method="item/reasoning/textDelta",
+            payload=SimpleNamespace(item_id="reasoning-1", delta="Inspect", turn_id="turn-1"),
+        ),
+    )
+    backend._handle_turn_notification(
+        runtime,
+        context,
+        SimpleNamespace(
+            method="item/reasoning/textDelta",
+            payload=SimpleNamespace(item_id="reasoning-1", delta=" files", turn_id="turn-1"),
+        ),
+    )
+
+    assert emitted == [
+        (
+            "reasoning",
+            {
+                "session_id": "session-1",
+                "item_id": "reasoning-1",
+                "content": "Inspect",
+                "iteration": 0,
+            },
+        ),
+        (
+            "reasoning",
+            {
+                "session_id": "session-1",
+                "item_id": "reasoning-1",
+                "content": "Inspect files",
+                "iteration": 0,
+            },
+        ),
+    ]
+
+
+def test_codex_backend_emits_turn_completed_for_completed_turn() -> None:
+    chat_service = SimpleNamespace(update_session_backend_state=lambda session_id, state: None)
+    backend = CodexAppServerBackend(chat_service)
+    context = ChatSessionContext(
+        session_id="session-1",
+        source="chat",
+        backend_id="codex",
+        project_path=Path("/tmp/project"),
+        channel_meta=None,
+    )
+    runtime = CodexSessionRuntime(session_id="session-1", thread_id="thread-1")
+    emitted: list[tuple[str, dict[str, object]]] = []
+
+    backend._emit_from_thread = lambda runtime, event, data: emitted.append((event, data))  # type: ignore[method-assign]
+
+    finish_reason = backend._handle_turn_completed(
+        runtime,
+        context,
+        SimpleNamespace(
+            payload=SimpleNamespace(
+                turn=SimpleNamespace(id="turn-1", status="completed", error=None),
+            )
+        ),
+    )
+
+    assert finish_reason == "stop"
+    assert emitted == [
+        (
+            "turn_completed",
+            {
+                "session_id": "session-1",
+                "turn_id": "turn-1",
+                "status": "completed",
+            },
+        )
+    ]
+
+
+def test_codex_backend_emits_turn_aborted_for_interrupted_turn() -> None:
+    chat_service = SimpleNamespace(update_session_backend_state=lambda session_id, state: None)
+    backend = CodexAppServerBackend(chat_service)
+    context = ChatSessionContext(
+        session_id="session-1",
+        source="chat",
+        backend_id="codex",
+        project_path=Path("/tmp/project"),
+        channel_meta=None,
+    )
+    runtime = CodexSessionRuntime(session_id="session-1", thread_id="thread-1")
+    emitted: list[tuple[str, dict[str, object]]] = []
+
+    backend._emit_from_thread = lambda runtime, event, data: emitted.append((event, data))  # type: ignore[method-assign]
+
+    finish_reason = backend._handle_turn_completed(
+        runtime,
+        context,
+        SimpleNamespace(
+            payload=SimpleNamespace(
+                turn=SimpleNamespace(id="turn-2", status="interrupted", error=None),
+            )
+        ),
+    )
+
+    assert finish_reason == "interrupted"
+    assert emitted == [
+        (
+            "turn_aborted",
+            {
+                "session_id": "session-1",
+                "turn_id": "turn-2",
+                "status": "interrupted",
+                "reason": "Turn interrupted.",
+            },
+        )
+    ]
+
+
+def test_codex_backend_emits_stream_error_for_failed_turn() -> None:
+    chat_service = SimpleNamespace(update_session_backend_state=lambda session_id, state: None)
+    backend = CodexAppServerBackend(chat_service)
+    context = ChatSessionContext(
+        session_id="session-1",
+        source="chat",
+        backend_id="codex",
+        project_path=Path("/tmp/project"),
+        channel_meta=None,
+    )
+    runtime = CodexSessionRuntime(session_id="session-1", thread_id="thread-1")
+    emitted: list[tuple[str, dict[str, object]]] = []
+
+    backend._emit_from_thread = lambda runtime, event, data: emitted.append((event, data))  # type: ignore[method-assign]
+
+    finish_reason = backend._handle_turn_completed(
+        runtime,
+        context,
+        SimpleNamespace(
+            payload=SimpleNamespace(
+                turn=SimpleNamespace(
+                    id="turn-3",
+                    status="failed",
+                    error=SimpleNamespace(message="stream exploded", code="sandboxError"),
+                ),
+            )
+        ),
+    )
+
+    assert finish_reason == "error"
+    assert emitted == [
+        (
+            "stream_error",
+            {
+                "session_id": "session-1",
+                "message": "stream exploded",
+                "thread_id": "thread-1",
+                "turn_id": "turn-3",
+                "code": "sandboxError",
+                "will_retry": False,
+            },
+        )
+    ]
+
+
+def test_codex_backend_emits_stream_error_for_realtime_notification() -> None:
+    chat_service = SimpleNamespace(update_session_backend_state=lambda session_id, state: None)
+    backend = CodexAppServerBackend(chat_service)
+    context = ChatSessionContext(
+        session_id="session-1",
+        source="chat",
+        backend_id="codex",
+        project_path=Path("/tmp/project"),
+        channel_meta=None,
+    )
+    runtime = CodexSessionRuntime(session_id="session-1", thread_id="thread-1")
+    emitted: list[tuple[str, dict[str, object]]] = []
+
+    backend._emit_from_thread = lambda runtime, event, data: emitted.append((event, data))  # type: ignore[method-assign]
+
+    backend._handle_turn_notification(
+        runtime,
+        context,
+        SimpleNamespace(
+            method="thread/realtime/error",
+            payload=SimpleNamespace(message="socket closed", thread_id="thread-1"),
+        ),
+    )
+
+    assert emitted == [
+        (
+            "stream_error",
+            {
+                "session_id": "session-1",
+                "message": "socket closed",
+                "thread_id": "thread-1",
+                "turn_id": None,
+                "code": None,
+                "will_retry": False,
+            },
+        )
+    ]
+
+
+def test_codex_backend_includes_item_id_when_finalizing_agent_message() -> None:
+    chat_service = SimpleNamespace(
+        _append_transcript_message=lambda session_id, message: None,
+    )
+    backend = CodexAppServerBackend(chat_service)
+    context = ChatSessionContext(
+        session_id="session-1",
+        source="chat",
+        backend_id="codex",
+        project_path=Path("/tmp/project"),
+        channel_meta=None,
+    )
+    runtime = CodexSessionRuntime(
+        session_id="session-1",
+        assistant_buffers={"msg-1": "hello"},
+    )
+    emitted: list[tuple[str, dict[str, object]]] = []
+
+    backend._emit_from_thread = lambda runtime, event, data: emitted.append((event, data))  # type: ignore[method-assign]
+
+    backend._handle_item_completed(
+        runtime,
+        context,
+        SimpleNamespace(type="agentMessage", id="msg-1", text=""),
+    )
+
+    assert emitted == [
+        (
+            "assistant_message",
+            {
+                "session_id": "session-1",
+                "item_id": "msg-1",
+                "content": "hello",
+                "iteration": 0,
+            },
+        )
+    ]

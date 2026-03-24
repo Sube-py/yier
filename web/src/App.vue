@@ -26,6 +26,8 @@ import {
 import type {
   ApprovalDecision,
   ApprovalResponseRequest,
+  ApprovalFormFieldState,
+  ApprovalFormMode,
   BackendId,
   BackendRuntime,
   BackgroundCommandListRawPayload,
@@ -40,8 +42,10 @@ import type {
   CodexWorkMode,
   CodexWorkspaceResponse,
   ChatStreamDoneEvent,
+  ChatStreamErrorEvent,
   ChatStreamEvent,
   ChatStreamRequest,
+  ChatTurnAbortedEvent,
   ConfigResponse,
   CreateSessionRequest,
   DeleteSessionResponse,
@@ -227,6 +231,7 @@ const workspaceTitle = computed(() =>
 const sessionHistoryCount = computed(() => sessionHistory.value.length)
 const isCodexWorkspace = computed(() => isChatRoute.value && activeBackendId.value === 'codex')
 const activeCodexProjects = computed(() => codexWorkspace.value?.projects ?? [])
+const activeCodexPairedEditors = computed(() => codexWorkspace.value?.paired_editors ?? [])
 const assistantLabel = computed(() => (activeBackendId.value === 'codex' ? 'Codex' : 'Yier'))
 const composerPlaceholder = computed(() =>
   activeBackendId.value === 'codex'
@@ -308,7 +313,7 @@ async function refreshDashboard() {
     apiGet<ConfigResponse>('/api/config'),
     apiGet<McpConfigResponse>('/api/config/mcp'),
     apiGet<SessionListResponse>('/api/chat/sessions'),
-    safeApiGet<CodexWorkspaceResponse>('/api/codex/workspace', { projects: [] }),
+    safeApiGet<CodexWorkspaceResponse>('/api/codex/workspace', { projects: [], paired_editors: [] }),
     safeApiGet<ChannelWorkspaceResponse>('/api/channel/workspace', { platforms: [], accounts: [] }),
     safeApiGet<ChannelPlatformsResponse>('/api/channel/platforms', { platforms: [] }),
     safeApiGet<ChannelConfigResponse>('/api/channel/config', {
@@ -429,7 +434,7 @@ async function submitMessage() {
 async function refreshSessionHistory() {
   const [payload, codexWorkspacePayload] = await Promise.all([
     apiGet<SessionListResponse>('/api/chat/sessions'),
-    safeApiGet<CodexWorkspaceResponse>('/api/codex/workspace', { projects: [] }),
+    safeApiGet<CodexWorkspaceResponse>('/api/codex/workspace', { projects: [], paired_editors: [] }),
   ])
   sessionHistory.value = normalizeSessionSummaries(payload)
   codexWorkspace.value = codexWorkspacePayload
@@ -592,6 +597,7 @@ function handleStreamEvent(event: ChatStreamEvent) {
   if (event.event === 'run_started') {
     if (activeSessionRuntime.value) {
       activeSessionRuntime.value.status = 'active'
+      activeSessionRuntime.value.detail = 'Codex is working on this turn.'
     }
     activities.value.push(
       makeActivity({
@@ -904,8 +910,11 @@ function handleStreamEvent(event: ChatStreamEvent) {
   }
 
   if (event.event === 'reasoning') {
-    activities.value.push(
+    const activityId = event.data.item_id || `reasoning:${crypto.randomUUID()}`
+    upsertActivity(
+      activityId,
       makeActivity({
+        id: activityId,
         title: 'Reasoning',
         detail: event.data.content,
         state: 'info',
@@ -959,7 +968,67 @@ function handleStreamEvent(event: ChatStreamEvent) {
     return
   }
 
+  if (event.event === 'turn_completed') {
+    if (activeSessionRuntime.value) {
+      activeSessionRuntime.value.status = 'idle'
+      activeSessionRuntime.value.detail = 'Turn completed.'
+    }
+    return
+  }
+
+  if (event.event === 'turn_aborted') {
+    const abortedEvent = event as ChatTurnAbortedEvent
+    isSending.value = false
+    if (activeSessionRuntime.value) {
+      activeSessionRuntime.value.status = abortedEvent.data.status || 'interrupted'
+      activeSessionRuntime.value.detail = abortedEvent.data.reason || 'Turn interrupted.'
+    }
+    errorMessage.value = abortedEvent.data.reason || 'Codex turn was interrupted.'
+    activities.value.push(
+      makeActivity({
+        id: abortedEvent.data.turn_id ? `turn:${abortedEvent.data.turn_id}:aborted` : crypto.randomUUID(),
+        title: 'Turn aborted',
+        detail: abortedEvent.data.reason || 'Codex interrupted this turn before completion.',
+        state: 'error',
+        kind: 'status',
+      }),
+    )
+    return
+  }
+
+  if (event.event === 'stream_error') {
+    const streamErrorEvent = event as ChatStreamErrorEvent
+    isSending.value = false
+    if (activeSessionRuntime.value) {
+      activeSessionRuntime.value.status = 'error'
+      activeSessionRuntime.value.detail = streamErrorEvent.data.message
+    }
+    errorMessage.value = streamErrorEvent.data.message
+    activities.value.push(
+      makeActivity({
+        id: streamErrorEvent.data.turn_id
+          ? `turn:${streamErrorEvent.data.turn_id}:stream-error`
+          : crypto.randomUUID(),
+        title: 'Stream error',
+        detail: streamErrorEvent.data.message,
+        state: 'error',
+        kind: 'status',
+        meta: [
+          streamErrorEvent.data.code ? `code ${streamErrorEvent.data.code}` : '',
+          streamErrorEvent.data.thread_id ? `thread ${streamErrorEvent.data.thread_id}` : '',
+          streamErrorEvent.data.will_retry ? 'Codex will retry automatically.' : '',
+        ].filter(Boolean),
+      }),
+    )
+    return
+  }
+
   if (event.event === 'error') {
+    isSending.value = false
+    if (activeSessionRuntime.value) {
+      activeSessionRuntime.value.status = 'error'
+      activeSessionRuntime.value.detail = event.data.message
+    }
     errorMessage.value = event.data.message
     activities.value.push(
       makeActivity({
@@ -973,9 +1042,15 @@ function handleStreamEvent(event: ChatStreamEvent) {
   }
 
   const doneEvent = event as ChatStreamDoneEvent
+  isSending.value = false
   if (activeSessionRuntime.value) {
     activeSessionRuntime.value.status =
       doneEvent.data.finish_reason === 'stop' ? 'idle' : doneEvent.data.finish_reason
+    if (doneEvent.data.finish_reason === 'stop') {
+      activeSessionRuntime.value.detail = 'Turn completed.'
+    } else if (!activeSessionRuntime.value.detail) {
+      activeSessionRuntime.value.detail = `Turn finished with ${doneEvent.data.finish_reason}.`
+    }
   }
   if (doneEvent.data.finish_reason === 'stop') {
     successMessage.value = 'Response ready.'
@@ -1242,6 +1317,17 @@ function finalizeAssistantMessage(event: {
 }) {
   if (event.item_id) {
     chatMessages.value = chatMessages.value.filter((message) => message.draftId !== event.item_id)
+  } else {
+    const trailingDraftIndex = [...chatMessages.value]
+      .reverse()
+      .findIndex(
+        (message) =>
+          message.role === 'assistant' && Boolean(message.draftId) && message.content === event.content,
+      )
+    if (trailingDraftIndex >= 0) {
+      const messageIndex = chatMessages.value.length - 1 - trailingDraftIndex
+      chatMessages.value.splice(messageIndex, 1)
+    }
   }
   chatMessages.value.push(
     makeUiMessage(
@@ -1261,12 +1347,253 @@ function defaultApprovalResponseDraft(approval: PendingApproval) {
   return (request as Record<string, unknown>).mode === 'form' ? '{}' : ''
 }
 
+function approvalRequestPayload(payload: Record<string, unknown>) {
+  const request = payload.request
+  if (!request || typeof request !== 'object' || Array.isArray(request)) {
+    return null
+  }
+  return request as Record<string, unknown>
+}
+
+function approvalFormState(payload: Record<string, unknown>): {
+  formMode: ApprovalFormMode
+  formFields: ApprovalFormFieldState[]
+  responseDraft: string
+} {
+  const request = approvalRequestPayload(payload)
+  if (!request || request.mode !== 'form') {
+    return {
+      formMode: 'none',
+      formFields: [],
+      responseDraft: '',
+    }
+  }
+
+  const requestedSchema = request.requestedSchema
+  if (!requestedSchema || typeof requestedSchema !== 'object' || Array.isArray(requestedSchema)) {
+    return {
+      formMode: 'json',
+      formFields: [],
+      responseDraft: '{}',
+    }
+  }
+
+  const schema = requestedSchema as Record<string, unknown>
+  if (schema.type !== 'object') {
+    return {
+      formMode: 'json',
+      formFields: [],
+      responseDraft: '{}',
+    }
+  }
+
+  const properties = schema.properties
+  if (!properties || typeof properties !== 'object' || Array.isArray(properties)) {
+    return {
+      formMode: 'none',
+      formFields: [],
+      responseDraft: '',
+    }
+  }
+
+  const required = new Set(
+    Array.isArray(schema.required)
+      ? schema.required.filter((item): item is string => typeof item === 'string')
+      : [],
+  )
+
+  const formFields: ApprovalFormFieldState[] = []
+  for (const [fieldId, rawSchema] of Object.entries(properties as Record<string, unknown>)) {
+    if (!rawSchema || typeof rawSchema !== 'object' || Array.isArray(rawSchema)) {
+      return {
+        formMode: 'json',
+        formFields: [],
+        responseDraft: '{}',
+      }
+    }
+
+    const field = approvalFieldState(fieldId, rawSchema as Record<string, unknown>, required.has(fieldId))
+    if (!field) {
+      return {
+        formMode: 'json',
+        formFields: [],
+        responseDraft: '{}',
+      }
+    }
+    formFields.push(field)
+  }
+
+  if (!formFields.length) {
+    return {
+      formMode: 'none',
+      formFields: [],
+      responseDraft: '',
+    }
+  }
+
+  return {
+    formMode: 'structured',
+    formFields,
+    responseDraft: '',
+  }
+}
+
+function approvalFieldState(
+  fieldId: string,
+  schema: Record<string, unknown>,
+  required: boolean,
+): ApprovalFormFieldState | null {
+  const label = typeof schema.title === 'string' && schema.title.trim() ? schema.title : fieldId
+  const prompt =
+    typeof schema.description === 'string' && schema.description.trim()
+      ? schema.description
+      : label
+
+  if (schema.type === 'boolean') {
+    return {
+      id: fieldId,
+      label,
+      prompt,
+      kind: 'boolean',
+      required,
+      value: typeof schema.default === 'boolean' ? schema.default : null,
+    }
+  }
+
+  if (schema.type === 'number' || schema.type === 'integer') {
+    return {
+      id: fieldId,
+      label,
+      prompt,
+      kind: 'number',
+      required,
+      value:
+        typeof schema.default === 'number' && Number.isFinite(schema.default)
+          ? String(schema.default)
+          : '',
+      min: typeof schema.minimum === 'number' ? schema.minimum : null,
+      max: typeof schema.maximum === 'number' ? schema.maximum : null,
+      integer: schema.type === 'integer',
+    }
+  }
+
+  const legacyEnumOptions = approvalEnumOptions(schema)
+  if (legacyEnumOptions) {
+    return {
+      id: fieldId,
+      label,
+      prompt,
+      kind: 'select',
+      required,
+      value: typeof schema.default === 'string' ? schema.default : '',
+      options: legacyEnumOptions,
+    }
+  }
+
+  const multiSelectOptions = approvalMultiSelectOptions(schema)
+  if (multiSelectOptions) {
+    return {
+      id: fieldId,
+      label,
+      prompt,
+      kind: 'multiselect',
+      required,
+      value: Array.isArray(schema.default)
+        ? schema.default.filter((item): item is string => typeof item === 'string')
+        : [],
+      options: multiSelectOptions,
+    }
+  }
+
+  if (schema.type === 'string') {
+    return {
+      id: fieldId,
+      label,
+      prompt,
+      kind: 'text',
+      required,
+      value: typeof schema.default === 'string' ? schema.default : '',
+    }
+  }
+
+  return null
+}
+
+function approvalEnumOptions(schema: Record<string, unknown>) {
+  if (Array.isArray(schema.enum) && schema.enum.every((item) => typeof item === 'string')) {
+    const titles = Array.isArray(schema.enumNames) ? schema.enumNames : []
+    return schema.enum.map((value, index) => ({
+      value,
+      label: typeof titles[index] === 'string' && titles[index].trim() ? titles[index] : value,
+    }))
+  }
+
+  if (
+    Array.isArray(schema.oneOf) &&
+    schema.oneOf.every(
+      (item) =>
+        item &&
+        typeof item === 'object' &&
+        !Array.isArray(item) &&
+        typeof (item as Record<string, unknown>).const === 'string',
+    )
+  ) {
+    return schema.oneOf.map((item) => {
+      const entry = item as Record<string, unknown>
+      const value = String(entry.const)
+      return {
+        value,
+        label: typeof entry.title === 'string' && entry.title.trim() ? entry.title : value,
+      }
+    })
+  }
+
+  return null
+}
+
+function approvalMultiSelectOptions(schema: Record<string, unknown>) {
+  if (schema.type !== 'array' || !schema.items || typeof schema.items !== 'object' || Array.isArray(schema.items)) {
+    return null
+  }
+
+  const items = schema.items as Record<string, unknown>
+  if (Array.isArray(items.enum) && items.enum.every((item) => typeof item === 'string')) {
+    return items.enum.map((value) => ({
+      value,
+      label: value,
+    }))
+  }
+
+  if (
+    Array.isArray(items.anyOf) &&
+    items.anyOf.every(
+      (item) =>
+        item &&
+        typeof item === 'object' &&
+        !Array.isArray(item) &&
+        typeof (item as Record<string, unknown>).const === 'string',
+    )
+  ) {
+    return items.anyOf.map((item) => {
+      const entry = item as Record<string, unknown>
+      const value = String(entry.const)
+      return {
+        value,
+        label: typeof entry.title === 'string' && entry.title.trim() ? entry.title : value,
+      }
+    })
+  }
+
+  return null
+}
+
 function approvalActivityId(requestId: string) {
   return `approval:${requestId}`
 }
 
 function upsertApprovalActivity(event: ChatApprovalRequestedEvent['data']) {
   const activityId = approvalActivityId(event.request_id)
+  const formState = approvalFormState(event.payload)
   upsertActivity(
     activityId,
     makeActivity({
@@ -1281,15 +1608,21 @@ function upsertApprovalActivity(event: ChatApprovalRequestedEvent['data']) {
         kind: event.kind,
         options: event.options,
         payload: event.payload,
-        responseDraft: defaultApprovalResponseDraft({
-          request_id: event.request_id,
-          method: event.method,
-          kind: event.kind,
-          title: event.title,
-          detail: event.detail,
-          options: event.options,
-          payload: event.payload,
-        }),
+        formMode: formState.formMode,
+        formFields: formState.formFields,
+        responseDraft:
+          formState.formMode === 'json'
+            ? formState.responseDraft
+            : defaultApprovalResponseDraft({
+                request_id: event.request_id,
+                method: event.method,
+                kind: event.kind,
+                title: event.title,
+                detail: event.detail,
+                options: event.options,
+                payload: event.payload,
+              }),
+        validationError: null,
         submittedDecision: null,
       },
     }),
@@ -2494,6 +2827,7 @@ function toErrorMessage(error: unknown) {
         v-if="isCodexWorkspace"
         :projects="activeCodexProjects"
         :active-session-id="activeSessionId"
+        :active-session-status="activeSessionRuntime?.status ?? null"
         @open-session="openCodexNativeSession"
       />
       <div v-else class="side-card side-card--history">
@@ -2694,6 +3028,7 @@ function toErrorMessage(error: unknown) {
               v-if="isCodexWorkspace"
               :runtime="activeSessionRuntime"
               :project-path="activeProjectPath"
+              :paired-editors="activeCodexPairedEditors"
               :sandbox="appForm.codexSandbox"
               :saving="savingState.codexSandbox"
               @update-sandbox="appForm.codexSandbox = $event"

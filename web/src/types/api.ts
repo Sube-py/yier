@@ -226,6 +226,7 @@ export interface CodexNativeSessionSummary {
   preview: string
   updated_at: number
   started_at: number
+  status: string
   cwd: string
   project: string
   project_path: string
@@ -239,8 +240,25 @@ export interface CodexProjectGroup {
   sessions: CodexNativeSessionSummary[]
 }
 
+export interface CodexPairingExtensionSummary {
+  id: string
+  app_name: string
+  workspace_name: string
+  extension_name: string
+  extension_version: string
+  bundle_id: string
+  marketplace_id: string
+  capability_names: string[]
+  capability_count: number
+  socket_path: string
+  is_online: boolean
+  needs_reload: boolean
+  last_seen_at: number
+}
+
 export interface CodexWorkspaceResponse {
   projects: CodexProjectGroup[]
+  paired_editors: CodexPairingExtensionSummary[]
 }
 
 export interface ApprovalOption {
@@ -273,6 +291,27 @@ export interface ApprovalResponseRequest {
   request_id: string
   decision: ApprovalDecision
   content?: Record<string, unknown> | null
+}
+
+export type ApprovalFormMode = 'none' | 'structured' | 'json'
+export type ApprovalFormFieldKind = 'text' | 'number' | 'boolean' | 'select' | 'multiselect'
+
+export interface ApprovalFormOption {
+  label: string
+  value: string
+}
+
+export interface ApprovalFormFieldState {
+  id: string
+  label: string
+  prompt: string
+  kind: ApprovalFormFieldKind
+  required: boolean
+  value: string | boolean | string[] | null
+  options?: ApprovalFormOption[]
+  min?: number | null
+  max?: number | null
+  integer?: boolean
 }
 
 export interface ChatRunStartedEvent {
@@ -652,6 +691,7 @@ export interface ChatReasoningEvent {
     session_id: string
     content: string
     iteration: number
+    item_id?: string
   }
 }
 
@@ -714,6 +754,37 @@ export interface ChatErrorEvent {
     session_id: string
     message: string
     iteration?: number
+  }
+}
+
+export interface ChatTurnCompletedEvent {
+  event: 'turn_completed'
+  data: {
+    session_id: string
+    turn_id?: string
+    status: string
+  }
+}
+
+export interface ChatTurnAbortedEvent {
+  event: 'turn_aborted'
+  data: {
+    session_id: string
+    turn_id?: string
+    status: string
+    reason?: string | null
+  }
+}
+
+export interface ChatStreamErrorEvent {
+  event: 'stream_error'
+  data: {
+    session_id: string
+    message: string
+    thread_id?: string
+    turn_id?: string
+    code?: string | null
+    will_retry?: boolean
   }
 }
 
@@ -793,6 +864,9 @@ export type ChatStreamEvent =
   | ChatApprovalRequestedEvent
   | ChatApprovalResolvedEvent
   | ChatErrorEvent
+  | ChatTurnCompletedEvent
+  | ChatTurnAbortedEvent
+  | ChatStreamErrorEvent
   | ChatStreamDoneEvent
   | ChannelAccountStateEvent
   | ChannelInboundMessageEvent
@@ -815,7 +889,10 @@ export interface ApprovalActivityState {
   kind: string
   options: ApprovalOption[]
   payload: Record<string, unknown>
+  formMode: ApprovalFormMode
+  formFields: ApprovalFormFieldState[]
   responseDraft: string
+  validationError?: string | null
   submittedDecision?: ApprovalDecision | null
 }
 

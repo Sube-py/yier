@@ -431,6 +431,17 @@ select {
   min-width: 0;
 }
 
+.codex-session-topline {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.codex-session-status {
+  flex-shrink: 0;
+}
+
 .codex-session-preview {
   margin-top: 0.18rem;
   font-size: 0.86rem;
@@ -941,6 +952,62 @@ select {
   gap: 0.3rem;
 }
 
+.approval-card,
+.approval-form {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.approval-field {
+  display: grid;
+  gap: 0.28rem;
+}
+
+.approval-field-label {
+  color: var(--app-text);
+  font-size: 0.92rem;
+  font-weight: 700;
+}
+
+.approval-field-required {
+  color: #bc5f38;
+}
+
+.approval-field-prompt {
+  color: var(--app-text-soft);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.approval-input,
+.approval-select {
+  width: 100%;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid rgba(34, 66, 72, 0.12);
+  border-radius: 0.85rem;
+  background: rgba(255, 252, 247, 0.9);
+  color: var(--app-text);
+  font: inherit;
+}
+
+.approval-select--multiple {
+  min-height: 7rem;
+}
+
+.approval-input:focus,
+.approval-select:focus {
+  outline: none;
+  border-color: rgba(21, 94, 99, 0.35);
+  box-shadow: 0 0 0 3px rgba(21, 94, 99, 0.08);
+}
+
+.approval-validation {
+  margin: 0;
+  color: #bc5f38;
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
 .activity-stream--terminal {
   position: relative;
   gap: 0;
@@ -1162,6 +1229,51 @@ select {
 .codex-permission-panel {
   display: grid;
   gap: 0.85rem;
+}
+
+.codex-pairing-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.codex-pairing-item {
+  display: grid;
+  gap: 0.55rem;
+  padding: 0.85rem;
+  border: 1px solid rgba(136, 109, 67, 0.18);
+  border-radius: 1rem;
+  background:
+    linear-gradient(180deg, rgba(255, 251, 245, 0.9), rgba(247, 238, 224, 0.72));
+}
+
+.codex-pairing-topline {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.codex-pairing-title {
+  margin: 0;
+  font-weight: 600;
+  color: var(--app-text-strong);
+}
+
+.codex-pairing-meta,
+.codex-pairing-copy,
+.codex-pairing-empty {
+  margin: 0;
+  color: var(--app-text-soft);
+  font-size: 0.85rem;
+  line-height: 1.55;
+}
+
+.codex-pairing-item code,
+.codex-pairing-empty code {
+  overflow-wrap: anywhere;
+  color: var(--app-accent-deep);
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 0.78rem;
 }
 
 .codex-permission-copy {

@@ -80,7 +80,10 @@ class ChatService:
         self.transcript_store = JSONSessionStore(self.config_service.transcripts_path)
         self.session_ui_store = SessionUIStore(self.config_service.session_ui_path)
         self.session_metadata_store = SessionMetadataStore(self.config_service.session_meta_path)
-        self.codex_workspace = CodexWorkspaceService(self.config_service.home_dir)
+        self.codex_workspace = CodexWorkspaceService(
+            self.config_service.home_dir,
+            config_service=self.config_service,
+        )
         self.background_manager = BackgroundCommandManager(
             default_root=self.project_root,
             allow_shell=True,
@@ -163,12 +166,31 @@ class ChatService:
         backend_id: str | None = None,
         project_path: str | None = None,
     ) -> str:
-        session_id = str(uuid4())
         settings = self.config_service.load_web_settings()
         resolved_backend_id = backend_id or settings.session_defaults.default_backend_id
         resolved_project_path = self.config_service.resolve_project_path(
             project_path or settings.session_defaults.default_project_path
         )
+        if resolved_backend_id == "codex":
+            backend = self.backends.get("codex")
+            if isinstance(backend, CodexAppServerBackend):
+                bootstrap = backend.bootstrap_session(Path(resolved_project_path))
+                session_id = bootstrap["thread_id"]
+                self.ensure_session_metadata(
+                    session_id,
+                    backend_id=resolved_backend_id,
+                    project_path=resolved_project_path,
+                    backend_state={
+                        "thread_id": bootstrap["thread_id"],
+                        "status": bootstrap["status"],
+                        "active_flags": bootstrap["active_flags"],
+                        "detail": bootstrap["detail"],
+                    },
+                    codex_work_mode="build",
+                )
+                return session_id
+
+        session_id = str(uuid4())
         self.ensure_session_metadata(
             session_id,
             backend_id=resolved_backend_id,
@@ -834,6 +856,8 @@ class ChatService:
             "plan",
             "approval_requested",
             "approval_resolved",
+            "turn_aborted",
+            "stream_error",
         }:
             return
 

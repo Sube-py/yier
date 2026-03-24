@@ -7,7 +7,14 @@ import shlex
 import threading
 from typing import TYPE_CHECKING, Any
 
-from codex_app_server import AppServerClient, AppServerConfig
+from codex_app_server import (
+    AppServerClient,
+    AppServerConfig,
+    TextInput,
+    Thread as CodexThread,
+    ThreadResumeParams,
+    ThreadStartParams,
+)
 from codex_app_server.errors import AppServerError, TransportClosedError
 from codex_app_server.models import Notification
 
@@ -84,6 +91,8 @@ class CodexSessionRuntime:
     active_flags: list[str] = field(default_factory=list)
     pending_requests: dict[str, PendingApprovalState] = field(default_factory=dict)
     assistant_buffers: dict[str, str] = field(default_factory=dict)
+    reasoning_buffers: dict[str, dict[str, str]] = field(default_factory=dict)
+    plan_buffers: dict[str, str] = field(default_factory=dict)
     detail: str | None = None
     loop: asyncio.AbstractEventLoop | None = None
     emit: StreamEmitter | None = None
@@ -126,6 +135,41 @@ class CodexAppServerBackend(ChatBackend):
         runtime = self._runtimes.pop(session_id, None)
         if runtime is not None:
             await self._close_runtime(runtime)
+
+    def bootstrap_session(
+        self,
+        project_path: Path,
+        source: str = "chat",
+        channel_meta: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        context = ChatSessionContext(
+            session_id="",
+            source=source,
+            backend_id=self.backend_id,
+            project_path=project_path,
+            channel_meta=channel_meta,
+        )
+        runtime = CodexSessionRuntime(session_id="")
+        try:
+            runtime.client = self._start_client(runtime, context)
+            self._start_thread_blocking(runtime, context, persist=False)
+        except Exception:
+            if runtime.client is not None:
+                try:
+                    runtime.client.close()
+                except (AppServerError, TransportClosedError):
+                    pass
+            raise
+
+        assert runtime.thread_id is not None
+        runtime.session_id = runtime.thread_id
+        self._runtimes[runtime.thread_id] = runtime
+        return {
+            "thread_id": runtime.thread_id,
+            "status": runtime.status,
+            "active_flags": list(runtime.active_flags),
+            "detail": runtime.detail,
+        }
 
     async def stream_chat(
         self,
@@ -201,7 +245,7 @@ class CodexAppServerBackend(ChatBackend):
         runtime = self._ensure_runtime_blocking(context)
         assert runtime.client is not None
         assert runtime.thread_id is not None
-        response = runtime.client.thread_read(runtime.thread_id, include_turns=True)
+        response = CodexThread(runtime.client, runtime.thread_id).read(include_turns=True)
         runtime.status = self._thread_status_value(response.thread.status)
         runtime.active_flags = self._thread_active_flags(response.thread.status)
         self.chat_service.update_session_backend_state(
@@ -278,20 +322,27 @@ class CodexAppServerBackend(ChatBackend):
         client.initialize()
         return client
 
-    def _start_thread_blocking(self, runtime: CodexSessionRuntime, context: ChatSessionContext) -> None:
+    def _start_thread_blocking(
+        self,
+        runtime: CodexSessionRuntime,
+        context: ChatSessionContext,
+        *,
+        persist: bool = True,
+    ) -> None:
         assert runtime.client is not None
-        response = runtime.client.thread_start(self._thread_params(context))
+        response = runtime.client.thread_start(ThreadStartParams(**self._thread_params(context)))
         runtime.thread_id = response.thread.id
         runtime.status = self._thread_status_value(response.thread.status)
         runtime.active_flags = self._thread_active_flags(response.thread.status)
-        self.chat_service.update_session_backend_state(
-            context.session_id,
-            {
-                "thread_id": runtime.thread_id,
-                "status": runtime.status,
-                "active_flags": runtime.active_flags,
-            },
-        )
+        if persist and context.session_id:
+            self.chat_service.update_session_backend_state(
+                context.session_id,
+                {
+                    "thread_id": runtime.thread_id,
+                    "status": runtime.status,
+                    "active_flags": runtime.active_flags,
+                },
+            )
 
     def _resume_thread_blocking(
         self,
@@ -300,7 +351,10 @@ class CodexAppServerBackend(ChatBackend):
         thread_id: str,
     ) -> None:
         assert runtime.client is not None
-        response = runtime.client.thread_resume(thread_id, self._thread_params(context))
+        response = runtime.client.thread_resume(
+            thread_id,
+            ThreadResumeParams(thread_id=thread_id, **self._thread_params(context)),
+        )
         runtime.thread_id = response.thread.id
         runtime.status = self._thread_status_value(response.thread.status)
         runtime.active_flags = self._thread_active_flags(response.thread.status)
@@ -326,16 +380,14 @@ class CodexAppServerBackend(ChatBackend):
         turn_input = user_message
         if self._codex_work_mode(context) == "plan":
             turn_input = f"{PLAN_MODE_PROMPT}\n\nUser request:\n{user_message}"
-        turn_response = runtime.client.turn_start(
-            runtime.thread_id,
-            turn_input,
-            params=self._turn_params(context),
+        turn_handle = CodexThread(runtime.client, runtime.thread_id).turn(
+            TextInput(turn_input),
+            **self._turn_params(context),
         )
-        turn_id = turn_response.turn.id
+        turn_id = turn_handle.id
         finish_reason = "stop"
 
-        while True:
-            notification = runtime.client.next_notification()
+        for notification in turn_handle.stream():
             notification_thread_id = self._notification_value(notification, "thread_id")
             if notification_thread_id and notification_thread_id != runtime.thread_id:
                 continue
@@ -393,6 +445,46 @@ class CodexAppServerBackend(ChatBackend):
             )
             return
 
+        if notification.method == "thread/realtime/error":
+            message = self._notification_value(notification, "message")
+            thread_id = self._notification_value(notification, "thread_id")
+            if isinstance(message, str) and message.strip():
+                self._emit_from_thread(
+                    runtime,
+                    "stream_error",
+                    {
+                        "session_id": context.session_id,
+                        "message": message,
+                        "thread_id": thread_id if isinstance(thread_id, str) else runtime.thread_id,
+                        "turn_id": None,
+                        "code": None,
+                        "will_retry": False,
+                    },
+                )
+            return
+
+        if notification.method == "error":
+            error = self._notification_value(notification, "error")
+            message = getattr(error, "message", None)
+            code = getattr(error, "code", None)
+            turn_id = self._notification_value(notification, "turn_id")
+            thread_id = self._notification_value(notification, "thread_id")
+            will_retry = self._notification_value(notification, "will_retry")
+            if isinstance(message, str) and message.strip():
+                self._emit_from_thread(
+                    runtime,
+                    "stream_error",
+                    {
+                        "session_id": context.session_id,
+                        "message": message,
+                        "thread_id": thread_id if isinstance(thread_id, str) else runtime.thread_id,
+                        "turn_id": turn_id if isinstance(turn_id, str) else None,
+                        "code": str(code) if code is not None else None,
+                        "will_retry": bool(will_retry),
+                    },
+                )
+            return
+
         if notification.method == "item/agentMessage/delta":
             item_id = self._notification_value(notification, "item_id")
             delta = self._notification_value(notification, "delta")
@@ -415,13 +507,16 @@ class CodexAppServerBackend(ChatBackend):
             "item/reasoning/summaryTextDelta",
         }:
             delta = self._notification_value(notification, "delta")
-            if isinstance(delta, str) and delta.strip():
+            item_id = self._notification_value(notification, "item_id")
+            if isinstance(delta, str) and isinstance(item_id, str) and item_id and delta:
+                content = self._accumulate_reasoning_delta(runtime, item_id, notification.method, delta)
                 self._emit_from_thread(
                     runtime,
                     "reasoning",
                     {
                         "session_id": context.session_id,
-                        "content": delta,
+                        "item_id": item_id,
+                        "content": content,
                         "iteration": 0,
                     },
                 )
@@ -430,14 +525,21 @@ class CodexAppServerBackend(ChatBackend):
         if notification.method == "item/plan/delta":
             delta = self._notification_value(notification, "delta")
             item_id = self._notification_value(notification, "item_id")
-            if isinstance(delta, str) and delta.strip():
+            turn_id = self._notification_value(notification, "turn_id")
+            activity_id = (
+                turn_id
+                if isinstance(turn_id, str) and turn_id
+                else item_id if isinstance(item_id, str) and item_id else ""
+            )
+            if isinstance(delta, str) and activity_id and delta:
+                content = self._accumulate_plan_delta(runtime, activity_id, delta)
                 self._emit_from_thread(
                     runtime,
                     "plan",
                     {
                         "session_id": context.session_id,
-                        "item_id": item_id if isinstance(item_id, str) else "",
-                        "content": delta,
+                        "item_id": activity_id,
+                        "content": content,
                         "iteration": 0,
                     },
                 )
@@ -460,13 +562,17 @@ class CodexAppServerBackend(ChatBackend):
                         else:
                             lines.append(step.strip())
             if lines:
+                activity_id = turn_id if isinstance(turn_id, str) and turn_id else ""
+                content = "\n".join(lines)
+                if activity_id:
+                    runtime.plan_buffers[activity_id] = content
                 self._emit_from_thread(
                     runtime,
                     "plan",
                     {
                         "session_id": context.session_id,
-                        "item_id": turn_id if isinstance(turn_id, str) else "",
-                        "content": "\n".join(lines),
+                        "item_id": activity_id,
+                        "content": content,
                         "iteration": 0,
                     },
                 )
@@ -655,6 +761,7 @@ class CodexAppServerBackend(ChatBackend):
                     "assistant_message",
                     {
                         "session_id": context.session_id,
+                        "item_id": item.id,
                         "content": content,
                         "iteration": 0,
                     },
@@ -669,6 +776,7 @@ class CodexAppServerBackend(ChatBackend):
                     "reasoning",
                     {
                         "session_id": context.session_id,
+                        "item_id": item.id,
                         "content": content,
                         "iteration": 0,
                     },
@@ -769,6 +877,7 @@ class CodexAppServerBackend(ChatBackend):
         notification: Notification,
     ) -> str:
         turn = getattr(notification.payload, "turn", None)
+        turn_id = getattr(turn, "id", None)
         status = getattr(turn, "status", None)
         runtime.status = "idle" if status == "completed" else str(status or "idle")
         runtime.active_flags = []
@@ -776,16 +885,40 @@ class CodexAppServerBackend(ChatBackend):
         finish_reason = "stop"
         if status == "interrupted":
             finish_reason = "interrupted"
+            self._emit_from_thread(
+                runtime,
+                "turn_aborted",
+                {
+                    "session_id": context.session_id,
+                    "turn_id": turn_id if isinstance(turn_id, str) else None,
+                    "status": str(status),
+                    "reason": "Turn interrupted.",
+                },
+            )
+        elif status == "completed":
+            self._emit_from_thread(
+                runtime,
+                "turn_completed",
+                {
+                    "session_id": context.session_id,
+                    "turn_id": turn_id if isinstance(turn_id, str) else None,
+                    "status": str(status),
+                },
+            )
         elif status == "failed":
             finish_reason = "error"
             error = getattr(turn, "error", None)
             message = getattr(error, "message", "Codex turn failed.")
             self._emit_from_thread(
                 runtime,
-                "error",
+                "stream_error",
                 {
                     "session_id": context.session_id,
                     "message": message,
+                    "thread_id": runtime.thread_id,
+                    "turn_id": turn_id if isinstance(turn_id, str) else None,
+                    "code": str(getattr(error, "code", None)) if getattr(error, "code", None) is not None else None,
+                    "will_retry": False,
                 },
             )
 
@@ -858,7 +991,7 @@ class CodexAppServerBackend(ChatBackend):
             title = "Grant permissions"
             detail = params.get("reason") or "Codex requested additional permissions."
         elif kind == "mcp_elicitation":
-            request = params.get("request")
+            request = self._normalized_elicitation_request(method, params)
             title = "MCP server input"
             if isinstance(request, dict):
                 detail = request.get("message") or detail
@@ -868,10 +1001,55 @@ class CodexAppServerBackend(ChatBackend):
             "kind": kind,
             "title": title,
             "detail": detail,
-            "payload": params,
+            "payload": self._approval_payload(method, params),
             "options": self._approval_options(kind),
             "item_id": item_id,
         }
+
+    def _approval_payload(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(params)
+        request = self._normalized_elicitation_request(method, params)
+        if request is not None:
+            payload["request"] = request
+        return payload
+
+    def _normalized_elicitation_request(
+        self,
+        method: str,
+        params: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if method == "mcpServer/elicitation/request":
+            request = params.get("request")
+            return request if isinstance(request, dict) else None
+
+        if method != "elicitation/create":
+            return None
+
+        normalized: dict[str, Any] = {}
+        message = params.get("message")
+        if isinstance(message, str) and message.strip():
+            normalized["message"] = message
+
+        meta = params.get("_meta")
+        if meta is not None:
+            normalized["_meta"] = meta
+
+        requested_schema = params.get("requestedSchema")
+        if isinstance(requested_schema, dict):
+            normalized["mode"] = "form"
+            normalized["requestedSchema"] = requested_schema
+            return normalized
+
+        url = params.get("url")
+        if isinstance(url, str) and url.strip():
+            normalized["mode"] = "url"
+            normalized["url"] = url
+            elicitation_id = params.get("elicitationId")
+            if isinstance(elicitation_id, str) and elicitation_id.strip():
+                normalized["elicitationId"] = elicitation_id
+            return normalized
+
+        return None
 
     def _approval_kind(self, method: str) -> str:
         if method == "item/commandExecution/requestApproval":
@@ -880,7 +1058,7 @@ class CodexAppServerBackend(ChatBackend):
             return "file_change"
         if method == "item/permissions/requestApproval":
             return "permissions"
-        if method == "mcpServer/elicitation/request":
+        if method in {"mcpServer/elicitation/request", "elicitation/create"}:
             return "mcp_elicitation"
         return "approval"
 
@@ -907,7 +1085,7 @@ class CodexAppServerBackend(ChatBackend):
         settings = self.chat_service.config_service.load_web_settings().session_defaults
         if context.source != "channel" or not settings.channel_auto_approve_codex_requests:
             return None
-        if method == "mcpServer/elicitation/request":
+        if method in {"mcpServer/elicitation/request", "elicitation/create"}:
             return {"action": "decline", "content": None}
         return self._build_approval_response(method, params, "accept", None)
 
@@ -919,7 +1097,7 @@ class CodexAppServerBackend(ChatBackend):
         content: dict[str, Any] | None,
     ) -> dict[str, Any]:
         normalized_decision = decision.strip().lower()
-        if method == "mcpServer/elicitation/request":
+        if method in {"mcpServer/elicitation/request", "elicitation/create"}:
             if normalized_decision == "accept":
                 return {"action": "accept", "content": content}
             if normalized_decision == "decline":
@@ -951,12 +1129,12 @@ class CodexAppServerBackend(ChatBackend):
         settings = self.chat_service.config_service.load_web_settings().codex
         return {
             "cwd": str(context.project_path),
-            "approvalPolicy": settings.approval_policy,
-            "approvalsReviewer": settings.approvals_reviewer,
+            "approval_policy": settings.approval_policy,
+            "approvals_reviewer": settings.approvals_reviewer,
             "model": settings.model or None,
             "personality": settings.personality,
             "sandbox": _codex_thread_sandbox_mode(settings.sandbox),
-            "serviceTier": settings.service_tier or None,
+            "service_tier": settings.service_tier or None,
         }
 
     def _turn_params(self, context: ChatSessionContext) -> dict[str, Any]:
@@ -966,13 +1144,13 @@ class CodexAppServerBackend(ChatBackend):
             approval_policy = "never"
         return {
             "cwd": str(context.project_path),
-            "approvalPolicy": approval_policy,
-            "approvalsReviewer": settings.approvals_reviewer,
+            "approval_policy": approval_policy,
+            "approvals_reviewer": settings.approvals_reviewer,
             "effort": settings.reasoning_effort,
             "model": settings.model or None,
             "personality": settings.personality,
-            "sandboxPolicy": {"type": _codex_turn_sandbox_policy_type(settings.sandbox)},
-            "serviceTier": settings.service_tier or None,
+            "sandbox_policy": {"type": _codex_turn_sandbox_policy_type(settings.sandbox)},
+            "service_tier": settings.service_tier or None,
         }
 
     async def _close_runtime(self, runtime: CodexSessionRuntime) -> None:
@@ -1087,6 +1265,7 @@ class CodexAppServerBackend(ChatBackend):
                     "reasoning",
                     {
                         "session_id": context.session_id,
+                        "item_id": item.id,
                         "content": content,
                         "iteration": 0,
                     },
@@ -1251,6 +1430,32 @@ class CodexAppServerBackend(ChatBackend):
         data: dict[str, Any],
     ) -> None:
         activity_events.append({"event": event, "data": data})
+
+    def _accumulate_reasoning_delta(
+        self,
+        runtime: CodexSessionRuntime,
+        item_id: str,
+        method: str,
+        delta: str,
+    ) -> str:
+        buffer = runtime.reasoning_buffers.setdefault(
+            item_id,
+            {"content": "", "summary": ""},
+        )
+        if method == "item/reasoning/summaryTextDelta":
+            buffer["summary"] = f"{buffer['summary']}{delta}"
+        else:
+            buffer["content"] = f"{buffer['content']}{delta}"
+        return buffer["summary"] or buffer["content"]
+
+    def _accumulate_plan_delta(
+        self,
+        runtime: CodexSessionRuntime,
+        activity_id: str,
+        delta: str,
+    ) -> str:
+        runtime.plan_buffers[activity_id] = f"{runtime.plan_buffers.get(activity_id, '')}{delta}"
+        return runtime.plan_buffers[activity_id]
 
     def _thread_user_message_text(self, contents: Any) -> str:
         if not isinstance(contents, list):

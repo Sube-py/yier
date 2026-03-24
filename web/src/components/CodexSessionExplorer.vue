@@ -9,6 +9,7 @@ import type { CodexProjectGroup } from '../types/api'
 const props = defineProps<{
   projects: CodexProjectGroup[]
   activeSessionId: string
+  activeSessionStatus?: string | null
 }>()
 
 const emit = defineEmits<{
@@ -22,6 +23,54 @@ function formatTimestamp(timestamp: number) {
     return ''
   }
   return new Date(timestamp * 1000).toLocaleString()
+}
+
+function sessionStatusValue(session: CodexProjectGroup['sessions'][number]) {
+  if (session.thread_id === props.activeSessionId && props.activeSessionStatus?.trim()) {
+    return props.activeSessionStatus
+  }
+  return session.status || 'idle'
+}
+
+function sessionStatusLabel(status: string | null | undefined) {
+  const normalized = (status ?? '').trim()
+  if (!normalized || normalized === 'idle') {
+    return 'Ready'
+  }
+  if (normalized === 'active') {
+    return 'Working'
+  }
+  if (normalized === 'completed') {
+    return 'Completed'
+  }
+  if (normalized === 'interrupted') {
+    return 'Aborted'
+  }
+  if (normalized === 'error' || normalized === 'failed') {
+    return 'Error'
+  }
+  return normalized
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join(' ')
+}
+
+function sessionStatusSeverity(status: string | null | undefined) {
+  const normalized = (status ?? '').trim()
+  if (!normalized || normalized === 'idle' || normalized === 'completed') {
+    return 'secondary'
+  }
+  if (normalized === 'active') {
+    return 'info'
+  }
+  if (normalized === 'interrupted') {
+    return 'warn'
+  }
+  if (normalized === 'error' || normalized === 'failed') {
+    return 'danger'
+  }
+  return 'contrast'
 }
 
 function projectContainsActiveSession(project: CodexProjectGroup) {
@@ -118,7 +167,15 @@ watch(
             >
               <span class="codex-session-branch" aria-hidden="true"></span>
               <div class="codex-session-copy">
-                <p class="codex-session-title">{{ session.title }}</p>
+                <div class="codex-session-topline">
+                  <p class="codex-session-title">{{ session.title }}</p>
+                  <Tag
+                    class="codex-session-status"
+                    :value="sessionStatusLabel(sessionStatusValue(session))"
+                    :severity="sessionStatusSeverity(sessionStatusValue(session))"
+                    rounded
+                  />
+                </div>
                 <p class="codex-session-preview">{{ session.preview }}</p>
                 <p class="codex-session-meta">
                   <span>{{ formatTimestamp(session.updated_at) }}</span>

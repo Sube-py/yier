@@ -339,10 +339,27 @@ class CodexNativeSessionSummary(BaseModel):
     preview: str
     updated_at: float
     started_at: float
+    status: str = "idle"
     cwd: str
     project: str
     project_path: str
     source: str = "active"
+
+
+class CodexPairingExtensionSummary(BaseModel):
+    id: str
+    app_name: str
+    workspace_name: str
+    extension_name: str
+    extension_version: str
+    bundle_id: str
+    marketplace_id: str
+    capability_names: list[str] = Field(default_factory=list)
+    capability_count: int = 0
+    socket_path: str
+    is_online: bool = False
+    needs_reload: bool = False
+    last_seen_at: float = 0.0
 
 
 class CodexProjectGroup(BaseModel):
@@ -354,3 +371,4 @@ class CodexProjectGroup(BaseModel):
 
 class CodexWorkspaceResponse(BaseModel):
     projects: list[CodexProjectGroup] = Field(default_factory=list)
+    paired_editors: list[CodexPairingExtensionSummary] = Field(default_factory=list)

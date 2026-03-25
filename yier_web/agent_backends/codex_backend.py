@@ -243,6 +243,68 @@ class CodexAppServerBackend(ChatBackend):
         pending.event.set()
         return True
 
+    async def steer_turn(
+        self,
+        context: ChatSessionContext,
+        turn_id: str | None,
+        input_payload: list[dict[str, Any]] | dict[str, Any] | str,
+    ) -> dict[str, Any]:
+        runtime = await self._ensure_runtime(context)
+        assert runtime.client is not None
+        assert runtime.thread_id is not None
+        resolved_turn_id = turn_id or await asyncio.to_thread(
+            self._resolve_active_turn_id_blocking,
+            runtime,
+            context,
+        )
+        if not resolved_turn_id:
+            raise RuntimeError("No active Codex turn found for steer request.")
+        response = await asyncio.to_thread(
+            runtime.client.turn_steer,
+            runtime.thread_id,
+            resolved_turn_id,
+            input_payload,
+        )
+        return self._safe_model_dump(response)
+
+    async def interrupt_turn(
+        self,
+        context: ChatSessionContext,
+        turn_id: str | None,
+    ) -> dict[str, Any]:
+        runtime = await self._ensure_runtime(context)
+        assert runtime.client is not None
+        assert runtime.thread_id is not None
+        resolved_turn_id = turn_id or await asyncio.to_thread(
+            self._resolve_active_turn_id_blocking,
+            runtime,
+            context,
+        )
+        if not resolved_turn_id:
+            raise RuntimeError("No active Codex turn found for interrupt request.")
+        response = await asyncio.to_thread(
+            runtime.client.turn_interrupt,
+            runtime.thread_id,
+            resolved_turn_id,
+        )
+        return self._safe_model_dump(response)
+
+    async def respond_to_raw_request(
+        self,
+        context: ChatSessionContext,
+        request_id: str,
+        response_payload: dict[str, Any],
+    ) -> bool:
+        runtime = self._runtimes.get(context.session_id)
+        if runtime is None:
+            return False
+        pending = runtime.pending_requests.get(request_id)
+        if pending is None:
+            return False
+        pending.response = dict(response_payload)
+        pending.event.set()
+        return True
+
     def load_thread_view(self, context: ChatSessionContext) -> dict[str, Any]:
         runtime = self._ensure_runtime_blocking(context)
         assert runtime.client is not None
@@ -368,6 +430,28 @@ class CodexAppServerBackend(ChatBackend):
                 "active_flags": runtime.active_flags,
             },
         )
+
+    def _resolve_active_turn_id_blocking(
+        self,
+        runtime: CodexSessionRuntime,
+        context: ChatSessionContext,
+    ) -> str | None:
+        assert runtime.client is not None
+        assert runtime.thread_id is not None
+        response = CodexThread(runtime.client, runtime.thread_id).read(include_turns=True)
+        turns = list(getattr(response.thread, "turns", []) or [])
+        for turn in reversed(turns):
+            status = str(getattr(turn, "status", "") or "")
+            turn_id = getattr(turn, "id", None)
+            if not isinstance(turn_id, str) or not turn_id:
+                continue
+            if status not in {"completed", "failed", "interrupted"}:
+                return turn_id
+        for turn in reversed(turns):
+            turn_id = getattr(turn, "id", None)
+            if isinstance(turn_id, str) and turn_id:
+                return turn_id
+        return None
 
     def _run_turn_blocking(
         self,
@@ -1129,14 +1213,16 @@ class CodexAppServerBackend(ChatBackend):
 
     def _thread_params(self, context: ChatSessionContext) -> dict[str, Any]:
         settings = self.chat_service.config_service.load_web_settings().codex
+        model_override = self._context_string_override(context, "model")
+        service_tier_override = self._context_string_override(context, "service_tier")
         params = {
             "cwd": str(context.project_path),
             "approval_policy": settings.approval_policy,
             "approvals_reviewer": settings.approvals_reviewer,
-            "model": settings.model or None,
+            "model": model_override or settings.model or None,
             "personality": settings.personality,
             "sandbox": _codex_thread_sandbox_mode(settings.sandbox),
-            "service_tier": settings.service_tier or None,
+            "service_tier": service_tier_override or settings.service_tier or None,
         }
         pairing_config = self._pairing_mcp_config()
         if pairing_config is not None:
@@ -1148,15 +1234,18 @@ class CodexAppServerBackend(ChatBackend):
         approval_policy = settings.approval_policy
         if context.source == "channel":
             approval_policy = "never"
+        reasoning_effort_override = self._context_string_override(context, "reasoning_effort")
+        model_override = self._context_string_override(context, "model")
+        service_tier_override = self._context_string_override(context, "service_tier")
         return {
             "cwd": str(context.project_path),
             "approval_policy": approval_policy,
             "approvals_reviewer": settings.approvals_reviewer,
-            "effort": settings.reasoning_effort,
-            "model": settings.model or None,
+            "effort": reasoning_effort_override or settings.reasoning_effort,
+            "model": model_override or settings.model or None,
             "personality": settings.personality,
             "sandbox_policy": {"type": _codex_turn_sandbox_policy_type(settings.sandbox)},
-            "service_tier": settings.service_tier or None,
+            "service_tier": service_tier_override or settings.service_tier or None,
         }
 
     def _pairing_mcp_config(self) -> dict[str, Any] | None:
@@ -1538,6 +1627,16 @@ class CodexAppServerBackend(ChatBackend):
         if root is None:
             return ""
         return str(root)
+
+    def _context_string_override(
+        self,
+        context: ChatSessionContext,
+        key: str,
+    ) -> str:
+        value = context.backend_state.get(key)
+        if not isinstance(value, str):
+            return ""
+        return value.strip()
 
     def _safe_model_dump(self, value: Any) -> dict[str, Any]:
         if isinstance(value, dict):

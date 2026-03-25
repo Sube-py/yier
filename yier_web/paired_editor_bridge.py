@@ -7,16 +7,16 @@ import json
 from pathlib import Path
 from time import time
 from typing import Any
+from uuid import uuid4
 
 from yier_web.event_stream import EventStreamBroker
 
 
 DEFAULT_APP_NAME = "Yier"
-DEFAULT_BUNDLE_ID = "com.sube.yier"
+DEFAULT_BUNDLE_ID = "com.microsoft.VSCode"
 DEFAULT_MARKETPLACE_ID = "openai.chatgpt"
 DEFAULT_EXTENSION_NAME = f"oai_pwai {DEFAULT_APP_NAME}"
 DEFAULT_WORKSPACE_NAME = DEFAULT_APP_NAME
-DEFAULT_IDLE_SESSION_ID = "idle"
 DEFAULT_SOCKET_DIR = Path("/tmp")
 DEFAULT_LOG_PATH = Path("/tmp/yier-paired-editor.jsonl")
 PAIRING_CAPABILITIES = {
@@ -47,7 +47,7 @@ def _clamp_offset(value: int, content: str) -> int:
 def _path_safe_component(value: str) -> str:
     normalized = value.strip()
     if not normalized:
-        return DEFAULT_IDLE_SESSION_ID
+        return DEFAULT_APP_NAME
     return normalized.replace("/", "_").replace("\0", "_")
 
 
@@ -97,7 +97,7 @@ class CodexPairedEditorBridge:
         self._state = PairedEditorState()
         self._needs_reload = False
         self._server: asyncio.AbstractServer | None = None
-        self._registered_pairing_id = self._pairing_id_for_session("")
+        self._registered_pairing_id = self._new_pairing_id()
         self._lock = asyncio.Lock()
 
     @property
@@ -160,7 +160,6 @@ class CodexPairedEditorBridge:
 
         textfield_id = self._textfield_id(session_id)
         async with self._lock:
-            previous_pairing_id = self._registered_pairing_id
             previous_workspace_name = self._state.workspace_name
             self._state = PairedEditorState(
                 session_id=session_id,
@@ -170,13 +169,11 @@ class CodexPairedEditorBridge:
                 selection_start=normalized_start,
                 selection_end=normalized_end,
             )
-            next_pairing_id = self._pairing_id_for_session(session_id)
 
         self._append_log(
             "state_updated",
             {
-                "previous_pairing_id": previous_pairing_id,
-                "next_pairing_id": next_pairing_id,
+                "pairing_id": self._registered_pairing_id,
                 "session_id": session_id,
                 "workspace_name": workspace_name or DEFAULT_WORKSPACE_NAME,
                 "textfield_id": textfield_id,
@@ -185,12 +182,6 @@ class CodexPairedEditorBridge:
                 "selection_end": normalized_end,
             },
         )
-
-        if next_pairing_id != previous_pairing_id:
-            self._registered_pairing_id = next_pairing_id
-            await self._restart_server(previous_pairing_id=previous_pairing_id)
-            await self._write_descriptor()
-            return
 
         if previous_workspace_name != self._state.workspace_name:
             await self._write_descriptor()
@@ -291,13 +282,17 @@ class CodexPairedEditorBridge:
 
         if command == "content":
             state = await self.snapshot()
+            if not state.textfield_id:
+                return {"status": 400, "error": "No active editor found"}
             return {
                 "status": "success",
-                "textfields": [self._content_textfield(state)] if state.textfield_id else [],
+                "textfields": [self._content_textfield(state)],
             }
 
         if command == "selections":
             state = await self.snapshot()
+            if not state.textfield_id:
+                return {"status": 400, "error": "No active editor found"}
             selection = self._selection_payload(state)
             return {
                 "status": "success",
@@ -468,9 +463,9 @@ class CodexPairedEditorBridge:
             return ""
         return f"session:{normalized_session_id}:composer"
 
-    def _pairing_id_for_session(self, session_id: str) -> str:
-        safe_session_id = _path_safe_component(session_id)
-        return f"{self.app_name}-{safe_session_id}"
+    def _new_pairing_id(self) -> str:
+        safe_app_name = _path_safe_component(self.app_name)
+        return f"{safe_app_name}-{uuid4()}"
 
     def _require_textfield(self, textfield_id: Any) -> str:
         if not isinstance(textfield_id, str) or not textfield_id.strip():

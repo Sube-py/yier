@@ -41,6 +41,7 @@ from yier_web.agent_backends import ChatSessionContext, CodexAppServerBackend, Y
 from yier_web.background_followups import FollowupQueueManager, create_queue_background_followup_tool
 from yier_web.codex_workspace import CodexWorkspaceService
 from yier_web.config import AppConfigService
+from yier_web.codex_ipc import CodexThreadFollowerBridge
 from yier_web.event_stream import EventStreamBroker
 from yier_web.paired_editor_bridge import CodexPairedEditorBridge
 from yier_web.session_metadata_store import SessionMetadataStore
@@ -98,6 +99,7 @@ class ChatService:
             home_dir=self.config_service.home_dir,
             event_broker=self.event_broker,
         )
+        self.codex_ipc_bridge = CodexThreadFollowerBridge(chat_service=self)
         self.backends = {
             "yier": YierAgentBackend(self),
             "codex": CodexAppServerBackend(self),
@@ -108,6 +110,7 @@ class ChatService:
         self._session_run_locks: dict[str, asyncio.Lock] = {}
         self._background_owner_sessions: dict[str, str] = {}
         self._background_cursors: dict[str, dict[str, Any]] = {}
+        self._ipc_stream_tasks: dict[str, asyncio.Task[None]] = {}
         self._background_supervisor_task: asyncio.Task[None] | None = None
         self._codex_pairing_monitor_task: asyncio.Task[None] | None = None
         self._started = False
@@ -118,6 +121,7 @@ class ChatService:
         await self.mcp_manager.start()
         self._started = True
         await self.paired_editor_bridge.start()
+        await self.codex_ipc_bridge.start()
         await self.reload_agent(force_mcp_reconnect=False)
         self._background_supervisor_task = asyncio.create_task(self._background_supervisor_loop())
         self._codex_pairing_monitor_task = asyncio.create_task(self._codex_pairing_monitor_loop())
@@ -135,6 +139,12 @@ class ChatService:
             with suppress(asyncio.CancelledError):
                 await self._codex_pairing_monitor_task
             self._codex_pairing_monitor_task = None
+        for task in list(self._ipc_stream_tasks.values()):
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+        self._ipc_stream_tasks.clear()
+        await self.codex_ipc_bridge.stop()
         await self.paired_editor_bridge.stop()
         await self.background_manager.close()
         await self.mcp_manager.stop()
@@ -361,6 +371,34 @@ class ChatService:
             preview=metadata["preview"],
             updated_at=metadata["updated_at"],
         )
+
+    def can_handle_codex_conversation(self, conversation_id: str) -> bool:
+        normalized_conversation_id = conversation_id.strip()
+        if not normalized_conversation_id:
+            return False
+        metadata = self.session_metadata_store.load(normalized_conversation_id)
+        if isinstance(metadata, dict):
+            normalized = self._normalize_session_metadata_payload(metadata)
+            if normalized["backend_id"] == "codex":
+                return True
+        return self.codex_workspace.get_active_session(normalized_conversation_id) is not None
+
+    def ensure_codex_conversation_session(self, conversation_id: str) -> str:
+        normalized_conversation_id = conversation_id.strip()
+        if not normalized_conversation_id:
+            raise RuntimeError("Missing conversation id.")
+
+        metadata = self.session_metadata_store.load(normalized_conversation_id)
+        if isinstance(metadata, dict):
+            normalized = self._normalize_session_metadata_payload(metadata)
+            if normalized["backend_id"] != "codex":
+                raise RuntimeError("Conversation is not backed by Codex.")
+            return normalized_conversation_id
+
+        session_id = self.open_codex_native_session(normalized_conversation_id)
+        if session_id is None:
+            raise RuntimeError(f"Codex conversation not found: {normalized_conversation_id}")
+        return session_id
 
     def get_session_context(self, session_id: str) -> ChatSessionContext:
         metadata = self.get_session_metadata(session_id)
@@ -637,6 +675,7 @@ class ChatService:
         async def emit(event: str, data: dict[str, Any]) -> None:
             self._handle_internal_event(event, data)
             self._persist_ui_event(event, data)
+            await self.codex_ipc_bridge.notify_stream_event(event, data)
             await event_queue.put({"event": event, "data": data})
 
         finish_reason = "stop"
@@ -713,6 +752,228 @@ class ChatService:
         if backend is None:
             return False
         return await backend.respond_to_approval(context, request_id, decision, content)
+
+    async def respond_to_codex_raw_request(
+        self,
+        session_id: str,
+        request_id: str,
+        response_payload: dict[str, Any],
+    ) -> bool:
+        context = self.get_session_context(session_id)
+        backend = self.backends.get(context.backend_id)
+        if not isinstance(backend, CodexAppServerBackend):
+            return False
+        return await backend.respond_to_raw_request(context, request_id, response_payload)
+
+    def resolve_pending_approval_request_id(
+        self,
+        session_id: str,
+        *,
+        preferred_kind: str | None = None,
+    ) -> str | None:
+        pending_approvals = self.get_pending_approvals(session_id)
+        if preferred_kind:
+            for approval in pending_approvals:
+                if approval.kind == preferred_kind:
+                    return approval.request_id
+        if pending_approvals:
+            return pending_approvals[0].request_id
+        return None
+
+    async def start_codex_turn_in_background(
+        self,
+        session_id: str,
+        prompt: str,
+    ) -> None:
+        context = self.get_session_context(session_id)
+        if context.backend_id != "codex":
+            raise RuntimeError("Only Codex sessions can start IPC-controlled turns.")
+
+        existing_task = self._ipc_stream_tasks.get(session_id)
+        if existing_task is not None and not existing_task.done():
+            raise RuntimeError("Codex turn is already running for this session.")
+
+        session_lock = self._session_lock(session_id)
+        if session_lock.locked():
+            raise RuntimeError("Codex turn is already running for this session.")
+
+        task = asyncio.create_task(
+            self._consume_session_stream_to_event_broker(session_id, prompt),
+            name=f"codex-ipc-turn:{session_id}",
+        )
+        self._ipc_stream_tasks[session_id] = task
+
+        def cleanup(completed_task: asyncio.Task[None]) -> None:
+            if self._ipc_stream_tasks.get(session_id) is completed_task:
+                self._ipc_stream_tasks.pop(session_id, None)
+
+            with suppress(asyncio.CancelledError):
+                exception = completed_task.exception()
+            if exception is not None:
+                asyncio.create_task(
+                    self.event_broker.publish(
+                        "error",
+                        {
+                            "session_id": session_id,
+                            "message": str(exception),
+                        },
+                    )
+                )
+
+        task.add_done_callback(cleanup)
+
+    async def _consume_session_stream_to_event_broker(
+        self,
+        session_id: str,
+        prompt: str,
+    ) -> None:
+        async for item in self.stream_chat(session_id, prompt):
+            await self.event_broker.publish(item["event"], item["data"])
+
+    async def steer_codex_turn(
+        self,
+        *,
+        session_id: str,
+        turn_id: str | None,
+        input_payload: list[dict[str, Any]] | dict[str, Any] | str,
+    ) -> dict[str, Any]:
+        context = self.get_session_context(session_id)
+        backend = self.backends.get(context.backend_id)
+        if not isinstance(backend, CodexAppServerBackend):
+            raise RuntimeError("Codex backend is not available.")
+        return await backend.steer_turn(context, turn_id, input_payload)
+
+    async def interrupt_codex_turn(
+        self,
+        *,
+        session_id: str,
+        turn_id: str | None,
+    ) -> dict[str, Any]:
+        context = self.get_session_context(session_id)
+        backend = self.backends.get(context.backend_id)
+        if not isinstance(backend, CodexAppServerBackend):
+            raise RuntimeError("Codex backend is not available.")
+        return await backend.interrupt_turn(context, turn_id)
+
+    def edit_last_codex_user_turn(
+        self,
+        session_id: str,
+        content: str,
+    ) -> None:
+        transcript = self.transcript_store.get_session_messages(session_id) or []
+        for message in reversed(transcript):
+            if message.role != "user":
+                continue
+            message.content = content
+            self.transcript_store.save(session_id, transcript)
+            return
+
+    def build_codex_ipc_conversation_state(self, session_id: str) -> dict[str, Any]:
+        metadata = self.get_session_metadata(session_id)
+        runtime = self.get_backend_runtime(session_id)
+        transcript = self.transcript_store.get_session_messages(session_id) or []
+        turns: list[dict[str, Any]] = []
+        current_turn: dict[str, Any] | None = None
+        turn_index = 0
+        current_timestamp_ms = int(time() * 1000)
+
+        for message in transcript:
+            content = getattr(message, "content", "")
+            if not isinstance(content, str) or not content.strip():
+                continue
+            role = getattr(message, "role", "")
+            if role == "user":
+                if current_turn is not None:
+                    turns.append(current_turn)
+                turn_index += 1
+                current_turn = {
+                    "turnId": f"{session_id}:turn:{turn_index}",
+                    "status": "completed",
+                    "items": [
+                        {
+                            "type": "userMessage",
+                            "content": [{"type": "text", "text": content}],
+                        }
+                    ],
+                    "params": {
+                        "input": [{"type": "text", "text": content}],
+                    },
+                    "turnStartedAtMs": current_timestamp_ms,
+                    "finalAssistantStartedAtMs": None,
+                }
+                continue
+            if role != "assistant":
+                continue
+            if current_turn is None:
+                turn_index += 1
+                current_turn = {
+                    "turnId": f"{session_id}:turn:{turn_index}",
+                    "status": "completed",
+                    "items": [],
+                    "params": {"input": []},
+                    "turnStartedAtMs": current_timestamp_ms,
+                    "finalAssistantStartedAtMs": current_timestamp_ms,
+                }
+            current_turn["items"].append({"type": "agentMessage", "text": content})
+            if current_turn.get("finalAssistantStartedAtMs") is None:
+                current_turn["finalAssistantStartedAtMs"] = current_timestamp_ms
+
+        if current_turn is not None:
+            if runtime.status == "active":
+                current_turn["status"] = "inProgress"
+            turns.append(current_turn)
+
+        pending_requests = [
+            approval.model_dump(mode="json")
+            for approval in self.get_pending_approvals(session_id)
+        ]
+        backend_state = metadata["backend_state"]
+        updated_at = metadata.get("updated_at")
+        updated_at_ms = int(updated_at * 1000) if isinstance(updated_at, (int, float)) else current_timestamp_ms
+
+        return {
+            "id": session_id,
+            "hostId": "local",
+            "turns": turns,
+            "pendingSteers": [],
+            "requests": pending_requests,
+            "createdAt": updated_at_ms,
+            "updatedAt": updated_at_ms,
+            "title": metadata.get("title"),
+            "source": metadata.get("source", "chat"),
+            "latestModel": backend_state.get("model") or "",
+            "latestReasoningEffort": backend_state.get("reasoning_effort"),
+            "previousTurnModel": None,
+            "latestCollaborationMode": backend_state.get("collaboration_mode") or "build",
+            "hasUnreadTurn": False,
+            "rolloutPath": backend_state.get("rollout_path") or "",
+            "gitInfo": backend_state.get("git_info"),
+            "resumeState": backend_state.get("resume_state") or "resumed",
+            "latestTokenUsageInfo": backend_state.get("latest_token_usage_info"),
+            "cwd": metadata.get("project_path"),
+            "threadId": runtime.thread_id or session_id,
+            "threadRuntimeStatus": runtime.status,
+        }
+
+    def build_codex_ipc_queued_followups(self, session_id: str) -> list[dict[str, Any]]:
+        metadata = self.get_session_metadata(session_id)
+        workspace_root = metadata.get("project_path")
+        workspace_roots = [workspace_root] if isinstance(workspace_root, str) and workspace_root else []
+        created_at_ms = int(time() * 1000)
+        messages: list[dict[str, Any]] = []
+        for item in self.followup_queue.list_items():
+            if item.owner_session_id != session_id:
+                continue
+            messages.append(
+                {
+                    "id": item.queue_id,
+                    "text": item.prompt,
+                    "context": {"workspaceRoots": workspace_roots},
+                    "cwd": workspace_root or "/",
+                    "createdAt": created_at_ms,
+                }
+            )
+        return messages
 
     async def _stream_with_yier_backend(
         self,
@@ -1061,6 +1322,7 @@ class ChatService:
             }
             self._persist_ui_event("background_followup_started", started_payload)
             await self.event_broker.publish("background_followup_started", started_payload)
+            await self.codex_ipc_bridge.notify_stream_event("background_followup_started", started_payload)
 
             async def emit(event: str, data: dict[str, Any]) -> None:
                 self._handle_internal_event(event, data)
@@ -1081,6 +1343,7 @@ class ChatService:
             }
             self._persist_ui_event("background_followup_finished", finished_payload)
             await self.event_broker.publish("background_followup_finished", finished_payload)
+            await self.codex_ipc_bridge.notify_stream_event("background_followup_finished", finished_payload)
 
         for background_session_id in completed_session_ids:
             self._background_owner_sessions.pop(background_session_id, None)

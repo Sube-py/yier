@@ -46,6 +46,8 @@ async def _start_bridge(tmp_path: Path) -> tuple[CodexPairedEditorBridge, EventS
 def test_paired_editor_bridge_registers_descriptor_and_serves_content(tmp_path: Path) -> None:
     async def scenario() -> None:
         bridge, _ = await _start_bridge(tmp_path)
+        pairing_id = bridge.descriptor_path.name
+        socket_path = bridge.socket_path
         await bridge.update_state(
             session_id="session-1",
             workspace_name="demo-project",
@@ -55,7 +57,6 @@ def test_paired_editor_bridge_registers_descriptor_and_serves_content(tmp_path: 
         )
 
         descriptor = json.loads(bridge.descriptor_path.read_text(encoding="utf-8"))
-        socket_path = bridge.socket_path
         content_response = await asyncio.to_thread(
             _round_trip,
             socket_path,
@@ -74,11 +75,12 @@ def test_paired_editor_bridge_registers_descriptor_and_serves_content(tmp_path: 
         )
 
         assert descriptor["appName"] == "Yier"
-        assert descriptor["id"] == "Yier-session-1"
+        assert descriptor["id"] == pairing_id
         assert descriptor["workspaceName"] == "demo-project"
-        assert descriptor["socketPath"] == "/tmp/Yier-session-1.sock"
-        assert bridge.descriptor_path.name == "Yier-session-1"
-        assert bridge.socket_path.name == "Yier-session-1.sock"
+        assert descriptor["socketPath"] == str(socket_path)
+        assert pairing_id.startswith("Yier-")
+        assert bridge.descriptor_path.name == pairing_id
+        assert bridge.socket_path.name == f"{pairing_id}.sock"
         assert descriptor["capabilities"]["replaceSelection"] == 1
         assert content_response == {
             "status": "success",
@@ -106,6 +108,41 @@ def test_paired_editor_bridge_registers_descriptor_and_serves_content(tmp_path: 
         await bridge.stop()
         assert bridge.descriptor_path.exists() is False
         assert socket_path.exists() is False
+
+    asyncio.run(scenario())
+
+
+def test_paired_editor_bridge_reports_missing_active_editor(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        bridge, _ = await _start_bridge(tmp_path)
+
+        content_response = await asyncio.to_thread(
+            _round_trip,
+            bridge.socket_path,
+            {
+                "command": "content",
+                "payload": {},
+            },
+        )
+        selections_response = await asyncio.to_thread(
+            _round_trip,
+            bridge.socket_path,
+            {
+                "command": "selections",
+                "payload": {},
+            },
+        )
+
+        assert content_response == {
+            "status": 400,
+            "error": "No active editor found",
+        }
+        assert selections_response == {
+            "status": 400,
+            "error": "No active editor found",
+        }
+
+        await bridge.stop()
 
     asyncio.run(scenario())
 
@@ -188,7 +225,7 @@ def test_paired_editor_bridge_mutations_publish_remote_updates(tmp_path: Path) -
     asyncio.run(scenario())
 
 
-def test_paired_editor_bridge_rotates_descriptor_and_socket_names_when_session_changes(
+def test_paired_editor_bridge_keeps_descriptor_and_socket_names_stable_when_session_changes(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
@@ -203,8 +240,8 @@ def test_paired_editor_bridge_rotates_descriptor_and_socket_names_when_session_c
 
         first_descriptor_path = bridge.descriptor_path
         first_socket_path = bridge.socket_path
-        assert first_descriptor_path.name == "Yier-thread-a"
-        assert first_socket_path.name == "Yier-thread-a.sock"
+        assert first_descriptor_path.name.startswith("Yier-")
+        assert first_socket_path.name == f"{first_descriptor_path.name}.sock"
         assert first_descriptor_path.exists() is True
         assert first_socket_path.exists() is True
 
@@ -216,10 +253,10 @@ def test_paired_editor_bridge_rotates_descriptor_and_socket_names_when_session_c
             selection_end=0,
         )
 
-        assert first_descriptor_path.exists() is False
-        assert first_socket_path.exists() is False
-        assert bridge.descriptor_path.name == "Yier-thread-b"
-        assert bridge.socket_path.name == "Yier-thread-b.sock"
+        assert first_descriptor_path.exists() is True
+        assert first_socket_path.exists() is True
+        assert bridge.descriptor_path == first_descriptor_path
+        assert bridge.socket_path == first_socket_path
         assert bridge.descriptor_path.exists() is True
         assert bridge.socket_path.exists() is True
 

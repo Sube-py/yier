@@ -734,6 +734,178 @@ def test_chat_service_create_codex_session_uses_native_thread_id(
     assert metadata["codex_work_mode"] == "build"
 
 
+def test_chat_service_build_codex_ipc_conversation_state_prefers_raw_requests_and_runtime_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog())
+
+    project_root = tmp_path / "project"
+    project_root.mkdir(parents=True)
+    service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
+    chat_service = ChatService(
+        project_root=project_root,
+        config_service=service,
+        mcp_manager=FakeMCPManager(),  # type: ignore[arg-type]
+    )
+    codex_backend = chat_service.backends["codex"]
+    assert isinstance(codex_backend, CodexAppServerBackend)
+
+    monkeypatch.setattr(
+        codex_backend,
+        "bootstrap_session",
+        lambda project_path, source="chat", channel_meta=None: {
+            "thread_id": "thread-native-7",
+            "status": "idle",
+            "active_flags": [],
+            "detail": None,
+        },
+    )
+    session_id = chat_service.create_session(backend_id="codex")
+
+    monkeypatch.setattr(
+        codex_backend,
+        "load_thread_state",
+        lambda context: {
+            "thread": {
+                "id": "thread-native-7",
+                "name": "Native title",
+                "source": "appServer",
+                "cwd": str(project_root),
+                "createdAt": 10,
+                "updatedAt": 12,
+                "status": {
+                    "type": "active",
+                    "activeFlags": ["waitingOnApproval"],
+                },
+                "turns": [{"id": "turn-1", "status": "inProgress", "items": []}],
+            },
+            "threadRuntimeStatus": {
+                "type": "active",
+                "activeFlags": ["waitingOnApproval"],
+            },
+        },
+    )
+    monkeypatch.setattr(
+        codex_backend,
+        "build_ipc_turns",
+        lambda context, turns: [
+            {
+                "id": "turn-1",
+                "turnId": "turn-1",
+                "status": "inProgress",
+                "items": [],
+                "params": {"threadId": "thread-native-7", "input": []},
+                "turnStartedAtMs": 1000,
+                "finalAssistantStartedAtMs": None,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        codex_backend,
+        "pending_conversation_requests",
+        lambda context: [
+            {
+                "id": "req-1",
+                "method": "item/commandExecution/requestApproval",
+                "params": {"itemId": "cmd-1"},
+            }
+        ],
+    )
+
+    payload = chat_service.build_codex_ipc_conversation_state(session_id)
+
+    assert payload["requests"] == [
+        {
+            "id": "req-1",
+            "method": "item/commandExecution/requestApproval",
+            "params": {"itemId": "cmd-1"},
+        }
+    ]
+    assert payload["turns"][0]["turnStartedAtMs"] == 1000
+    assert payload["latestCollaborationMode"] == {
+        "mode": "default",
+        "settings": {
+            "model": "",
+            "reasoning_effort": None,
+            "developer_instructions": None,
+        },
+    }
+    assert payload["threadRuntimeStatus"] == {
+        "type": "active",
+        "activeFlags": ["waitingOnApproval"],
+    }
+
+
+def test_chat_service_build_codex_ipc_conversation_state_infers_waiting_on_approval_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog())
+
+    project_root = tmp_path / "project"
+    project_root.mkdir(parents=True)
+    service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
+    chat_service = ChatService(
+        project_root=project_root,
+        config_service=service,
+        mcp_manager=FakeMCPManager(),  # type: ignore[arg-type]
+    )
+    codex_backend = chat_service.backends["codex"]
+    assert isinstance(codex_backend, CodexAppServerBackend)
+
+    monkeypatch.setattr(
+        codex_backend,
+        "bootstrap_session",
+        lambda project_path, source="chat", channel_meta=None: {
+            "thread_id": "thread-native-9",
+            "status": "idle",
+            "active_flags": [],
+            "detail": None,
+        },
+    )
+    session_id = chat_service.create_session(backend_id="codex")
+
+    monkeypatch.setattr(
+        codex_backend,
+        "load_thread_state",
+        lambda context: {
+            "thread": {
+                "id": "thread-native-9",
+                "name": "Native title",
+                "source": "appServer",
+                "cwd": str(project_root),
+                "createdAt": 10,
+                "updatedAt": 12,
+                "turns": [{"id": "turn-1", "status": "inProgress", "items": []}],
+            },
+            "threadRuntimeStatus": {
+                "type": "idle",
+                "activeFlags": [],
+            },
+        },
+    )
+    monkeypatch.setattr(codex_backend, "build_ipc_turns", lambda context, turns: turns)
+    monkeypatch.setattr(
+        codex_backend,
+        "pending_conversation_requests",
+        lambda context: [
+            {
+                "id": "req-1",
+                "method": "item/commandExecution/requestApproval",
+                "params": {"itemId": "cmd-1"},
+            }
+        ],
+    )
+
+    payload = chat_service.build_codex_ipc_conversation_state(session_id)
+
+    assert payload["threadRuntimeStatus"] == {
+        "type": "active",
+        "activeFlags": ["waitingOnApproval"],
+    }
+
+
 def test_chat_service_run_command_tool_supports_shell_pipes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

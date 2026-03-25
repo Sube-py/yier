@@ -6,12 +6,12 @@ from pathlib import Path
 import shlex
 import sys
 import threading
+from time import time
 from typing import TYPE_CHECKING, Any
 
 from codex_app_server import (
     AppServerClient,
     AppServerConfig,
-    TextInput,
     Thread as CodexThread,
     ThreadResumeParams,
     ThreadStartParams,
@@ -84,6 +84,13 @@ class PendingApprovalState:
 
 
 @dataclass(slots=True)
+class TurnSnapshotState:
+    params: dict[str, Any]
+    turn_started_at_ms: int | None = None
+    final_assistant_started_at_ms: int | None = None
+
+
+@dataclass(slots=True)
 class CodexSessionRuntime:
     session_id: str
     client: AppServerClient | None = None
@@ -91,6 +98,7 @@ class CodexSessionRuntime:
     status: str = "idle"
     active_flags: list[str] = field(default_factory=list)
     pending_requests: dict[str, PendingApprovalState] = field(default_factory=dict)
+    turn_snapshots: dict[str, TurnSnapshotState] = field(default_factory=dict)
     assistant_buffers: dict[str, str] = field(default_factory=dict)
     reasoning_buffers: dict[str, dict[str, str]] = field(default_factory=dict)
     plan_buffers: dict[str, str] = field(default_factory=dict)
@@ -220,6 +228,20 @@ class CodexAppServerBackend(ChatBackend):
             if not pending.event.is_set()
         ]
 
+    def pending_conversation_requests(self, context: ChatSessionContext) -> list[dict[str, Any]]:
+        runtime = self._runtimes.get(context.session_id)
+        if runtime is None:
+            return []
+        return [
+            {
+                "id": pending.request_id,
+                "method": pending.method,
+                "params": dict(pending.payload),
+            }
+            for pending in runtime.pending_requests.values()
+            if not pending.event.is_set()
+        ]
+
     async def respond_to_approval(
         self,
         context: ChatSessionContext,
@@ -267,6 +289,40 @@ class CodexAppServerBackend(ChatBackend):
         )
         return self._safe_model_dump(response)
 
+    async def start_turn(
+        self,
+        context: ChatSessionContext,
+        input_payload: list[dict[str, Any]] | dict[str, Any] | str,
+    ) -> dict[str, Any]:
+        runtime = await self._ensure_runtime(context)
+        response = await asyncio.to_thread(
+            self._start_turn_blocking,
+            runtime,
+            context,
+            input_payload,
+        )
+        return self._safe_model_dump(response)
+
+    async def consume_turn_stream(
+        self,
+        context: ChatSessionContext,
+        turn_id: str,
+        emit: StreamEmitter,
+    ) -> str:
+        runtime = await self._ensure_runtime(context)
+        runtime.loop = asyncio.get_running_loop()
+        runtime.emit = emit
+        try:
+            return await asyncio.to_thread(
+                self._consume_turn_stream_blocking,
+                runtime,
+                context,
+                turn_id,
+            )
+        finally:
+            runtime.emit = None
+            runtime.loop = None
+
     async def interrupt_turn(
         self,
         context: ChatSessionContext,
@@ -304,6 +360,47 @@ class CodexAppServerBackend(ChatBackend):
         pending.response = dict(response_payload)
         pending.event.set()
         return True
+
+    def load_thread_state(self, context: ChatSessionContext) -> dict[str, Any]:
+        runtime = self._ensure_runtime_blocking(context)
+        assert runtime.client is not None
+        assert runtime.thread_id is not None
+        response = CodexThread(runtime.client, runtime.thread_id).read(include_turns=True)
+        runtime.status = self._thread_status_value(response.thread.status)
+        runtime.active_flags = self._thread_active_flags(response.thread.status)
+        self.chat_service.update_session_backend_state(
+            context.session_id,
+            {
+                "thread_id": runtime.thread_id,
+                "status": runtime.status,
+                "active_flags": runtime.active_flags,
+                "detail": runtime.detail,
+            },
+        )
+        return {
+            "thread": self._safe_model_dump(response.thread),
+            "threadRuntimeStatus": self._thread_runtime_status_payload(
+                self._safe_model_dump(response.thread.status),
+                runtime.status,
+                runtime.active_flags,
+            ),
+            "detail": runtime.detail,
+        }
+
+    def build_ipc_turns(
+        self,
+        context: ChatSessionContext,
+        turns: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        runtime = self._runtimes.get(context.session_id)
+        return [
+            self._normalize_ipc_turn(
+                context,
+                turn,
+                runtime.turn_snapshots.get(turn.get("id")) if runtime else None,
+            )
+            for turn in turns
+        ]
 
     def load_thread_view(self, context: ChatSessionContext) -> dict[str, Any]:
         runtime = self._ensure_runtime_blocking(context)
@@ -459,36 +556,98 @@ class CodexAppServerBackend(ChatBackend):
         context: ChatSessionContext,
         user_message: str,
     ) -> str:
+        response = self._start_turn_blocking(runtime, context, user_message)
+        turn_id = self._response_turn_id(response)
+        if not turn_id:
+            raise RuntimeError("Codex turn_start response did not include a turn id.")
+        return self._consume_turn_stream_blocking(runtime, context, turn_id)
+
+    def _start_turn_blocking(
+        self,
+        runtime: CodexSessionRuntime,
+        context: ChatSessionContext,
+        input_payload: list[dict[str, Any]] | dict[str, Any] | str,
+    ) -> Any:
         assert runtime.client is not None
         assert runtime.thread_id is not None
         runtime.status = "active"
         runtime.detail = None
-        turn_input = user_message
-        if self._codex_work_mode(context) == "plan":
-            turn_input = f"{PLAN_MODE_PROMPT}\n\nUser request:\n{user_message}"
-        turn_handle = CodexThread(runtime.client, runtime.thread_id).turn(
-            TextInput(turn_input),
-            **self._turn_params(context),
+        turn_input = self._normalize_turn_input_payload(context, input_payload)
+        response = runtime.client.turn_start(
+            runtime.thread_id,
+            turn_input,
+            params=self._turn_params(context),
         )
-        turn_id = turn_handle.id
+        turn_id = self._response_turn_id(response)
+        if not turn_id:
+            raise RuntimeError("Codex turn_start response did not include a turn id.")
+        runtime.turn_snapshots[turn_id] = TurnSnapshotState(
+            params=self._build_turn_state_params(context, turn_input),
+            turn_started_at_ms=int(time() * 1000),
+            final_assistant_started_at_ms=None,
+        )
+        self.chat_service.update_session_backend_state(
+            context.session_id,
+            {
+                "thread_id": runtime.thread_id,
+                "status": runtime.status,
+                "active_flags": runtime.active_flags,
+                "detail": runtime.detail,
+            },
+        )
+        return response
+
+    def _consume_turn_stream_blocking(
+        self,
+        runtime: CodexSessionRuntime,
+        context: ChatSessionContext,
+        turn_id: str,
+    ) -> str:
+        assert runtime.client is not None
+        assert runtime.thread_id is not None
         finish_reason = "stop"
+        runtime.client.acquire_turn_consumer(turn_id)
+        try:
+            while True:
+                notification = runtime.client.next_notification()
+                notification_thread_id = self._notification_value(notification, "thread_id")
+                if notification_thread_id and notification_thread_id != runtime.thread_id:
+                    continue
+                if not self._notification_belongs_to_turn(notification, turn_id):
+                    if notification.method.startswith("thread/"):
+                        self._handle_thread_notification(runtime, context, notification)
+                    continue
 
-        for notification in turn_handle.stream():
-            notification_thread_id = self._notification_value(notification, "thread_id")
-            if notification_thread_id and notification_thread_id != runtime.thread_id:
-                continue
-            if not self._notification_belongs_to_turn(notification, turn_id):
-                if notification.method.startswith("thread/"):
-                    self._handle_thread_notification(runtime, context, notification)
-                continue
+                if notification.method == "turn/completed":
+                    finish_reason = self._handle_turn_completed(runtime, context, notification)
+                    break
 
-            if notification.method == "turn/completed":
-                finish_reason = self._handle_turn_completed(runtime, context, notification)
-                break
-
-            self._handle_turn_notification(runtime, context, notification)
+                self._handle_turn_notification(runtime, context, notification)
+        finally:
+            runtime.client.release_turn_consumer(turn_id)
 
         return finish_reason
+
+    def _normalize_turn_input_payload(
+        self,
+        context: ChatSessionContext,
+        input_payload: list[dict[str, Any]] | dict[str, Any] | str,
+    ) -> list[dict[str, Any]] | dict[str, Any] | str:
+        if self._codex_work_mode(context) != "plan":
+            return input_payload
+
+        plan_text = f"{PLAN_MODE_PROMPT}\n\nUser request:"
+        if isinstance(input_payload, str):
+            return f"{plan_text}\n{input_payload}"
+        if isinstance(input_payload, dict):
+            return [
+                {"type": "text", "text": plan_text},
+                input_payload,
+            ]
+        return [
+            {"type": "text", "text": plan_text},
+            *input_payload,
+        ]
 
     def _handle_thread_notification(
         self,
@@ -525,6 +684,17 @@ class CodexAppServerBackend(ChatBackend):
         if notification.method == "turn/started":
             runtime.status = "active"
             runtime.active_flags = []
+            turn = getattr(notification.payload, "turn", None)
+            turn_id = getattr(turn, "id", None)
+            if isinstance(turn_id, str) and turn_id:
+                snapshot = runtime.turn_snapshots.get(turn_id)
+                if snapshot is None:
+                    snapshot = TurnSnapshotState(
+                        params=self._default_turn_state_params(context),
+                    )
+                    runtime.turn_snapshots[turn_id] = snapshot
+                if snapshot.turn_started_at_ms is None:
+                    snapshot.turn_started_at_ms = int(time() * 1000)
             self.chat_service.update_session_backend_state(
                 context.session_id,
                 {"status": runtime.status, "active_flags": runtime.active_flags},
@@ -574,8 +744,13 @@ class CodexAppServerBackend(ChatBackend):
         if notification.method == "item/agentMessage/delta":
             item_id = self._notification_value(notification, "item_id")
             delta = self._notification_value(notification, "delta")
+            turn_id = self._notification_value(notification, "turn_id")
             if not isinstance(item_id, str) or not isinstance(delta, str):
                 return
+            if isinstance(turn_id, str) and turn_id:
+                snapshot = runtime.turn_snapshots.get(turn_id)
+                if snapshot is not None and snapshot.final_assistant_started_at_ms is None:
+                    snapshot.final_assistant_started_at_ms = int(time() * 1000)
             runtime.assistant_buffers[item_id] = f"{runtime.assistant_buffers.get(item_id, '')}{delta}"
             self._emit_from_thread(
                 runtime,
@@ -694,6 +869,15 @@ class CodexAppServerBackend(ChatBackend):
             item = self._unwrap_thread_item(getattr(notification.payload, "item", None))
             if item is None:
                 return
+            turn_id = self._notification_value(notification, "turn_id")
+            if (
+                getattr(item, "type", "") == "agentMessage"
+                and isinstance(turn_id, str)
+                and turn_id
+            ):
+                snapshot = runtime.turn_snapshots.get(turn_id)
+                if snapshot is not None and snapshot.final_assistant_started_at_ms is None:
+                    snapshot.final_assistant_started_at_ms = int(time() * 1000)
             self._handle_item_completed(runtime, context, item)
             return
 
@@ -1270,6 +1454,133 @@ class CodexAppServerBackend(ChatBackend):
             }
         }
 
+    def _thread_runtime_status_payload(
+        self,
+        raw_status: Any,
+        fallback_status: str,
+        fallback_active_flags: list[str],
+    ) -> dict[str, Any]:
+        payload = raw_status.get("root") if isinstance(raw_status, dict) else None
+        if not isinstance(payload, dict):
+            payload = raw_status
+        if isinstance(payload, dict):
+            status_type = payload.get("type")
+            active_flags = payload.get("activeFlags")
+            if not isinstance(active_flags, list):
+                active_flags = payload.get("active_flags")
+            if isinstance(status_type, str):
+                return {
+                    "type": status_type,
+                    "activeFlags": (
+                        [
+                            str(
+                                flag.get("value")
+                                if isinstance(flag, dict) and "value" in flag
+                                else flag
+                            )
+                            for flag in active_flags
+                        ]
+                        if isinstance(active_flags, list)
+                        else []
+                    ),
+                }
+        return {
+            "type": fallback_status,
+            "activeFlags": list(fallback_active_flags),
+        }
+
+    def _normalize_ipc_turn(
+        self,
+        context: ChatSessionContext,
+        turn: dict[str, Any],
+        snapshot: TurnSnapshotState | None,
+    ) -> dict[str, Any]:
+        normalized = dict(turn)
+        turn_id = turn.get("id")
+        if isinstance(turn_id, str) and turn_id:
+            normalized["turnId"] = turn_id
+        params = None
+        if snapshot is not None:
+            params = dict(snapshot.params)
+            normalized["turnStartedAtMs"] = snapshot.turn_started_at_ms
+            normalized["finalAssistantStartedAtMs"] = snapshot.final_assistant_started_at_ms
+        else:
+            normalized["turnStartedAtMs"] = turn.get("turnStartedAtMs")
+            normalized["finalAssistantStartedAtMs"] = turn.get("finalAssistantStartedAtMs")
+            params = self._fallback_turn_state_params(context, turn)
+        normalized["params"] = params
+        return normalized
+
+    def _build_turn_state_params(
+        self,
+        context: ChatSessionContext,
+        input_payload: list[dict[str, Any]] | dict[str, Any] | str,
+    ) -> dict[str, Any]:
+        turn_params = self._turn_params(context)
+        return {
+            "threadId": context.backend_state.get("thread_id") or context.session_id,
+            "input": self._normalize_input_items_for_state(input_payload),
+            "cwd": turn_params.get("cwd"),
+            "approvalPolicy": turn_params.get("approval_policy"),
+            "approvalsReviewer": turn_params.get("approvals_reviewer"),
+            "sandboxPolicy": turn_params.get("sandbox_policy"),
+            "model": turn_params.get("model"),
+            "serviceTier": turn_params.get("service_tier"),
+            "effort": turn_params.get("effort"),
+            "summary": "none",
+            "personality": turn_params.get("personality"),
+            "outputSchema": None,
+            "collaborationMode": self._context_collaboration_mode(
+                context,
+                default_model=turn_params.get("model"),
+                default_effort=turn_params.get("effort"),
+            ),
+            "attachments": [],
+        }
+
+    def _default_turn_state_params(self, context: ChatSessionContext) -> dict[str, Any]:
+        return self._build_turn_state_params(context, [])
+
+    def _fallback_turn_state_params(
+        self,
+        context: ChatSessionContext,
+        turn: dict[str, Any],
+    ) -> dict[str, Any]:
+        params = self._default_turn_state_params(context)
+        input_items = self._turn_input_items_from_thread_items(turn.get("items"))
+        if input_items:
+            params["input"] = input_items
+        return params
+
+    def _normalize_input_items_for_state(
+        self,
+        input_payload: list[dict[str, Any]] | dict[str, Any] | str,
+    ) -> list[dict[str, Any]]:
+        if isinstance(input_payload, str):
+            return [{"type": "text", "text": input_payload}]
+        if isinstance(input_payload, dict):
+            return [dict(input_payload)]
+        normalized: list[dict[str, Any]] = []
+        for item in input_payload:
+            if isinstance(item, dict):
+                normalized.append(dict(item))
+        return normalized
+
+    def _turn_input_items_from_thread_items(self, items: Any) -> list[dict[str, Any]]:
+        if not isinstance(items, list):
+            return []
+        for raw_item in items:
+            item = self._unwrap_thread_item(raw_item)
+            if not isinstance(item, dict):
+                dumped = self._safe_model_dump(item)
+                item = dumped if isinstance(dumped, dict) else {}
+            if item.get("type") != "userMessage":
+                continue
+            content = item.get("content")
+            if isinstance(content, list):
+                return [entry for entry in content if isinstance(entry, dict)]
+        return []
+
     async def _close_runtime(self, runtime: CodexSessionRuntime) -> None:
         for pending in runtime.pending_requests.values():
             pending.decision = "cancel"
@@ -1619,7 +1930,9 @@ class CodexAppServerBackend(ChatBackend):
 
     def _thread_active_flags(self, status: Any) -> list[str]:
         root = getattr(status, "root", status)
-        raw_flags = getattr(root, "active_flags", [])
+        raw_flags = getattr(root, "active_flags", None)
+        if raw_flags is None:
+            raw_flags = getattr(root, "activeFlags", [])
         return [getattr(flag, "value", str(flag)) for flag in raw_flags]
 
     def _request_id_string(self, request_id: Any) -> str:
@@ -1637,6 +1950,65 @@ class CodexAppServerBackend(ChatBackend):
         if not isinstance(value, str):
             return ""
         return value.strip()
+
+    def _context_collaboration_mode(
+        self,
+        context: ChatSessionContext,
+        *,
+        default_model: Any,
+        default_effort: Any,
+    ) -> dict[str, Any]:
+        raw_value = context.backend_state.get("collaboration_mode")
+        default_settings = {
+            "model": default_model if isinstance(default_model, str) else "",
+            "reasoning_effort": (
+                default_effort if default_effort is None or isinstance(default_effort, str) else None
+            ),
+            "developer_instructions": None,
+        }
+        default_mode = {
+            "mode": "default",
+            "settings": default_settings,
+        }
+        if isinstance(raw_value, dict):
+            mode = raw_value.get("mode")
+            settings = raw_value.get("settings")
+            if isinstance(mode, str) and mode.strip():
+                normalized = dict(raw_value)
+                normalized["mode"] = mode.strip()
+                merged_settings = dict(default_settings)
+                if isinstance(settings, dict):
+                    model = settings.get("model")
+                    if isinstance(model, str):
+                        merged_settings["model"] = model
+                    reasoning_effort = settings.get("reasoning_effort")
+                    if reasoning_effort is None or isinstance(reasoning_effort, str):
+                        merged_settings["reasoning_effort"] = reasoning_effort
+                    developer_instructions = settings.get("developer_instructions")
+                    if developer_instructions is None or isinstance(developer_instructions, str):
+                        merged_settings["developer_instructions"] = developer_instructions
+                normalized["settings"] = merged_settings
+                return normalized
+        if isinstance(raw_value, str) and raw_value.strip():
+            return {
+                "mode": raw_value.strip(),
+                "settings": default_settings,
+            }
+        return default_mode
+
+    def _response_turn_id(self, response: Any) -> str | None:
+        turn = getattr(response, "turn", None)
+        turn_id = getattr(turn, "id", None)
+        if isinstance(turn_id, str) and turn_id:
+            return turn_id
+        response_payload = self._safe_model_dump(response)
+        raw_turn = response_payload.get("turn")
+        if not isinstance(raw_turn, dict):
+            return None
+        raw_turn_id = raw_turn.get("id")
+        if isinstance(raw_turn_id, str) and raw_turn_id:
+            return raw_turn_id
+        return None
 
     def _safe_model_dump(self, value: Any) -> dict[str, Any]:
         if isinstance(value, dict):

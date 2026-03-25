@@ -64,7 +64,8 @@ class _FakeFollowupQueue:
 
 class FakeChatService:
     def __init__(self) -> None:
-        self.started_turns: list[tuple[str, str]] = []
+        self.started_turns: list[tuple[str, list[dict[str, Any]] | dict[str, Any] | str]] = []
+        self.interrupted_turns: list[tuple[str, str | None]] = []
         self.responded_raw_requests: list[tuple[str, str, dict[str, Any]]] = []
         self.updated_backend_states: list[tuple[str, dict[str, Any]]] = []
         self.followup_queue = _FakeFollowupQueue(["Review logs", "Push update"])
@@ -77,8 +78,19 @@ class FakeChatService:
             raise RuntimeError("unknown conversation")
         return conversation_id
 
-    async def start_codex_turn_in_background(self, session_id: str, prompt: str) -> None:
+    async def start_codex_turn_in_background(
+        self,
+        session_id: str,
+        prompt: list[dict[str, Any]] | dict[str, Any] | str,
+    ) -> dict[str, Any]:
         self.started_turns.append((session_id, prompt))
+        return {
+            "turn": {
+                "id": "turn-started-1",
+                "status": "inProgress",
+                "items": [],
+            }
+        }
 
     async def steer_codex_turn(
         self,
@@ -99,6 +111,7 @@ class FakeChatService:
         session_id: str,
         turn_id: str | None,
     ) -> dict[str, Any]:
+        self.interrupted_turns.append((session_id, turn_id))
         return {
             "session_id": session_id,
             "turn_id": turn_id,
@@ -161,7 +174,14 @@ class FakeChatService:
             "latestModel": "gpt-test",
             "latestReasoningEffort": None,
             "previousTurnModel": None,
-            "latestCollaborationMode": "build",
+            "latestCollaborationMode": {
+                "mode": "default",
+                "settings": {
+                    "model": "gpt-test",
+                    "reasoning_effort": None,
+                    "developer_instructions": None,
+                },
+            },
             "hasUnreadTurn": False,
             "rolloutPath": "",
             "gitInfo": None,
@@ -169,7 +189,10 @@ class FakeChatService:
             "latestTokenUsageInfo": None,
             "cwd": "/tmp/project",
             "threadId": session_id,
-            "threadRuntimeStatus": "active",
+            "threadRuntimeStatus": {
+                "type": "active",
+                "activeFlags": ["streaming"],
+            },
         }
 
     def build_codex_ipc_queued_followups(self, session_id: str) -> list[dict[str, Any]]:
@@ -294,8 +317,7 @@ def test_codex_thread_follower_bridge_handles_start_turn_and_broadcast(tmp_path:
             assert request_response["type"] == "response"
             assert request_response["requestId"] == "request-1"
             assert request_response["resultType"] == "success"
-            assert request_response["result"]["result"]["ok"] is True
-            assert request_response["result"]["result"]["conversationId"] == "thread-1"
+            assert request_response["result"]["result"]["turn"]["id"] == "turn-started-1"
             assert fake_chat_service.started_turns == [("thread-1", "Implement syncing")]
 
             await bridge.notify_stream_event("run_started", {"session_id": "thread-1"})
@@ -313,8 +335,187 @@ def test_codex_thread_follower_bridge_handles_start_turn_and_broadcast(tmp_path:
             assert broadcast["type"] == "broadcast"
             assert broadcast["method"] == "thread-stream-state-changed"
             assert broadcast["params"]["conversationId"] == "thread-1"
-            assert broadcast["params"]["change"]["conversationState"]["threadRuntimeStatus"] == "active"
+            assert broadcast["params"]["change"]["conversationState"]["threadRuntimeStatus"] == {
+                "type": "active",
+                "activeFlags": ["streaming"],
+            }
             assert broadcast["params"]["change"]["conversationState"]["title"] == "Thread 1"
+        finally:
+            await bridge.stop()
+            if server_writer is not None:
+                server_writer.close()
+                await server_writer.wait_closed()
+            server.close()
+            socket_path.unlink(missing_ok=True)
+
+    asyncio.run(scenario())
+
+
+def test_codex_thread_follower_bridge_accepts_object_collaboration_mode() -> None:
+    async def scenario() -> None:
+        socket_path = _test_socket_path()
+        messages_from_client: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        client_ready = asyncio.Event()
+        server_writer: asyncio.StreamWriter | None = None
+
+        async def handle_connection(
+            reader: asyncio.StreamReader,
+            writer: asyncio.StreamWriter,
+        ) -> None:
+            nonlocal server_writer
+            initialize_request = await _read_frame(reader)
+            server_writer = writer
+            await _send_frame(
+                writer,
+                {
+                    "type": "response",
+                    "requestId": initialize_request["requestId"],
+                    "resultType": "success",
+                    "method": "initialize",
+                    "handledByClientId": "router-client",
+                    "result": {"clientId": "client-yier"},
+                },
+            )
+            client_ready.set()
+            while True:
+                try:
+                    message = await _read_frame(reader)
+                except asyncio.IncompleteReadError:
+                    break
+                await messages_from_client.put(message)
+
+        server = await asyncio.start_unix_server(handle_connection, path=socket_path)
+        fake_chat_service = FakeChatService()
+        bridge = CodexThreadFollowerBridge(
+            chat_service=fake_chat_service,  # type: ignore[arg-type]
+            socket_path=socket_path,
+        )
+
+        try:
+            await bridge.start()
+            assert await bridge.client.wait_until_connected(timeout=2.0)
+            await asyncio.wait_for(client_ready.wait(), timeout=2.0)
+            assert server_writer is not None
+
+            await _send_frame(
+                server_writer,
+                {
+                    "type": "request",
+                    "requestId": "set-collab-1",
+                    "method": "thread-follower-set-collaboration-mode",
+                    "params": {
+                        "conversationId": "thread-1",
+                        "collaborationMode": {
+                            "mode": "default",
+                            "settings": {
+                                "model": "gpt-5.2-codex",
+                                "reasoning_effort": "medium",
+                                "developer_instructions": None,
+                            },
+                        },
+                    },
+                    "version": 1,
+                },
+            )
+
+            request_response = await _wait_for_message(
+                messages_from_client,
+                predicate=lambda message: message.get("type") == "response"
+                and message.get("requestId") == "set-collab-1",
+            )
+            assert request_response["resultType"] == "success"
+            assert request_response["result"] == {"ok": True}
+            assert fake_chat_service.updated_backend_states[-1] == (
+                "thread-1",
+                {
+                    "collaboration_mode": {
+                        "mode": "default",
+                        "settings": {
+                            "model": "gpt-5.2-codex",
+                            "reasoning_effort": "medium",
+                            "developer_instructions": None,
+                        },
+                    }
+                },
+            )
+        finally:
+            await bridge.stop()
+            if server_writer is not None:
+                server_writer.close()
+                await server_writer.wait_closed()
+            server.close()
+            socket_path.unlink(missing_ok=True)
+
+    asyncio.run(scenario())
+
+
+def test_codex_thread_follower_bridge_interrupt_turn_returns_ok_without_extra_payload() -> None:
+    async def scenario() -> None:
+        socket_path = _test_socket_path()
+        messages_from_client: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        client_ready = asyncio.Event()
+        server_writer: asyncio.StreamWriter | None = None
+
+        async def handle_connection(
+            reader: asyncio.StreamReader,
+            writer: asyncio.StreamWriter,
+        ) -> None:
+            nonlocal server_writer
+            initialize_request = await _read_frame(reader)
+            server_writer = writer
+            await _send_frame(
+                writer,
+                {
+                    "type": "response",
+                    "requestId": initialize_request["requestId"],
+                    "resultType": "success",
+                    "method": "initialize",
+                    "handledByClientId": "router-client",
+                    "result": {"clientId": "client-yier"},
+                },
+            )
+            client_ready.set()
+            while True:
+                try:
+                    message = await _read_frame(reader)
+                except asyncio.IncompleteReadError:
+                    break
+                await messages_from_client.put(message)
+
+        server = await asyncio.start_unix_server(handle_connection, path=socket_path)
+        fake_chat_service = FakeChatService()
+        bridge = CodexThreadFollowerBridge(
+            chat_service=fake_chat_service,  # type: ignore[arg-type]
+            socket_path=socket_path,
+        )
+
+        try:
+            await bridge.start()
+            assert await bridge.client.wait_until_connected(timeout=2.0)
+            await asyncio.wait_for(client_ready.wait(), timeout=2.0)
+            assert server_writer is not None
+
+            await _send_frame(
+                server_writer,
+                {
+                    "type": "request",
+                    "requestId": "interrupt-request-1",
+                    "method": "thread-follower-interrupt-turn",
+                    "params": {
+                        "conversationId": "thread-1",
+                    },
+                    "version": 1,
+                },
+            )
+
+            request_response = await _wait_for_message(
+                messages_from_client,
+                predicate=lambda message: message.get("type") == "response"
+                and message.get("requestId") == "interrupt-request-1",
+            )
+            assert request_response["resultType"] == "success"
+            assert request_response["result"] == {"ok": True}
+            assert fake_chat_service.interrupted_turns == [("thread-1", None)]
         finally:
             await bridge.stop()
             if server_writer is not None:

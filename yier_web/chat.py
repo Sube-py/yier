@@ -783,10 +783,11 @@ class ChatService:
     async def start_codex_turn_in_background(
         self,
         session_id: str,
-        prompt: str,
-    ) -> None:
+        prompt: list[dict[str, Any]] | dict[str, Any] | str,
+    ) -> dict[str, Any]:
         context = self.get_session_context(session_id)
-        if context.backend_id != "codex":
+        backend = self.backends.get(context.backend_id)
+        if not isinstance(backend, CodexAppServerBackend):
             raise RuntimeError("Only Codex sessions can start IPC-controlled turns.")
 
         existing_task = self._ipc_stream_tasks.get(session_id)
@@ -797,8 +798,16 @@ class ChatService:
         if session_lock.locked():
             raise RuntimeError("Codex turn is already running for this session.")
 
+        start_response = await backend.start_turn(context, prompt)
+        turn = start_response.get("turn")
+        if not isinstance(turn, dict):
+            raise RuntimeError("Codex start turn response did not include a turn payload.")
+        turn_id = turn.get("id")
+        if not isinstance(turn_id, str) or not turn_id:
+            raise RuntimeError("Codex start turn response did not include a turn id.")
+
         task = asyncio.create_task(
-            self._consume_session_stream_to_event_broker(session_id, prompt),
+            self._consume_codex_turn_stream_to_event_broker(session_id, turn_id),
             name=f"codex-ipc-turn:{session_id}",
         )
         self._ipc_stream_tasks[session_id] = task
@@ -821,14 +830,23 @@ class ChatService:
                 )
 
         task.add_done_callback(cleanup)
+        return start_response
 
-    async def _consume_session_stream_to_event_broker(
+    async def _consume_codex_turn_stream_to_event_broker(
         self,
         session_id: str,
-        prompt: str,
+        turn_id: str,
     ) -> None:
-        async for item in self.stream_chat(session_id, prompt):
-            await self.event_broker.publish(item["event"], item["data"])
+        context = self.get_session_context(session_id)
+        backend = self.backends.get(context.backend_id)
+        if not isinstance(backend, CodexAppServerBackend):
+            raise RuntimeError("Codex backend is not available.")
+        async with self._session_lock(session_id):
+            await backend.consume_turn_stream(
+                context,
+                turn_id,
+                self.event_broker.publish,
+            )
 
     async def steer_codex_turn(
         self,
@@ -871,6 +889,238 @@ class ChatService:
     def build_codex_ipc_conversation_state(self, session_id: str) -> dict[str, Any]:
         metadata = self.get_session_metadata(session_id)
         runtime = self.get_backend_runtime(session_id)
+        backend_state = metadata["backend_state"]
+        current_timestamp_ms = int(time() * 1000)
+        native_state = self._native_codex_ipc_conversation_state(session_id)
+        latest_model = backend_state.get("model") or ""
+        latest_reasoning_effort = backend_state.get("reasoning_effort")
+
+        if native_state is not None:
+            backend = native_state["backend"]
+            thread = native_state["thread"]
+            turns = backend.build_ipc_turns(
+                self.get_session_context(session_id),
+                [turn for turn in thread.get("turns", []) if isinstance(turn, dict)],
+            )
+            created_at_ms = int(thread.get("createdAt", 0) or 0) * 1000 or current_timestamp_ms
+            updated_at_ms = int(thread.get("updatedAt", 0) or 0) * 1000 or current_timestamp_ms
+            title = thread.get("name") or metadata.get("title")
+            source = thread.get("source") or metadata.get("source", "chat")
+            cwd = thread.get("cwd") or metadata.get("project_path")
+            git_info = thread.get("gitInfo", backend_state.get("git_info"))
+            thread_runtime_status = native_state.get("threadRuntimeStatus") or {
+                "type": runtime.status,
+                "activeFlags": list(runtime.active_flags),
+            }
+            extra_state = {
+                "preview": thread.get("preview"),
+                "cliVersion": thread.get("cliVersion"),
+                "ephemeral": thread.get("ephemeral"),
+                "modelProvider": thread.get("modelProvider"),
+                "path": thread.get("path"),
+                "agentNickname": thread.get("agentNickname"),
+                "agentRole": thread.get("agentRole"),
+            }
+        else:
+            turns = self._build_fallback_codex_ipc_turns(session_id, runtime.status)
+            updated_at = metadata.get("updated_at")
+            created_at_ms = (
+                int(updated_at * 1000)
+                if isinstance(updated_at, (int, float))
+                else current_timestamp_ms
+            )
+            updated_at_ms = created_at_ms
+            title = metadata.get("title")
+            source = metadata.get("source", "chat")
+            cwd = metadata.get("project_path")
+            git_info = backend_state.get("git_info")
+            thread_runtime_status = {
+                "type": runtime.status,
+                "activeFlags": list(runtime.active_flags),
+            }
+            extra_state = {}
+
+        pending_requests = self._codex_ipc_requests(session_id)
+        latest_collaboration_mode = self._codex_ipc_collaboration_mode(
+            backend_state.get("collaboration_mode"),
+            latest_model=latest_model,
+            latest_reasoning_effort=latest_reasoning_effort,
+        )
+        thread_runtime_status = self._codex_ipc_thread_runtime_status(
+            thread_runtime_status,
+            fallback_type=runtime.status,
+            fallback_active_flags=list(runtime.active_flags),
+            pending_requests=pending_requests,
+        )
+
+        conversation_state = {
+            "id": session_id,
+            "hostId": "local",
+            "turns": turns,
+            "pendingSteers": [],
+            "requests": pending_requests,
+            "createdAt": created_at_ms,
+            "updatedAt": updated_at_ms,
+            "title": title,
+            "source": source,
+            "latestModel": latest_model,
+            "latestReasoningEffort": latest_reasoning_effort,
+            "previousTurnModel": None,
+            "latestCollaborationMode": latest_collaboration_mode,
+            "hasUnreadTurn": False,
+            "rolloutPath": backend_state.get("rollout_path") or "",
+            "gitInfo": git_info,
+            "resumeState": backend_state.get("resume_state") or "resumed",
+            "latestTokenUsageInfo": backend_state.get("latest_token_usage_info"),
+            "cwd": cwd,
+            "threadId": runtime.thread_id or session_id,
+            "threadRuntimeStatus": thread_runtime_status,
+        }
+        for key, value in extra_state.items():
+            if value is not None:
+                conversation_state[key] = value
+        return conversation_state
+
+    def _native_codex_ipc_conversation_state(self, session_id: str) -> dict[str, Any] | None:
+        context = self.get_session_context(session_id)
+        if context.backend_id != "codex":
+            return None
+        backend = self.backends.get(context.backend_id)
+        if not isinstance(backend, CodexAppServerBackend):
+            return None
+        thread_id = context.backend_state.get("thread_id")
+        if not isinstance(thread_id, str) or not thread_id:
+            return None
+        try:
+            native_state = backend.load_thread_state(context)
+        except Exception:
+            return None
+        thread = native_state.get("thread")
+        if not isinstance(thread, dict):
+            return None
+        return {
+            **native_state,
+            "backend": backend,
+        }
+
+    def _codex_ipc_requests(self, session_id: str) -> list[dict[str, Any]]:
+        context = self.get_session_context(session_id)
+        backend = self.backends.get(context.backend_id)
+        if isinstance(backend, CodexAppServerBackend):
+            raw_requests = backend.pending_conversation_requests(context)
+            if raw_requests:
+                return raw_requests
+        return [
+            approval.model_dump(mode="json")
+            for approval in self.get_pending_approvals(session_id)
+        ]
+
+    def _codex_ipc_collaboration_mode(
+        self,
+        value: Any,
+        *,
+        latest_model: str,
+        latest_reasoning_effort: Any,
+    ) -> dict[str, Any]:
+        default_settings = {
+            "model": latest_model,
+            "reasoning_effort": (
+                latest_reasoning_effort if latest_reasoning_effort is None else str(latest_reasoning_effort)
+            ),
+            "developer_instructions": None,
+        }
+        default_mode = {
+            "mode": "default",
+            "settings": default_settings,
+        }
+        if isinstance(value, dict):
+            mode = value.get("mode")
+            settings = value.get("settings")
+            if isinstance(mode, str) and mode.strip():
+                normalized = dict(value)
+                normalized["mode"] = mode.strip()
+                merged_settings = dict(default_settings)
+                if isinstance(settings, dict):
+                    model = settings.get("model")
+                    if isinstance(model, str):
+                        merged_settings["model"] = model
+                    reasoning_effort = settings.get("reasoning_effort")
+                    if reasoning_effort is None or isinstance(reasoning_effort, str):
+                        merged_settings["reasoning_effort"] = reasoning_effort
+                    developer_instructions = settings.get("developer_instructions")
+                    if developer_instructions is None or isinstance(developer_instructions, str):
+                        merged_settings["developer_instructions"] = developer_instructions
+                normalized["settings"] = merged_settings
+                return normalized
+        if isinstance(value, str) and value.strip():
+            return {
+                "mode": value.strip(),
+                "settings": default_settings,
+            }
+        return default_mode
+
+    def _codex_ipc_thread_runtime_status(
+        self,
+        value: Any,
+        *,
+        fallback_type: str,
+        fallback_active_flags: list[str],
+        pending_requests: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        root = value.get("root") if isinstance(value, dict) else None
+        payload = root if isinstance(root, dict) else value
+        status_type = fallback_type
+        active_flags = list(fallback_active_flags)
+        if isinstance(payload, dict):
+            raw_type = payload.get("type")
+            if isinstance(raw_type, str) and raw_type:
+                status_type = raw_type
+            raw_active_flags = payload.get("activeFlags")
+            if not isinstance(raw_active_flags, list):
+                raw_active_flags = payload.get("active_flags")
+            if isinstance(raw_active_flags, list):
+                active_flags = [
+                    str(flag.get("value") if isinstance(flag, dict) and "value" in flag else flag)
+                    for flag in raw_active_flags
+                ]
+        elif isinstance(payload, str) and payload:
+            status_type = payload
+
+        if self._codex_ipc_has_waiting_on_approval_request(pending_requests):
+            if status_type in {"", "idle"}:
+                status_type = "active"
+            if "waitingOnApproval" not in active_flags:
+                active_flags.append("waitingOnApproval")
+
+        return {
+            "type": status_type or fallback_type,
+            "activeFlags": active_flags,
+        }
+
+    def _codex_ipc_has_waiting_on_approval_request(
+        self,
+        pending_requests: list[dict[str, Any]],
+    ) -> bool:
+        waiting_methods = {
+            "item/fileChange/requestApproval",
+            "item/commandExecution/requestApproval",
+            "item/permissions/requestApproval",
+            "mcpServer/elicitation/request",
+            "elicitation/create",
+        }
+        for request in pending_requests:
+            if not isinstance(request, dict):
+                continue
+            method = request.get("method")
+            if isinstance(method, str) and method in waiting_methods:
+                return True
+        return False
+
+    def _build_fallback_codex_ipc_turns(
+        self,
+        session_id: str,
+        runtime_status: str,
+    ) -> list[dict[str, Any]]:
         transcript = self.transcript_store.get_session_messages(session_id) or []
         turns: list[dict[str, Any]] = []
         current_turn: dict[str, Any] | None = None
@@ -887,17 +1137,16 @@ class ChatService:
                     turns.append(current_turn)
                 turn_index += 1
                 current_turn = {
+                    "id": f"{session_id}:turn:{turn_index}",
                     "turnId": f"{session_id}:turn:{turn_index}",
                     "status": "completed",
                     "items": [
                         {
+                            "id": f"{session_id}:turn:{turn_index}:user",
                             "type": "userMessage",
                             "content": [{"type": "text", "text": content}],
                         }
                     ],
-                    "params": {
-                        "input": [{"type": "text", "text": content}],
-                    },
                     "turnStartedAtMs": current_timestamp_ms,
                     "finalAssistantStartedAtMs": None,
                 }
@@ -907,53 +1156,28 @@ class ChatService:
             if current_turn is None:
                 turn_index += 1
                 current_turn = {
+                    "id": f"{session_id}:turn:{turn_index}",
                     "turnId": f"{session_id}:turn:{turn_index}",
                     "status": "completed",
                     "items": [],
-                    "params": {"input": []},
                     "turnStartedAtMs": current_timestamp_ms,
                     "finalAssistantStartedAtMs": current_timestamp_ms,
                 }
-            current_turn["items"].append({"type": "agentMessage", "text": content})
+            current_turn["items"].append(
+                {
+                    "id": f"{session_id}:turn:{turn_index}:assistant:{len(current_turn['items'])}",
+                    "type": "agentMessage",
+                    "text": content,
+                }
+            )
             if current_turn.get("finalAssistantStartedAtMs") is None:
                 current_turn["finalAssistantStartedAtMs"] = current_timestamp_ms
 
         if current_turn is not None:
-            if runtime.status == "active":
+            if runtime_status == "active":
                 current_turn["status"] = "inProgress"
             turns.append(current_turn)
-
-        pending_requests = [
-            approval.model_dump(mode="json")
-            for approval in self.get_pending_approvals(session_id)
-        ]
-        backend_state = metadata["backend_state"]
-        updated_at = metadata.get("updated_at")
-        updated_at_ms = int(updated_at * 1000) if isinstance(updated_at, (int, float)) else current_timestamp_ms
-
-        return {
-            "id": session_id,
-            "hostId": "local",
-            "turns": turns,
-            "pendingSteers": [],
-            "requests": pending_requests,
-            "createdAt": updated_at_ms,
-            "updatedAt": updated_at_ms,
-            "title": metadata.get("title"),
-            "source": metadata.get("source", "chat"),
-            "latestModel": backend_state.get("model") or "",
-            "latestReasoningEffort": backend_state.get("reasoning_effort"),
-            "previousTurnModel": None,
-            "latestCollaborationMode": backend_state.get("collaboration_mode") or "build",
-            "hasUnreadTurn": False,
-            "rolloutPath": backend_state.get("rollout_path") or "",
-            "gitInfo": backend_state.get("git_info"),
-            "resumeState": backend_state.get("resume_state") or "resumed",
-            "latestTokenUsageInfo": backend_state.get("latest_token_usage_info"),
-            "cwd": metadata.get("project_path"),
-            "threadId": runtime.thread_id or session_id,
-            "threadRuntimeStatus": runtime.status,
-        }
+        return turns
 
     def build_codex_ipc_queued_followups(self, session_id: str) -> list[dict[str, Any]]:
         metadata = self.get_session_metadata(session_id)

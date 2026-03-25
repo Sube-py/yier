@@ -30,6 +30,7 @@ from yier_web.schemas import (
     ChannelPlatformsResponse,
     ChannelWorkspaceResponse,
     CodexWorkspaceResponse,
+    CodexPairedEditorStateRequest,
     CreateSessionRequest,
     CreateSessionResponse,
     DeleteSessionResponse,
@@ -246,6 +247,20 @@ async def open_codex_session(data: OpenCodexSessionRequest, state: State) -> Ope
     return OpenCodexSessionResponse(session_id=session_id)
 
 
+@post("/codex/paired-editor/state")
+async def update_codex_paired_editor_state(
+    data: CodexPairedEditorStateRequest,
+    state: State,
+) -> Response:
+    await get_services(state).chat_service.update_paired_editor_state(
+        session_id=data.session_id,
+        content=data.content,
+        selection_start=data.selection_start,
+        selection_end=data.selection_end,
+    )
+    return Response(content={"ok": True})
+
+
 @get("/chat/sessions/{session_id:str}")
 async def get_session(session_id: str, state: State) -> SessionTranscriptResponse:
     services = get_services(state)
@@ -444,6 +459,7 @@ api_router = Router(
         list_sessions,
         get_codex_workspace,
         open_codex_session,
+        update_codex_paired_editor_state,
         get_session,
         delete_session,
         respond_to_approval,

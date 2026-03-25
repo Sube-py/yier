@@ -231,6 +231,13 @@ export interface OpenCodexSessionResponse {
   session_id: string
 }
 
+export interface CodexPairedEditorStateRequest {
+  session_id: string
+  content: string
+  selection_start: number
+  selection_end: number
+}
+
 export interface CodexNativeSessionSummary {
   thread_id: string
   title: string
@@ -855,6 +862,24 @@ export interface ChannelLoginQrEvent {
   }
 }
 
+export interface CodexPairingsUpdatedEvent {
+  event: 'codex_pairings_updated'
+  data: {
+    paired_editors: CodexPairingExtensionSummary[]
+  }
+}
+
+export interface CodexPairedEditorUpdateEvent {
+  event: 'codex_paired_editor_update'
+  data: {
+    session_id: string
+    textfield_id: string
+    content: string
+    selection_start: number
+    selection_end: number
+  }
+}
+
 export type ChatStreamEvent =
   | ChatRunStartedEvent
   | ChatToolStartEvent
@@ -884,6 +909,8 @@ export type ChatStreamEvent =
   | ChannelOutboundMessageEvent
   | ChannelErrorEvent
   | ChannelLoginQrEvent
+  | CodexPairingsUpdatedEvent
+  | CodexPairedEditorUpdateEvent
 
 export interface UiChatMessage {
   id: string

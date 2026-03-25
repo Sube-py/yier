@@ -42,6 +42,7 @@ from yier_web.background_followups import FollowupQueueManager, create_queue_bac
 from yier_web.codex_workspace import CodexWorkspaceService
 from yier_web.config import AppConfigService
 from yier_web.event_stream import EventStreamBroker
+from yier_web.paired_editor_bridge import CodexPairedEditorBridge
 from yier_web.session_metadata_store import SessionMetadataStore
 from yier_web.session_ui_store import SessionUIStore
 from yier_web.schemas import (
@@ -65,6 +66,8 @@ StreamEmitter = Callable[[str, dict[str, Any]], Awaitable[None]]
 
 
 class ChatService:
+    CODEX_PAIRING_MONITOR_INTERVAL_SECONDS = 1.0
+
     def __init__(
         self,
         project_root: Path,
@@ -91,6 +94,10 @@ class ChatService:
         )
         self.followup_queue = FollowupQueueManager()
         self.event_broker = event_broker or EventStreamBroker()
+        self.paired_editor_bridge = CodexPairedEditorBridge(
+            home_dir=self.config_service.home_dir,
+            event_broker=self.event_broker,
+        )
         self.backends = {
             "yier": YierAgentBackend(self),
             "codex": CodexAppServerBackend(self),
@@ -102,6 +109,7 @@ class ChatService:
         self._background_owner_sessions: dict[str, str] = {}
         self._background_cursors: dict[str, dict[str, Any]] = {}
         self._background_supervisor_task: asyncio.Task[None] | None = None
+        self._codex_pairing_monitor_task: asyncio.Task[None] | None = None
         self._started = False
 
     async def start(self) -> None:
@@ -109,8 +117,10 @@ class ChatService:
             return
         await self.mcp_manager.start()
         self._started = True
+        await self.paired_editor_bridge.start()
         await self.reload_agent(force_mcp_reconnect=False)
         self._background_supervisor_task = asyncio.create_task(self._background_supervisor_loop())
+        self._codex_pairing_monitor_task = asyncio.create_task(self._codex_pairing_monitor_loop())
 
     async def stop(self) -> None:
         if not self._started:
@@ -120,6 +130,12 @@ class ChatService:
             with suppress(asyncio.CancelledError):
                 await self._background_supervisor_task
             self._background_supervisor_task = None
+        if self._codex_pairing_monitor_task is not None:
+            self._codex_pairing_monitor_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._codex_pairing_monitor_task
+            self._codex_pairing_monitor_task = None
+        await self.paired_editor_bridge.stop()
         await self.background_manager.close()
         await self.mcp_manager.stop()
         for backend in self.backends.values():
@@ -160,6 +176,28 @@ class ChatService:
             name: MCPRuntimeEntry(**payload)
             for name, payload in snapshot.items()
         }
+
+    async def _codex_pairing_monitor_loop(self) -> None:
+        last_signature = self.codex_workspace.paired_editors_signature()
+        while True:
+            await asyncio.sleep(self.CODEX_PAIRING_MONITOR_INTERVAL_SECONDS)
+            try:
+                paired_editors = self.codex_workspace.list_paired_editors()
+                next_signature = self.codex_workspace.paired_editors_signature(paired_editors)
+            except Exception:
+                continue
+            if next_signature == last_signature:
+                continue
+            last_signature = next_signature
+            await self.event_broker.publish(
+                "codex_pairings_updated",
+                {
+                    "paired_editors": [
+                        editor.model_dump(mode="json")
+                        for editor in paired_editors
+                    ]
+                },
+            )
 
     def create_session(
         self,
@@ -260,6 +298,40 @@ class ChatService:
         if payload["backend_id"] == "codex" and payload["codex_work_mode"] not in {"plan", "build"}:
             payload["codex_work_mode"] = "build"
         self.session_metadata_store.save(session_id, payload)
+
+    async def update_paired_editor_state(
+        self,
+        *,
+        session_id: str,
+        content: str,
+        selection_start: int,
+        selection_end: int,
+    ) -> None:
+        await self.paired_editor_bridge.update_state(
+            session_id=session_id,
+            workspace_name=self._paired_editor_workspace_name(session_id),
+            content=content,
+            selection_start=selection_start,
+            selection_end=selection_end,
+        )
+
+    def _paired_editor_workspace_name(self, session_id: str) -> str:
+        normalized_session_id = session_id.strip()
+        if not normalized_session_id:
+            return "Yier"
+
+        metadata = self.get_session_metadata(normalized_session_id)
+        project_path_value = metadata.get("project_path")
+        if isinstance(project_path_value, str) and project_path_value.strip():
+            project_name = Path(project_path_value).name.strip()
+            if project_name:
+                return project_name
+
+        title_value = metadata.get("title")
+        if isinstance(title_value, str) and title_value.strip():
+            return title_value.strip()
+
+        return "Yier"
 
     def mark_channel_session(
         self,

@@ -121,6 +121,18 @@ class CodexWorkspaceService:
         )
         return editors
 
+    def paired_editors_signature(
+        self,
+        editors: list[CodexPairingExtensionSummary] | None = None,
+    ) -> str:
+        current_editors = editors if editors is not None else self.list_paired_editors()
+        return json.dumps(
+            [editor.model_dump(mode="json") for editor in current_editors],
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
     def _list_active_sessions_from_sdk(self) -> list[CodexNativeSessionSummary] | None:
         config = self._sdk_config()
         if config is None:

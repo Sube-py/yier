@@ -352,6 +352,20 @@ class OpenCodexSessionResponse(BaseModel):
     session_id: str
 
 
+class CodexPairedEditorStateRequest(BaseModel):
+    session_id: str = ""
+    content: str = ""
+    selection_start: int = Field(default=0, ge=0)
+    selection_end: int = Field(default=0, ge=0)
+
+    @field_validator("session_id", mode="before")
+    @classmethod
+    def normalize_session_id(cls, value: Any) -> str:
+        if not isinstance(value, str):
+            return ""
+        return value.strip()
+
+
 class CodexNativeSessionSummary(BaseModel):
     thread_id: str
     title: str

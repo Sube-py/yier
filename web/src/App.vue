@@ -41,6 +41,7 @@ import type {
   ChatApprovalRequestedEvent,
   ChatAssistantDeltaEvent,
   CodexWorkMode,
+  CodexPairedEditorStateRequest,
   CodexWorkspaceResponse,
   ChatStreamDoneEvent,
   ChatStreamErrorEvent,
@@ -126,6 +127,9 @@ const activities = ref<ChatActivity[]>([])
 const sessionHistory = ref<SessionSummary[]>([])
 const activeCodexWorkMode = ref<CodexWorkMode>('build')
 const composerText = ref('')
+const composerSelectionStart = ref(0)
+const composerSelectionEnd = ref(0)
+const composerSelectionVersion = ref(0)
 const deletingSessionId = ref('')
 const savingState = reactive({
   app: false,
@@ -184,6 +188,8 @@ const backendOptions = computed(
 )
 const defaultAllowedRoots = computed(() => health.value?.allowed_roots ?? [])
 let closePersistentEventStream: (() => void) | null = null
+let pairedEditorSyncTimer: number | null = null
+let lastPairedEditorSyncSignature = ''
 const backgroundActivityIdsByToolCallId = new Map<string, string>()
 let hydratingLlmForm = false
 
@@ -288,9 +294,14 @@ const composerPlaceholder = computed(() =>
 watch(activeSessionId, (value) => {
   if (!value) {
     localStorage.removeItem(SESSION_STORAGE_KEY)
-    return
+  } else {
+    localStorage.setItem(SESSION_STORAGE_KEY, value)
   }
-  localStorage.setItem(SESSION_STORAGE_KEY, value)
+  schedulePairedEditorStateSync()
+})
+
+watch(composerText, () => {
+  schedulePairedEditorStateSync()
 })
 
 watch(
@@ -333,6 +344,10 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   closePersistentEventStream?.()
   closePersistentEventStream = null
+  if (pairedEditorSyncTimer !== null) {
+    window.clearTimeout(pairedEditorSyncTimer)
+    pairedEditorSyncTimer = null
+  }
 })
 
 async function bootstrap() {
@@ -555,6 +570,9 @@ async function submitMessage() {
     (item) => item.kind === 'background' && item.state === 'running',
   )
   composerText.value = ''
+  composerSelectionStart.value = 0
+  composerSelectionEnd.value = 0
+  composerSelectionVersion.value += 1
   chatMessages.value.push(makeUiMessage('user', content))
 
   const body: ChatStreamRequest = {
@@ -690,7 +708,46 @@ function startPersistentEvents() {
   })
 }
 
+function handleComposerSelectionChange(payload: { start: number; end: number }) {
+  composerSelectionStart.value = payload.start
+  composerSelectionEnd.value = payload.end
+  schedulePairedEditorStateSync()
+}
+
+function schedulePairedEditorStateSync() {
+  if (pairedEditorSyncTimer !== null) {
+    window.clearTimeout(pairedEditorSyncTimer)
+  }
+  pairedEditorSyncTimer = window.setTimeout(() => {
+    pairedEditorSyncTimer = null
+    void syncPairedEditorState()
+  }, 80)
+}
+
+async function syncPairedEditorState() {
+  const payload: CodexPairedEditorStateRequest = {
+    session_id: activeSessionId.value,
+    content: composerText.value,
+    selection_start: composerSelectionStart.value,
+    selection_end: composerSelectionEnd.value,
+  }
+  const signature = JSON.stringify(payload)
+  if (signature === lastPairedEditorSyncSignature) {
+    return
+  }
+
+  try {
+    await apiPost<{ ok: boolean }>('/api/codex/paired-editor/state', payload)
+    lastPairedEditorSyncSignature = signature
+  } catch {
+    lastPairedEditorSyncSignature = ''
+  }
+}
+
 function isRelevantPersistentEvent(event: ChatStreamEvent) {
+  if (event.event === 'codex_pairings_updated') {
+    return true
+  }
   if (
     event.event === 'channel_account_state' ||
     event.event === 'channel_login_qr' ||
@@ -709,6 +766,22 @@ function isRelevantPersistentEvent(event: ChatStreamEvent) {
 }
 
 function handleStreamEvent(event: ChatStreamEvent) {
+  if (event.event === 'codex_pairings_updated') {
+    codexWorkspace.value = {
+      projects: codexWorkspace.value?.projects ?? [],
+      paired_editors: event.data.paired_editors,
+    }
+    return
+  }
+
+  if (event.event === 'codex_paired_editor_update') {
+    composerText.value = event.data.content
+    composerSelectionStart.value = event.data.selection_start
+    composerSelectionEnd.value = event.data.selection_end
+    composerSelectionVersion.value += 1
+    return
+  }
+
   if (event.event === 'channel_account_state') {
     const accounts = channelWorkspace.value?.accounts ?? []
     const nextAccounts = [
@@ -3183,6 +3256,10 @@ function toErrorMessage(error: unknown) {
                 :disabled="!canSendToSession"
                 :is-sending="isSending"
                 :placeholder="composerPlaceholder"
+                :selection-start="composerSelectionStart"
+                :selection-end="composerSelectionEnd"
+                :selection-version="composerSelectionVersion"
+                @selection-change="handleComposerSelectionChange"
                 @submit="submitMessage"
               />
             </div>

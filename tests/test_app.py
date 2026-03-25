@@ -31,6 +31,7 @@ class FakeChatService:
         self.runtime = {
             "primevue-docs": MCPRuntimeEntry(status="connected", tool_count=3),
         }
+        self.paired_editor_updates: list[dict[str, Any]] = []
         self.sessions = {
             "session-a": [
                 Message(role="user", content="hello"),
@@ -162,6 +163,23 @@ class FakeChatService:
 
     def update_codex_session_mode(self, session_id: str, codex_work_mode: str) -> bool:
         return session_id == "session-a"
+
+    async def update_paired_editor_state(
+        self,
+        *,
+        session_id: str,
+        content: str,
+        selection_start: int,
+        selection_end: int,
+    ) -> None:
+        self.paired_editor_updates.append(
+            {
+                "session_id": session_id,
+                "content": content,
+                "selection_start": selection_start,
+                "selection_end": selection_end,
+            }
+        )
 
     async def delete_session(self, session_id: str) -> bool:
         self.sessions.pop(session_id, None)
@@ -577,6 +595,26 @@ def test_api_endpoints_cover_config_session_and_stream(tmp_path: Path) -> None:
         )
         assert codex_mode_response.status_code == 200
         assert codex_mode_response.json()["ok"] is True
+
+        paired_editor_response = client.post(
+            "/api/codex/paired-editor/state",
+            json={
+                "session_id": "session-a",
+                "content": "draft",
+                "selection_start": 1,
+                "selection_end": 4,
+            },
+        )
+        assert paired_editor_response.status_code == 201
+        assert paired_editor_response.json()["ok"] is True
+        assert client.app.state.chat_service.paired_editor_updates == [
+            {
+                "session_id": "session-a",
+                "content": "draft",
+                "selection_start": 1,
+                "selection_end": 4,
+            }
+        ]
 
         delete_response = client.delete("/api/chat/sessions/session-a")
         assert delete_response.status_code == 200

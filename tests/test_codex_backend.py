@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+import sys
 
 import pytest
 
@@ -77,6 +78,44 @@ def test_codex_backend_uses_normalized_sandbox_in_thread_and_turn_params() -> No
     assert turn_params["sandbox_policy"] == {"type": "workspaceWrite"}
     assert thread_params["approval_policy"] == "on-request"
     assert turn_params["approval_policy"] == "on-request"
+
+
+def test_codex_backend_injects_pairing_mcp_server_when_paths_are_available() -> None:
+    project_root = Path("/tmp/yier-project")
+    home_dir = Path("/tmp/yier-home")
+    settings = WebSettings(codex=StoredCodexSettings(sandbox="workspace-write"))
+    chat_service = SimpleNamespace(
+        config_service=SimpleNamespace(
+            load_web_settings=lambda: settings,
+            project_root=project_root,
+            home_dir=home_dir,
+        )
+    )
+    backend = CodexAppServerBackend(chat_service)
+    context = ChatSessionContext(
+        session_id="session-1",
+        source="chat",
+        backend_id="codex",
+        project_path=Path("/tmp/project"),
+        channel_meta=None,
+    )
+
+    thread_params = backend._thread_params(context)
+
+    assert thread_params["config"] == {
+        "mcp_servers": {
+            "yier_codex_pairing": {
+                "command": sys.executable,
+                "args": ["-m", "yier_web.codex_pairing_mcp"],
+                "cwd": str(project_root.resolve()),
+                "env": {
+                    "YIER_PAIRING_HOME_DIR": str(home_dir.resolve()),
+                },
+                "startup_timeout_sec": 5,
+                "tool_timeout_sec": 30,
+            }
+        }
+    }
 
 
 def test_codex_backend_treats_elicitation_create_as_mcp_elicitation() -> None:

@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import dataclass, field
 from pathlib import Path
 import shlex
+import sys
 import threading
 from typing import TYPE_CHECKING, Any
 
@@ -121,6 +122,7 @@ class ApprovalAwareAppServerClient(AppServerClient):
 class CodexAppServerBackend(ChatBackend):
     backend_id = "codex"
     label = "Codex App Server"
+    pairing_mcp_server_name = "yier_codex_pairing"
 
     def __init__(self, chat_service: "ChatService") -> None:
         self.chat_service = chat_service
@@ -1127,7 +1129,7 @@ class CodexAppServerBackend(ChatBackend):
 
     def _thread_params(self, context: ChatSessionContext) -> dict[str, Any]:
         settings = self.chat_service.config_service.load_web_settings().codex
-        return {
+        params = {
             "cwd": str(context.project_path),
             "approval_policy": settings.approval_policy,
             "approvals_reviewer": settings.approvals_reviewer,
@@ -1136,6 +1138,10 @@ class CodexAppServerBackend(ChatBackend):
             "sandbox": _codex_thread_sandbox_mode(settings.sandbox),
             "service_tier": settings.service_tier or None,
         }
+        pairing_config = self._pairing_mcp_config()
+        if pairing_config is not None:
+            params["config"] = pairing_config
+        return params
 
     def _turn_params(self, context: ChatSessionContext) -> dict[str, Any]:
         settings = self.chat_service.config_service.load_web_settings().codex
@@ -1151,6 +1157,28 @@ class CodexAppServerBackend(ChatBackend):
             "personality": settings.personality,
             "sandbox_policy": {"type": _codex_turn_sandbox_policy_type(settings.sandbox)},
             "service_tier": settings.service_tier or None,
+        }
+
+    def _pairing_mcp_config(self) -> dict[str, Any] | None:
+        config_service = getattr(self.chat_service, "config_service", None)
+        project_root = getattr(config_service, "project_root", None)
+        home_dir = getattr(config_service, "home_dir", None)
+        if not isinstance(project_root, Path) or not isinstance(home_dir, Path):
+            return None
+
+        return {
+            "mcp_servers": {
+                self.pairing_mcp_server_name: {
+                    "command": sys.executable,
+                    "args": ["-m", "yier_web.codex_pairing_mcp"],
+                    "cwd": str(project_root.resolve()),
+                    "env": {
+                        "YIER_PAIRING_HOME_DIR": str(home_dir.resolve()),
+                    },
+                    "startup_timeout_sec": 5,
+                    "tool_timeout_sec": 30,
+                }
+            }
         }
 
     async def _close_runtime(self, runtime: CodexSessionRuntime) -> None:

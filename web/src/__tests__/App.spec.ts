@@ -586,6 +586,264 @@ describe('App', () => {
     expect(wrapper.text()).toContain('Codex mode switched to plan.')
   })
 
+  it('updates paired editors from persistent codex pairing events', async () => {
+    localStorage.setItem('yier.active-session-id', 'codex-thread')
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const path = input.toString()
+        if (path.endsWith('/api/health')) {
+          return jsonResponse({
+            frontend: { ready: true, mode: 'static' },
+            llm: { ready: true },
+            mcp: { ready: true, runtime: {} },
+            backends: {
+              yier: { ready: true },
+              codex: { ready: true },
+            },
+            allowed_roots: ['/tmp/project'],
+          })
+        }
+        if (path.endsWith('/api/config')) {
+          return jsonResponse({
+            llm: { provider: '', base_url: 'https://example.test', model: 'demo', has_api_key: true },
+            allowed_roots: ['/tmp/project'],
+            mcp_runtime: {},
+            session_defaults: {
+              default_backend_id: 'yier',
+              default_project_path: '/tmp/project',
+              channel_backend_id: 'yier',
+              channel_project_path: '/tmp/project',
+              channel_auto_approve_codex_requests: true,
+            },
+            codex: {
+              launcher_command: 'codex app-server --listen stdio://',
+              model: 'gpt-5.4',
+              sandbox: 'workspace-write',
+              approval_policy: 'on-request',
+              approvals_reviewer: 'user',
+              personality: 'friendly',
+              reasoning_effort: 'medium',
+              service_tier: '',
+            },
+          })
+        }
+        if (path.endsWith('/api/config/mcp')) {
+          return jsonResponse({ mcp_servers: {}, runtime: {} })
+        }
+        if (path.endsWith('/api/codex/workspace')) {
+          return jsonResponse({
+            projects: [],
+            paired_editors: [],
+          })
+        }
+        if (isSessionListRequest(path, init)) {
+          return jsonResponse({
+            sessions: [
+              {
+                session_id: 'codex-thread',
+                title: 'Codex session',
+                preview: 'Native preview',
+                updated_at: 100,
+                message_count: 2,
+                source: 'chat',
+                backend_id: 'codex',
+                project_path: '/tmp/project',
+                channel_meta: null,
+                codex_work_mode: 'build',
+              },
+            ],
+          })
+        }
+        if (path.endsWith('/api/chat/sessions/codex-thread') && (!init || init.method === 'GET')) {
+          return jsonResponse({
+            session_id: 'codex-thread',
+            source: 'chat',
+            backend_id: 'codex',
+            project_path: '/tmp/project',
+            codex_work_mode: 'build',
+            backend_runtime: {
+              backend_id: 'codex',
+              label: 'Codex App Server',
+              ready: true,
+              status: 'idle',
+              thread_id: 'codex-thread',
+              active_flags: [],
+              detail: null,
+              pending_approval_count: 0,
+            },
+            pending_approvals: [],
+            messages: [
+              { role: 'assistant', content: 'Current build mode.' },
+            ],
+            activity_events: [],
+          })
+        }
+        throw new Error(`Unexpected request: ${path}`)
+      }),
+    )
+
+    const wrapper = await mountApp()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('No active editor pairings detected')
+
+    const eventSource = MockEventSource.instances[0]
+    expect(eventSource).toBeTruthy()
+    if (!eventSource) {
+      throw new Error('Expected persistent EventSource connection.')
+    }
+
+    eventSource.emit('codex_pairings_updated', {
+      paired_editors: [
+        {
+          id: 'editor-yier',
+          app_name: 'Visual Studio Code',
+          workspace_name: 'yier',
+          extension_name: 'oai_pwai Visual Studio Code',
+          extension_version: '0.0.1731016154',
+          bundle_id: 'com.microsoft.VSCode',
+          marketplace_id: 'openai.chatgpt',
+          capability_names: ['content', 'highlightLines', 'replaceSelection'],
+          capability_count: 3,
+          socket_path: '/tmp/Visual Studio Code-yier.sock',
+          is_online: true,
+          needs_reload: false,
+          last_seen_at: 1774324184458,
+        },
+      ],
+    })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Visual Studio Code')
+    expect(wrapper.text()).toContain('3 linked actions')
+    expect(wrapper.text()).toContain('/tmp/Visual Studio Code-yier.sock')
+  })
+
+  it('applies remote paired editor updates to the composer textarea', async () => {
+    localStorage.setItem('yier.active-session-id', 'codex-thread')
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const path = input.toString()
+        if (path.endsWith('/api/health')) {
+          return jsonResponse({
+            frontend: { ready: true, mode: 'static' },
+            llm: { ready: true },
+            mcp: { ready: true, runtime: {} },
+            backends: {
+              yier: { ready: true },
+              codex: { ready: true },
+            },
+            allowed_roots: ['/tmp/project'],
+          })
+        }
+        if (path.endsWith('/api/config')) {
+          return jsonResponse({
+            llm: { provider: '', base_url: 'https://example.test', model: 'demo', has_api_key: true },
+            allowed_roots: ['/tmp/project'],
+            mcp_runtime: {},
+            session_defaults: {
+              default_backend_id: 'yier',
+              default_project_path: '/tmp/project',
+              channel_backend_id: 'yier',
+              channel_project_path: '/tmp/project',
+              channel_auto_approve_codex_requests: true,
+            },
+            codex: {
+              launcher_command: 'codex app-server --listen stdio://',
+              model: 'gpt-5.4',
+              sandbox: 'workspace-write',
+              approval_policy: 'on-request',
+              approvals_reviewer: 'user',
+              personality: 'friendly',
+              reasoning_effort: 'medium',
+              service_tier: '',
+            },
+          })
+        }
+        if (path.endsWith('/api/config/mcp')) {
+          return jsonResponse({ mcp_servers: {}, runtime: {} })
+        }
+        if (path.endsWith('/api/codex/workspace')) {
+          return jsonResponse({
+            projects: [],
+            paired_editors: [],
+          })
+        }
+        if (isSessionListRequest(path, init)) {
+          return jsonResponse({
+            sessions: [
+              {
+                session_id: 'codex-thread',
+                title: 'Codex session',
+                preview: 'Native preview',
+                updated_at: 100,
+                message_count: 2,
+                source: 'chat',
+                backend_id: 'codex',
+                project_path: '/tmp/project',
+                channel_meta: null,
+                codex_work_mode: 'build',
+              },
+            ],
+          })
+        }
+        if (path.endsWith('/api/chat/sessions/codex-thread') && (!init || init.method === 'GET')) {
+          return jsonResponse({
+            session_id: 'codex-thread',
+            source: 'chat',
+            backend_id: 'codex',
+            project_path: '/tmp/project',
+            codex_work_mode: 'build',
+            backend_runtime: {
+              backend_id: 'codex',
+              label: 'Codex App Server',
+              ready: true,
+              status: 'idle',
+              thread_id: 'codex-thread',
+              active_flags: [],
+              detail: null,
+              pending_approval_count: 0,
+            },
+            pending_approvals: [],
+            messages: [],
+            activity_events: [],
+          })
+        }
+        if (path.endsWith('/api/codex/paired-editor/state') && init?.method === 'POST') {
+          return jsonResponse({ ok: true })
+        }
+        throw new Error(`Unexpected request: ${path}`)
+      }),
+    )
+
+    const wrapper = await mountApp()
+    await flushPromises()
+
+    const eventSource = MockEventSource.instances[0]
+    expect(eventSource).toBeTruthy()
+    if (!eventSource) {
+      throw new Error('Expected persistent EventSource connection.')
+    }
+
+    eventSource.emit('codex_paired_editor_update', {
+      session_id: 'codex-thread',
+      textfield_id: 'session:codex-thread:composer',
+      content: 'remote draft',
+      selection_start: 2,
+      selection_end: 5,
+    })
+    await flushPromises()
+
+    const textarea = wrapper.get('textarea').element as HTMLTextAreaElement
+    expect(textarea.value).toBe('remote draft')
+    expect(textarea.selectionStart).toBe(2)
+    expect(textarea.selectionEnd).toBe(5)
+  })
+
   it('opens a native codex session from the project sidebar', async () => {
     localStorage.setItem('yier.active-session-id', 'codex-thread-a')
 

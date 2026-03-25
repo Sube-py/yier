@@ -39,6 +39,8 @@ const STREAM_EVENT_NAMES = [
   'channel_outbound_message',
   'channel_error',
   'channel_login_qr',
+  'codex_pairings_updated',
+  'codex_paired_editor_update',
 ] as const
 
 export async function apiGet<T>(path: string): Promise<T> {

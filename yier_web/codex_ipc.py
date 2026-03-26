@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from dataclasses import dataclass
 import json
 import logging
 import os
@@ -43,6 +44,18 @@ RequestCanHandle = Callable[[dict[str, Any]], Awaitable[bool]]
 RequestHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 BroadcastHandler = Callable[[dict[str, Any]], Awaitable[None]]
 logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class LiveTurnPatchState:
+    turn_index: int | None = None
+    turn_id: str | None = None
+    user_item_emitted: bool = False
+    assistant_item_index: int | None = None
+    assistant_item_id: str | None = None
+    assistant_item_emitted: bool = False
+    final_assistant_started_emitted: bool = False
+    assistant_message_finalized: bool = False
 
 
 def _env_flag(name: str) -> bool:
@@ -551,6 +564,7 @@ class CodexThreadFollowerBridge:
             client_type=client_type,
             socket_path=socket_path,
         )
+        self._live_turn_patch_states: dict[str, LiveTurnPatchState] = {}
         self._register_broadcast_handlers()
         self._register_request_handlers()
 
@@ -567,19 +581,28 @@ class CodexThreadFollowerBridge:
         if not self._is_codex_session(session_id):
             return
 
-        await self.broadcast_stream_event_patches(session_id, event, data)
+        patches_emitted = await self.broadcast_stream_event_patches(
+            session_id, event, data
+        )
 
-        if event in {
+        live_patch_events = {
             "run_started",
             "assistant_delta",
             "assistant_message",
             "token_usage_updated",
-            "approval_requested",
-            "approval_resolved",
             "turn_completed",
             "turn_aborted",
-            "stream_error",
             "done",
+        }
+        if event in live_patch_events:
+            if not patches_emitted and event != "done":
+                await self.broadcast_stream_state(session_id, trigger_event=event)
+            return
+
+        if event in {
+            "approval_requested",
+            "approval_resolved",
+            "stream_error",
         }:
             await self.broadcast_stream_state(session_id, trigger_event=event)
 
@@ -595,33 +618,42 @@ class CodexThreadFollowerBridge:
         session_id: str,
         event: str,
         data: dict[str, Any],
-    ) -> None:
+    ) -> bool:
         if not self.client.is_connected or not self._is_codex_session(session_id):
-            return
+            return False
         conversation_state = self.chat_service.build_codex_ipc_conversation_state(
             session_id
         )
-        patches = self._patches_for_stream_event(event, data, conversation_state)
-        if not patches:
-            return
-        payload = {
-            "conversationId": session_id,
-            "change": {
-                "type": "patches",
-                "patches": patches,
-            },
-            "version": _ipc_method_version("thread-stream-state-changed"),
-            "type": "thread-stream-state-changed",
-        }
-        _ipc_debug_log(
-            "broadcast stream patches",
-            session_id=session_id,
-            trigger_event=event,
-            patch_count=len(patches),
-            payload=payload if _ipc_debug_full_enabled() else None,
+        patch_batches = self._patch_batches_for_stream_event(
+            session_id,
+            event,
+            data,
+            conversation_state,
         )
-        with contextlib.suppress(Exception):
-            await self.client.send_broadcast("thread-stream-state-changed", payload)
+        sent = False
+        for patches in patch_batches:
+            if not patches:
+                continue
+            payload = {
+                "conversationId": session_id,
+                "change": {
+                    "type": "patches",
+                    "patches": patches,
+                },
+                "version": _ipc_method_version("thread-stream-state-changed"),
+                "type": "thread-stream-state-changed",
+            }
+            _ipc_debug_log(
+                "broadcast stream patches",
+                session_id=session_id,
+                trigger_event=event,
+                patch_count=len(patches),
+                payload=payload if _ipc_debug_full_enabled() else None,
+            )
+            with contextlib.suppress(Exception):
+                await self.client.send_broadcast("thread-stream-state-changed", payload)
+            sent = True
+        return sent
 
     async def broadcast_stream_state(
         self,
@@ -1065,96 +1097,291 @@ class CodexThreadFollowerBridge:
                 return value.strip()
         return ""
 
-    def _patches_for_stream_event(
+    def _live_turn_patch_state(self, session_id: str) -> LiveTurnPatchState:
+        state = self._live_turn_patch_states.get(session_id)
+        if state is None:
+            state = LiveTurnPatchState()
+            self._live_turn_patch_states[session_id] = state
+        return state
+
+    def _patch_batches_for_stream_event(
         self,
+        session_id: str,
         event: str,
         data: dict[str, Any],
         conversation_state: dict[str, Any],
-    ) -> list[dict[str, Any]]:
+    ) -> list[list[dict[str, Any]]]:
         turns = conversation_state.get("turns")
         if not isinstance(turns, list):
             turns = []
         latest_turn_index = len(turns) - 1
         latest_turn = turns[-1] if turns else None
-        patches: list[dict[str, Any]] = []
+        patch_batches: list[list[dict[str, Any]]] = []
 
         if event == "token_usage_updated":
-            patches.append(
+            return [
+                [
+                    {
+                        "op": "replace",
+                        "path": ["latestTokenUsageInfo"],
+                        "value": conversation_state.get("latestTokenUsageInfo"),
+                    }
+                ]
+            ]
+
+        if not isinstance(latest_turn, dict) or latest_turn_index < 0:
+            return patch_batches
+
+        items = latest_turn.get("items")
+        if not isinstance(items, list):
+            items = []
+
+        state = self._live_turn_patch_state(session_id)
+        if event == "run_started":
+            state = LiveTurnPatchState(turn_index=latest_turn_index)
+            turn_id = data.get("turn_id")
+            if not isinstance(turn_id, str) or not turn_id:
+                turn_id = latest_turn.get("turnId")
+            if not isinstance(turn_id, str) or not turn_id:
+                turn_id = latest_turn.get("id")
+            state.turn_id = turn_id if isinstance(turn_id, str) and turn_id else None
+
+            start_turn_value = {
+                "params": latest_turn.get("params"),
+                "turnId": None,
+                "status": "inProgress",
+                "turnStartedAtMs": latest_turn.get("turnStartedAtMs"),
+                "finalAssistantStartedAtMs": None,
+                "error": latest_turn.get("error"),
+                "diff": latest_turn.get("diff"),
+                "items": [],
+            }
+            start_patches = [
                 {
-                    "op": "replace",
-                    "path": ["latestTokenUsageInfo"],
-                    "value": conversation_state.get("latestTokenUsageInfo"),
+                    "op": "add",
+                    "path": ["turns", latest_turn_index],
+                    "value": start_turn_value,
                 }
-            )
-            return patches
+            ]
+            if "latestCollaborationMode" in conversation_state:
+                start_patches.append(
+                    {
+                        "op": "replace",
+                        "path": ["latestCollaborationMode"],
+                        "value": conversation_state.get("latestCollaborationMode"),
+                    }
+                )
+            if "updatedAt" in conversation_state:
+                start_patches.append(
+                    {
+                        "op": "replace",
+                        "path": ["updatedAt"],
+                        "value": conversation_state.get("updatedAt"),
+                    }
+                )
+            patch_batches.append(start_patches)
 
-        if isinstance(latest_turn, dict) and latest_turn_index >= 0:
-            items = latest_turn.get("items")
-            if not isinstance(items, list):
-                items = []
-            agent_item_index = None
-            for index in range(len(items) - 1, -1, -1):
-                item = items[index]
-                if isinstance(item, dict) and item.get("type") == "agentMessage":
-                    agent_item_index = index
-                    break
-
-            if event == "assistant_delta":
-                if agent_item_index is not None:
-                    agent_item = items[agent_item_index]
-                    patches.append(
+            if state.turn_id is not None:
+                patch_batches.append(
+                    [
                         {
                             "op": "replace",
-                            "path": ["turns", latest_turn_index, "items", agent_item_index, "text"],
-                            "value": agent_item.get("text", ""),
+                            "path": ["turns", latest_turn_index, "turnId"],
+                            "value": state.turn_id,
                         }
-                    )
-                final_started_at_ms = latest_turn.get("finalAssistantStartedAtMs")
-                if final_started_at_ms is not None:
-                    patches.append(
+                    ]
+                )
+            patch_batches.append(
+                [
+                    {
+                        "op": "replace",
+                        "path": ["requests"],
+                        "value": conversation_state.get("requests"),
+                    }
+                ]
+            )
+
+            for index, item in enumerate(items):
+                if not isinstance(item, dict) or item.get("type") != "userMessage":
+                    continue
+                patch_batches.append(
+                    [
+                        {
+                            "op": "add",
+                            "path": ["turns", latest_turn_index, "items", index],
+                            "value": item,
+                        }
+                    ]
+                )
+                state.user_item_emitted = True
+                break
+
+            self._live_turn_patch_states[session_id] = state
+            return patch_batches
+
+        if state.turn_index != latest_turn_index:
+            state = LiveTurnPatchState(turn_index=latest_turn_index)
+            self._live_turn_patch_states[session_id] = state
+
+        agent_item_index = None
+        agent_item: dict[str, Any] | None = None
+        for index in range(len(items) - 1, -1, -1):
+            item = items[index]
+            if isinstance(item, dict) and item.get("type") == "agentMessage":
+                agent_item_index = index
+                agent_item = dict(item)
+                break
+
+        if event == "assistant_delta":
+            assistant_item_id = data.get("item_id")
+            if not isinstance(assistant_item_id, str) or not assistant_item_id:
+                assistant_item_id = (
+                    agent_item.get("id")
+                    if isinstance(agent_item, dict)
+                    else state.assistant_item_id
+                )
+            if not isinstance(assistant_item_id, str) or not assistant_item_id:
+                assistant_item_id = f"{session_id}:turn:{latest_turn_index}:assistant"
+
+            if agent_item_index is None:
+                agent_item_index = len(items)
+                agent_item = {
+                    "type": "agentMessage",
+                    "id": assistant_item_id,
+                    "text": "",
+                    "phase": "final_answer",
+                    "memoryCitation": None,
+                }
+            else:
+                assert agent_item is not None
+                agent_item.setdefault("id", assistant_item_id)
+                agent_item.setdefault("text", "")
+                agent_item.setdefault("phase", "final_answer")
+                agent_item.setdefault("memoryCitation", None)
+
+            state.assistant_item_index = agent_item_index
+            state.assistant_item_id = assistant_item_id
+            final_started_at_ms = latest_turn.get("finalAssistantStartedAtMs")
+            if not state.assistant_item_emitted:
+                add_patches = [
+                    {
+                        "op": "add",
+                        "path": ["turns", latest_turn_index, "items", agent_item_index],
+                        "value": {
+                            "type": "agentMessage",
+                            "id": assistant_item_id,
+                            "text": "",
+                            "phase": "final_answer",
+                            "memoryCitation": None,
+                        },
+                    }
+                ]
+                if (
+                    final_started_at_ms is not None
+                    and not state.final_assistant_started_emitted
+                ):
+                    add_patches.append(
                         {
                             "op": "replace",
-                            "path": ["turns", latest_turn_index, "finalAssistantStartedAtMs"],
+                            "path": [
+                                "turns",
+                                latest_turn_index,
+                                "finalAssistantStartedAtMs",
+                            ],
                             "value": final_started_at_ms,
                         }
                     )
-                return patches
+                    state.final_assistant_started_emitted = True
+                patch_batches.append(add_patches)
+                state.assistant_item_emitted = True
 
-            if event == "assistant_message" and agent_item_index is not None:
-                patches.append(
+            if (
+                final_started_at_ms is not None
+                and not state.final_assistant_started_emitted
+            ):
+                patch_batches.append(
+                    [
+                        {
+                            "op": "replace",
+                            "path": [
+                                "turns",
+                                latest_turn_index,
+                                "finalAssistantStartedAtMs",
+                            ],
+                            "value": final_started_at_ms,
+                        }
+                    ]
+                )
+                state.final_assistant_started_emitted = True
+
+            patch_batches.append(
+                [
                     {
                         "op": "replace",
-                        "path": ["turns", latest_turn_index, "items", agent_item_index],
-                        "value": items[agent_item_index],
+                        "path": [
+                            "turns",
+                            latest_turn_index,
+                            "items",
+                            agent_item_index,
+                            "text",
+                        ],
+                        "value": agent_item.get("text", ""),
                     }
-                )
-                return patches
+                ]
+            )
+            return patch_batches
 
-            if event in {"turn_completed", "turn_aborted", "done"}:
-                patches.append(
+        if event == "assistant_message" and agent_item_index is not None and agent_item is not None:
+            state.assistant_item_index = agent_item_index
+            assistant_item_id = agent_item.get("id")
+            if isinstance(assistant_item_id, str) and assistant_item_id:
+                state.assistant_item_id = assistant_item_id
+            if not state.assistant_item_emitted:
+                patch_batches.append(
+                    [
+                        {
+                            "op": "add",
+                            "path": ["turns", latest_turn_index, "items", agent_item_index],
+                            "value": agent_item,
+                        }
+                    ]
+                )
+                state.assistant_item_emitted = True
+            elif not state.assistant_message_finalized:
+                patch_batches.append(
+                    [
+                        {
+                            "op": "replace",
+                            "path": ["turns", latest_turn_index, "items", agent_item_index],
+                            "value": agent_item,
+                        }
+                    ]
+                )
+            state.assistant_message_finalized = True
+            return patch_batches
+
+        if event in {"turn_completed", "turn_aborted"}:
+            patch_batches.append(
+                [
                     {
                         "op": "replace",
                         "path": ["turns", latest_turn_index, "status"],
                         "value": latest_turn.get("status"),
                     }
-                )
-                patches.append(
-                    {
-                        "op": "replace",
-                        "path": ["threadRuntimeStatus"],
-                        "value": conversation_state.get("threadRuntimeStatus"),
-                    }
-                )
-                patches.append(
+                ]
+            )
+            patch_batches.append(
+                [
                     {
                         "op": "replace",
                         "path": ["hasUnreadTurn"],
                         "value": conversation_state.get("hasUnreadTurn"),
                     }
-                )
-                return patches
+                ]
+            )
+            return patch_batches
 
-        return patches
+        return patch_batches
 
     def _params(self, request: dict[str, Any]) -> dict[str, Any]:
         params = request.get("params")

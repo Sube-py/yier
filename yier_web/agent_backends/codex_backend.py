@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+import logging
+import os
 from pathlib import Path
 import shlex
 import sys
@@ -29,6 +31,7 @@ if TYPE_CHECKING:
 
 
 DEFAULT_CODEX_LAUNCHER = "codex app-server --listen stdio://"
+CODEX_IPC_DEBUG_ENV = "YIER_CODEX_IPC_DEBUG"
 PLAN_MODE_PROMPT_PREFIX = "<yier-codex-plan-mode>"
 PLAN_MODE_PROMPT = (
     f"{PLAN_MODE_PROMPT_PREFIX}\n"
@@ -52,6 +55,30 @@ CODEX_TURN_SANDBOX_POLICY_TYPE_MAP = {
     "dangerFullAccess": "dangerFullAccess",
     "externalSandbox": "externalSandbox",
 }
+logger = logging.getLogger(__name__)
+
+
+def _codex_ipc_debug_enabled() -> bool:
+    return os.getenv(CODEX_IPC_DEBUG_ENV, "").strip().lower() not in {
+        "",
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
+def _codex_ipc_debug_log(message: str, **fields: Any) -> None:
+    if not _codex_ipc_debug_enabled():
+        return
+    if fields:
+        rendered = ", ".join(
+            f"{key}={value!r}"
+            for key, value in fields.items()
+        )
+        logger.warning(f"[codex-backend] {message} | {rendered}")
+        return
+    logger.warning(f"[codex-backend] {message}")
 
 
 def _codex_thread_sandbox_mode(value: str) -> str:
@@ -88,6 +115,8 @@ class TurnSnapshotState:
     params: dict[str, Any]
     turn_started_at_ms: int | None = None
     final_assistant_started_at_ms: int | None = None
+    assistant_item_id: str | None = None
+    assistant_text: str = ""
 
 
 @dataclass(slots=True)
@@ -191,11 +220,39 @@ class CodexAppServerBackend(ChatBackend):
         runtime.loop = asyncio.get_running_loop()
         runtime.emit = emit
         try:
-            return await asyncio.to_thread(
-                self._run_turn_blocking,
+            _codex_ipc_debug_log(
+                "stream_chat start_turn begin",
+                session_id=context.session_id,
+                thread_id=runtime.thread_id,
+            )
+            response = await asyncio.to_thread(
+                self._start_turn_blocking,
                 runtime,
                 context,
                 user_message,
+            )
+            turn_id = self._response_turn_id(response)
+            if not turn_id:
+                raise RuntimeError("Codex turn_start response did not include a turn id.")
+            _codex_ipc_debug_log(
+                "stream_chat start_turn completed",
+                session_id=context.session_id,
+                thread_id=runtime.thread_id,
+                turn_id=turn_id,
+                runtime_status=runtime.status,
+            )
+            await emit(
+                "run_started",
+                {
+                    "session_id": context.session_id,
+                    "turn_id": turn_id,
+                },
+            )
+            return await asyncio.to_thread(
+                self._consume_turn_stream_blocking,
+                runtime,
+                context,
+                turn_id,
             )
         finally:
             runtime.emit = None
@@ -295,11 +352,24 @@ class CodexAppServerBackend(ChatBackend):
         input_payload: list[dict[str, Any]] | dict[str, Any] | str,
     ) -> dict[str, Any]:
         runtime = await self._ensure_runtime(context)
+        _codex_ipc_debug_log(
+            "start_turn begin",
+            session_id=context.session_id,
+            thread_id=runtime.thread_id,
+            input_type=type(input_payload).__name__,
+        )
         response = await asyncio.to_thread(
             self._start_turn_blocking,
             runtime,
             context,
             input_payload,
+        )
+        _codex_ipc_debug_log(
+            "start_turn completed",
+            session_id=context.session_id,
+            thread_id=runtime.thread_id,
+            turn_id=self._response_turn_id(response),
+            runtime_status=runtime.status,
         )
         return self._safe_model_dump(response)
 
@@ -393,7 +463,7 @@ class CodexAppServerBackend(ChatBackend):
         turns: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         runtime = self._runtimes.get(context.session_id)
-        return [
+        normalized_turns = [
             self._normalize_ipc_turn(
                 context,
                 turn,
@@ -401,6 +471,38 @@ class CodexAppServerBackend(ChatBackend):
             )
             for turn in turns
         ]
+        if runtime is None or runtime.status != "active":
+            return normalized_turns
+
+        seen_turn_ids = {
+            turn.get("id")
+            for turn in turns
+            if isinstance(turn.get("id"), str) and turn.get("id")
+        }
+        missing_snapshots = [
+            (turn_id, snapshot)
+            for turn_id, snapshot in runtime.turn_snapshots.items()
+            if turn_id not in seen_turn_ids
+        ]
+        if not missing_snapshots:
+            return normalized_turns
+
+        missing_snapshots.sort(key=lambda item: item[1].turn_started_at_ms or 0)
+        turn_id, snapshot = missing_snapshots[-1]
+        normalized_turns.append(
+            self._normalize_ipc_turn(
+                context,
+                {
+                    "id": turn_id,
+                    "turnId": turn_id,
+                    "status": "inProgress",
+                    "items": [],
+                    "error": None,
+                },
+                snapshot,
+            )
+        )
+        return normalized_turns
 
     def load_thread_view(self, context: ChatSessionContext) -> dict[str, Any]:
         runtime = self._ensure_runtime_blocking(context)
@@ -419,6 +521,12 @@ class CodexAppServerBackend(ChatBackend):
             },
         )
         return self._thread_view_payload(context, response.thread)
+
+    def should_use_local_session_view(self, context: ChatSessionContext) -> bool:
+        runtime = self._runtimes.get(context.session_id)
+        if runtime is not None:
+            return runtime.status == "active"
+        return context.backend_state.get("status") == "active"
 
     async def _ensure_runtime(self, context: ChatSessionContext) -> CodexSessionRuntime:
         runtime = self._runtimes.get(context.session_id)
@@ -573,6 +681,12 @@ class CodexAppServerBackend(ChatBackend):
         runtime.status = "active"
         runtime.detail = None
         turn_input = self._normalize_turn_input_payload(context, input_payload)
+        _codex_ipc_debug_log(
+            "_start_turn_blocking before client.turn_start",
+            session_id=context.session_id,
+            thread_id=runtime.thread_id,
+            input_type=type(turn_input).__name__,
+        )
         response = runtime.client.turn_start(
             runtime.thread_id,
             turn_input,
@@ -581,6 +695,12 @@ class CodexAppServerBackend(ChatBackend):
         turn_id = self._response_turn_id(response)
         if not turn_id:
             raise RuntimeError("Codex turn_start response did not include a turn id.")
+        _codex_ipc_debug_log(
+            "_start_turn_blocking after client.turn_start",
+            session_id=context.session_id,
+            thread_id=runtime.thread_id,
+            turn_id=turn_id,
+        )
         runtime.turn_snapshots[turn_id] = TurnSnapshotState(
             params=self._build_turn_state_params(context, turn_input),
             turn_started_at_ms=int(time() * 1000),
@@ -751,6 +871,9 @@ class CodexAppServerBackend(ChatBackend):
                 snapshot = runtime.turn_snapshots.get(turn_id)
                 if snapshot is not None and snapshot.final_assistant_started_at_ms is None:
                     snapshot.final_assistant_started_at_ms = int(time() * 1000)
+                if snapshot is not None:
+                    snapshot.assistant_item_id = item_id
+                    snapshot.assistant_text = f"{snapshot.assistant_text}{delta}"
             runtime.assistant_buffers[item_id] = f"{runtime.assistant_buffers.get(item_id, '')}{delta}"
             self._emit_from_thread(
                 runtime,
@@ -1021,6 +1144,14 @@ class CodexAppServerBackend(ChatBackend):
 
         if item_type == "agentMessage":
             content = getattr(item, "text", "") or runtime.assistant_buffers.pop(item.id, "")
+            turn_id = getattr(item, "turn_id", None)
+            if not isinstance(turn_id, str) or not turn_id:
+                turn_id = getattr(item, "turnId", None)
+            if isinstance(turn_id, str) and turn_id:
+                snapshot = runtime.turn_snapshots.get(turn_id)
+                if snapshot is not None:
+                    snapshot.assistant_item_id = item.id
+                    snapshot.assistant_text = content
             if content.strip():
                 self.chat_service._append_transcript_message(
                     context.session_id,
@@ -1508,8 +1639,62 @@ class CodexAppServerBackend(ChatBackend):
             normalized["turnStartedAtMs"] = turn.get("turnStartedAtMs")
             normalized["finalAssistantStartedAtMs"] = turn.get("finalAssistantStartedAtMs")
             params = self._fallback_turn_state_params(context, turn)
+        normalized["items"] = self._normalized_ipc_turn_items(
+            turn,
+            snapshot,
+        )
         normalized["params"] = params
         return normalized
+
+    def _normalized_ipc_turn_items(
+        self,
+        turn: dict[str, Any],
+        snapshot: TurnSnapshotState | None,
+    ) -> list[dict[str, Any]]:
+        raw_items = turn.get("items")
+        items = [dict(item) for item in raw_items if isinstance(item, dict)] if isinstance(raw_items, list) else []
+        if snapshot is None:
+            return items
+
+        assistant_text = snapshot.assistant_text
+        assistant_item_id = snapshot.assistant_item_id
+        has_agent_message = False
+        for item in items:
+            if item.get("type") != "agentMessage":
+                continue
+            has_agent_message = True
+            if isinstance(assistant_item_id, str) and assistant_item_id:
+                item["id"] = assistant_item_id
+            if assistant_text:
+                item["text"] = assistant_text
+            elif "text" not in item:
+                item["text"] = ""
+            if "phase" not in item:
+                item["phase"] = "final_answer"
+            if "memoryCitation" not in item:
+                item["memoryCitation"] = None
+
+        should_add_assistant_item = (
+            (isinstance(assistant_item_id, str) and assistant_item_id)
+            or assistant_text
+            or snapshot.final_assistant_started_at_ms is not None
+        )
+        if not has_agent_message and should_add_assistant_item:
+            items.append(
+                {
+                    "type": "agentMessage",
+                    "id": (
+                        assistant_item_id
+                        if isinstance(assistant_item_id, str) and assistant_item_id
+                        else f"{turn.get('id')}:assistant"
+                    ),
+                    "text": assistant_text,
+                    "phase": "final_answer",
+                    "memoryCitation": None,
+                }
+            )
+
+        return items
 
     def _build_turn_state_params(
         self,

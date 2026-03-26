@@ -21,7 +21,7 @@ IPC_REQUEST_TIMEOUT_SECONDS = 5.0
 IPC_RECONNECT_DELAY_SECONDS = 1.0
 IPC_DEBUG_ENV = "YIER_CODEX_IPC_DEBUG"
 IPC_DEBUG_FULL_ENV = "YIER_CODEX_IPC_DEBUG_FULL"
-IPC_DEBUG_TEXT_LIMIT = 4000
+IPC_DEBUG_TEXT_LIMIT = 300
 IPC_METHOD_VERSIONS = {
     "thread-stream-state-changed": 5,
     "thread-archived": 2,
@@ -66,7 +66,9 @@ def _truncate_debug_text(value: str, limit: int = IPC_DEBUG_TEXT_LIMIT) -> str:
 
 def _debug_json(value: Any) -> str:
     try:
-        return json.dumps(value, ensure_ascii=False, default=str, sort_keys=True)
+        return json.dumps(
+            value, ensure_ascii=False, default=str, sort_keys=True, indent=2
+        )
     except Exception:
         return repr(value)
 
@@ -74,17 +76,22 @@ def _debug_json(value: Any) -> str:
 def _ipc_debug_log(message: str, **fields: Any) -> None:
     if not _ipc_debug_enabled():
         return
-    filtered_fields = {
-        key: value
-        for key, value in fields.items()
-        if value is not None
-    }
+    filtered_fields = {key: value for key, value in fields.items() if value is not None}
     if filtered_fields:
-        rendered = ", ".join(
-            f"{key}={_truncate_debug_text(_debug_json(value))}"
-            for key, value in filtered_fields.items()
+        codex_ipc_data_struct_jsonl = Path(
+            "/Users/sube/me/yier/dist/codex_ipc_data_struct.jsonl"
         )
-        logger.warning(f"[codex-ipc] {message} | {rendered}")
+        rendered = ""
+        for key, value in filtered_fields.items():
+            debug_json = _debug_json(value)
+            if codex_ipc_data_struct_jsonl.exists():
+                with codex_ipc_data_struct_jsonl.open("a") as f:
+                    f.write(
+                        json.dumps({"key": key, "value": value}, ensure_ascii=False)
+                        + "\n"
+                    )
+            rendered += f"{key}={_truncate_debug_text(debug_json)}\n"
+        logger.warning(f"[codex-ipc] {message} | {rendered}\n\n\n\n")
         return
     logger.warning(f"[codex-ipc] {message}")
 
@@ -238,7 +245,9 @@ class CodexIpcClient:
                 await self._run_task
             self._run_task = None
 
-    async def wait_until_connected(self, timeout: float = IPC_REQUEST_TIMEOUT_SECONDS) -> bool:
+    async def wait_until_connected(
+        self, timeout: float = IPC_REQUEST_TIMEOUT_SECONDS
+    ) -> bool:
         try:
             await asyncio.wait_for(self._connected.wait(), timeout=timeout)
         except TimeoutError:
@@ -250,7 +259,9 @@ class CodexIpcClient:
         _ipc_debug_log(
             "send broadcast",
             method=method,
-            params=params if _ipc_debug_full_enabled() else {"keys": sorted(params.keys())},
+            params=params
+            if _ipc_debug_full_enabled()
+            else {"keys": sorted(params.keys())},
         )
         await self._send_message(
             {
@@ -283,7 +294,9 @@ class CodexIpcClient:
             method=method,
             request_id=request_id,
             target_client_id=target_client_id,
-            params=params if _ipc_debug_full_enabled() else {"keys": sorted(params.keys())},
+            params=params
+            if _ipc_debug_full_enabled()
+            else {"keys": sorted(params.keys())},
         )
         loop = asyncio.get_running_loop()
         future: asyncio.Future[dict[str, Any]] = loop.create_future()
@@ -325,7 +338,9 @@ class CodexIpcClient:
             self._writer = writer
             self.client_id = INITIALIZING_CLIENT_ID
             _ipc_debug_log("ipc socket connected", socket_path=str(self.socket_path))
-            self._read_task = asyncio.create_task(self._read_loop(reader), name="codex-ipc-reader")
+            self._read_task = asyncio.create_task(
+                self._read_loop(reader), name="codex-ipc-reader"
+            )
             try:
                 response = await self.send_request(
                     "initialize",
@@ -334,7 +349,9 @@ class CodexIpcClient:
                 )
                 if response.get("resultType") == "success":
                     result = response.get("result")
-                    if isinstance(result, dict) and isinstance(result.get("clientId"), str):
+                    if isinstance(result, dict) and isinstance(
+                        result.get("clientId"), str
+                    ):
                         self.client_id = result["clientId"]
                         self._connected.set()
                         _ipc_debug_log(
@@ -418,7 +435,11 @@ class CodexIpcClient:
         params = request.get("params")
         version = int(request.get("version", 0) or 0)
         handler = self._request_handlers.get(method)
-        if version != _ipc_method_version(method) or handler is None or not isinstance(params, dict):
+        if (
+            version != _ipc_method_version(method)
+            or handler is None
+            or not isinstance(params, dict)
+        ):
             await self._send_message(
                 {
                     "type": "client-discovery-response",
@@ -530,6 +551,7 @@ class CodexThreadFollowerBridge:
             client_type=client_type,
             socket_path=socket_path,
         )
+        self._register_broadcast_handlers()
         self._register_request_handlers()
 
     async def start(self) -> None:
@@ -547,6 +569,8 @@ class CodexThreadFollowerBridge:
 
         if event in {
             "run_started",
+            "assistant_delta",
+            "assistant_message",
             "approval_requested",
             "approval_resolved",
             "turn_completed",
@@ -571,7 +595,9 @@ class CodexThreadFollowerBridge:
     ) -> None:
         if not self.client.is_connected or not self._is_codex_session(session_id):
             return
-        conversation_state = self.chat_service.build_codex_ipc_conversation_state(session_id)
+        conversation_state = self.chat_service.build_codex_ipc_conversation_state(
+            session_id
+        )
         payload = {
             "conversationId": session_id,
             "change": {
@@ -613,6 +639,72 @@ class CodexThreadFollowerBridge:
                     "messages": messages,
                 },
             )
+
+    def _register_broadcast_handlers(self) -> None:
+        self.client.add_broadcast_handler(
+            "thread-stream-state-changed",
+            self._handle_thread_stream_state_changed_broadcast,
+        )
+        self.client.add_broadcast_handler(
+            "thread-queued-followups-changed",
+            self._handle_thread_queued_followups_changed_broadcast,
+        )
+
+    async def _handle_thread_stream_state_changed_broadcast(
+        self,
+        message: dict[str, Any],
+    ) -> None:
+        params = message.get("params")
+        if not isinstance(params, dict):
+            return
+        session_id = self._conversation_id(params)
+        if not session_id or not self._is_codex_session(session_id):
+            return
+
+        change = params.get("change")
+        change_type = change.get("type") if isinstance(change, dict) else None
+        _ipc_debug_log(
+            "handle stream state broadcast",
+            session_id=session_id,
+            source_client_id=message.get("sourceClientId"),
+            change_type=change_type,
+        )
+        await self.chat_service.event_broker.publish(
+            "codex_session_updated",
+            {
+                "session_id": session_id,
+                "source_client_id": message.get("sourceClientId"),
+                "change_type": str(change_type or ""),
+            },
+        )
+
+    async def _handle_thread_queued_followups_changed_broadcast(
+        self,
+        message: dict[str, Any],
+    ) -> None:
+        params = message.get("params")
+        if not isinstance(params, dict):
+            return
+        session_id = self._conversation_id(params)
+        if not session_id or not self._is_codex_session(session_id):
+            return
+
+        messages = params.get("messages")
+        message_count = len(messages) if isinstance(messages, list) else 0
+        _ipc_debug_log(
+            "handle queued followups broadcast",
+            session_id=session_id,
+            source_client_id=message.get("sourceClientId"),
+            message_count=message_count,
+        )
+        await self.chat_service.event_broker.publish(
+            "codex_session_updated",
+            {
+                "session_id": session_id,
+                "source_client_id": message.get("sourceClientId"),
+                "change_type": "queued_followups",
+            },
+        )
 
     def _register_request_handlers(self) -> None:
         self.client.add_request_handler(
@@ -705,7 +797,9 @@ class CodexThreadFollowerBridge:
             session_id,
             input_payload,
         )
-        await self.broadcast_stream_state(session_id, trigger_event="thread-follower-start-turn")
+        await self.broadcast_stream_state(
+            session_id, trigger_event="thread-follower-start-turn"
+        )
         return {"result": start_response}
 
     async def _handle_steer_turn(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -731,7 +825,9 @@ class CodexThreadFollowerBridge:
             turn_id=turn_id,
             input_payload=input_payload,
         )
-        await self.broadcast_stream_state(session_id, trigger_event="thread-follower-steer-turn")
+        await self.broadcast_stream_state(
+            session_id, trigger_event="thread-follower-steer-turn"
+        )
         return {"result": result}
 
     async def _handle_interrupt_turn(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -750,10 +846,14 @@ class CodexThreadFollowerBridge:
             session_id=session_id,
             turn_id=turn_id or None,
         )
-        await self.broadcast_stream_state(session_id, trigger_event="thread-follower-interrupt-turn")
+        await self.broadcast_stream_state(
+            session_id, trigger_event="thread-follower-interrupt-turn"
+        )
         return {"ok": True}
 
-    async def _handle_set_model_and_reasoning(self, request: dict[str, Any]) -> dict[str, Any]:
+    async def _handle_set_model_and_reasoning(
+        self, request: dict[str, Any]
+    ) -> dict[str, Any]:
         params = self._params(request)
         session_id = self.chat_service.ensure_codex_conversation_session(
             self._conversation_id(params)
@@ -773,7 +873,9 @@ class CodexThreadFollowerBridge:
         )
         return {"ok": True}
 
-    async def _handle_set_collaboration_mode(self, request: dict[str, Any]) -> dict[str, Any]:
+    async def _handle_set_collaboration_mode(
+        self, request: dict[str, Any]
+    ) -> dict[str, Any]:
         params = self._params(request)
         session_id = self.chat_service.ensure_codex_conversation_session(
             self._conversation_id(params)
@@ -795,7 +897,9 @@ class CodexThreadFollowerBridge:
         )
         return {"ok": True}
 
-    async def _handle_edit_last_user_turn(self, request: dict[str, Any]) -> dict[str, Any]:
+    async def _handle_edit_last_user_turn(
+        self, request: dict[str, Any]
+    ) -> dict[str, Any]:
         params = self._params(request)
         session_id = self.chat_service.ensure_codex_conversation_session(
             self._conversation_id(params)
@@ -811,21 +915,27 @@ class CodexThreadFollowerBridge:
             self.chat_service.edit_last_codex_user_turn(session_id, content)
         return {"ok": True}
 
-    async def _handle_command_approval_decision(self, request: dict[str, Any]) -> dict[str, Any]:
+    async def _handle_command_approval_decision(
+        self, request: dict[str, Any]
+    ) -> dict[str, Any]:
         return await self._handle_approval_decision(
             request,
             preferred_kind="command",
             response_payload_builder=self._command_or_file_approval_response_payload,
         )
 
-    async def _handle_file_approval_decision(self, request: dict[str, Any]) -> dict[str, Any]:
+    async def _handle_file_approval_decision(
+        self, request: dict[str, Any]
+    ) -> dict[str, Any]:
         return await self._handle_approval_decision(
             request,
             preferred_kind="file_change",
             response_payload_builder=self._command_or_file_approval_response_payload,
         )
 
-    async def _handle_submit_user_input(self, request: dict[str, Any]) -> dict[str, Any]:
+    async def _handle_submit_user_input(
+        self, request: dict[str, Any]
+    ) -> dict[str, Any]:
         return await self._handle_approval_decision(
             request,
             preferred_kind=None,
@@ -842,7 +952,9 @@ class CodexThreadFollowerBridge:
             response_payload_builder=lambda params: self._response_payload(params),
         )
 
-    async def _handle_set_queued_followups_state(self, request: dict[str, Any]) -> dict[str, Any]:
+    async def _handle_set_queued_followups_state(
+        self, request: dict[str, Any]
+    ) -> dict[str, Any]:
         params = self._params(request)
         session_id = self.chat_service.ensure_codex_conversation_session(
             self._conversation_id(params)
@@ -923,7 +1035,9 @@ class CodexThreadFollowerBridge:
             return turn_start_params
         return params
 
-    def _collaboration_mode_value(self, params: dict[str, Any]) -> dict[str, Any] | str | None:
+    def _collaboration_mode_value(
+        self, params: dict[str, Any]
+    ) -> dict[str, Any] | str | None:
         for key in ("collaborationMode", "collaboration_mode"):
             value = params.get(key)
             if isinstance(value, dict):
@@ -971,7 +1085,9 @@ class CodexThreadFollowerBridge:
             return message.strip()
         return self._prompt_text(params)
 
-    def _steer_input_payload(self, params: dict[str, Any]) -> list[dict[str, Any]] | dict[str, Any] | str | None:
+    def _steer_input_payload(
+        self, params: dict[str, Any]
+    ) -> list[dict[str, Any]] | dict[str, Any] | str | None:
         for key in ("input", "inputItems", "items"):
             value = params.get(key)
             if isinstance(value, (list, dict)):
@@ -1025,7 +1141,11 @@ class CodexThreadFollowerBridge:
                 break
         if raw_decision in {"accept", "approve", "approved", "allow"}:
             return "accept"
-        if raw_decision in {"accept_for_session", "approve_for_session", "allow_for_session"}:
+        if raw_decision in {
+            "accept_for_session",
+            "approve_for_session",
+            "allow_for_session",
+        }:
             return "accept_for_session"
         if raw_decision in {"decline", "deny", "reject", "rejected"}:
             return "decline"

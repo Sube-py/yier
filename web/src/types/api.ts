@@ -880,6 +880,15 @@ export interface CodexPairedEditorUpdateEvent {
   }
 }
 
+export interface CodexSessionUpdatedEvent {
+  event: 'codex_session_updated'
+  data: {
+    session_id: string
+    source_client_id?: string
+    change_type?: string
+  }
+}
+
 export type ChatStreamEvent =
   | ChatRunStartedEvent
   | ChatToolStartEvent
@@ -911,6 +920,7 @@ export type ChatStreamEvent =
   | ChannelLoginQrEvent
   | CodexPairingsUpdatedEvent
   | CodexPairedEditorUpdateEvent
+  | CodexSessionUpdatedEvent
 
 export interface UiChatMessage {
   id: string

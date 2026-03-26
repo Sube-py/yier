@@ -68,7 +68,12 @@ class FakeChatService:
         self.interrupted_turns: list[tuple[str, str | None]] = []
         self.responded_raw_requests: list[tuple[str, str, dict[str, Any]]] = []
         self.updated_backend_states: list[tuple[str, dict[str, Any]]] = []
+        self.published_events: list[tuple[str, dict[str, Any]]] = []
         self.followup_queue = _FakeFollowupQueue(["Review logs", "Push update"])
+        self.event_broker = SimpleNamespace(publish=self._publish_event)
+
+    async def _publish_event(self, event: str, data: dict[str, Any]) -> None:
+        self.published_events.append((event, data))
 
     def can_handle_codex_conversation(self, conversation_id: str) -> bool:
         return conversation_id == "thread-1"
@@ -216,6 +221,49 @@ class FakeChatService:
 
 def _test_socket_path() -> Path:
     return Path("/tmp") / f"yipc-{os.getpid()}-{uuid4().hex[:8]}.sock"
+
+
+def test_codex_thread_follower_bridge_publishes_local_event_for_stream_state_broadcast() -> None:
+    async def scenario() -> None:
+        fake_chat_service = FakeChatService()
+        bridge = CodexThreadFollowerBridge(
+            chat_service=fake_chat_service,  # type: ignore[arg-type]
+            socket_path=_test_socket_path(),
+        )
+
+        await bridge.client._handle_broadcast(
+            {
+                "type": "broadcast",
+                "method": "thread-stream-state-changed",
+                "sourceClientId": "codex-app-client",
+                "params": {
+                    "conversationId": "thread-1",
+                    "change": {
+                        "type": "patches",
+                        "patches": [
+                            {
+                                "op": "replace",
+                                "path": ["turns", 7, "status"],
+                                "value": "completed",
+                            }
+                        ],
+                    },
+                },
+            }
+        )
+
+        assert fake_chat_service.published_events == [
+            (
+                "codex_session_updated",
+                {
+                    "session_id": "thread-1",
+                    "source_client_id": "codex-app-client",
+                    "change_type": "patches",
+                },
+            )
+        ]
+
+    asyncio.run(scenario())
 
 
 def test_codex_thread_follower_bridge_handles_start_turn_and_broadcast(tmp_path: Path) -> None:

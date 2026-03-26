@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 import json
+import logging
+import os
 from pathlib import Path
 from time import time
 from typing import Any, AsyncIterator, Awaitable, Callable
@@ -64,6 +66,30 @@ from yier_web.streaming_tools import (
 from yier_web.tool_events import reset_tool_event_emitter, set_tool_event_emitter
 
 StreamEmitter = Callable[[str, dict[str, Any]], Awaitable[None]]
+logger = logging.getLogger(__name__)
+
+
+def _codex_ipc_debug_enabled() -> bool:
+    return os.getenv("YIER_CODEX_IPC_DEBUG", "").strip().lower() not in {
+        "",
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
+def _codex_ipc_debug_log(message: str, **fields: Any) -> None:
+    if not _codex_ipc_debug_enabled():
+        return
+    if fields:
+        rendered = ", ".join(
+            f"{key}={value!r}"
+            for key, value in fields.items()
+        )
+        logger.warning(f"[chat-codex-ipc] {message} | {rendered}")
+        return
+    logger.warning(f"[chat-codex-ipc] {message}")
 
 
 class ChatService:
@@ -602,6 +628,12 @@ class ChatService:
         if not isinstance(backend, CodexAppServerBackend):
             return None
 
+        if backend.should_use_local_session_view(context):
+            return (
+                self.build_transcript_messages(session_id),
+                self.get_session_activity_events(session_id),
+            )
+
         view = backend.load_thread_view(context)
         self.ensure_session_metadata(
             session_id,
@@ -666,6 +698,22 @@ class ChatService:
             with suppress(asyncio.CancelledError):
                 await producer
 
+    async def _emit_stream_event(
+        self,
+        event: str,
+        data: dict[str, Any],
+        *,
+        event_queue: asyncio.Queue[dict[str, Any] | None] | None = None,
+        publish_to_event_broker: bool = False,
+    ) -> None:
+        self._handle_internal_event(event, data)
+        self._persist_ui_event(event, data)
+        await self.codex_ipc_bridge.notify_stream_event(event, data)
+        if publish_to_event_broker:
+            await self.event_broker.publish(event, data)
+        if event_queue is not None:
+            await event_queue.put({"event": event, "data": data})
+
     async def _produce_stream_events(
         self,
         session_id: str,
@@ -673,10 +721,11 @@ class ChatService:
         event_queue: asyncio.Queue[dict[str, Any] | None],
     ) -> None:
         async def emit(event: str, data: dict[str, Any]) -> None:
-            self._handle_internal_event(event, data)
-            self._persist_ui_event(event, data)
-            await self.codex_ipc_bridge.notify_stream_event(event, data)
-            await event_queue.put({"event": event, "data": data})
+            await self._emit_stream_event(
+                event,
+                data,
+                event_queue=event_queue,
+            )
 
         finish_reason = "stop"
         token = set_tool_event_emitter(emit)
@@ -695,10 +744,11 @@ class ChatService:
                 session_id,
                 Message(role="user", content=user_message),
             )
-            await emit("run_started", {"session_id": session_id})
             backend = self.backends.get(context.backend_id)
             if backend is None:
                 raise RuntimeError(f"Unknown backend: {context.backend_id}")
+            if context.backend_id != "codex":
+                await emit("run_started", {"session_id": session_id})
             finish_reason = await backend.stream_chat(context, user_message, emit)
         except Exception as exc:
             finish_reason = "error"
@@ -798,6 +848,18 @@ class ChatService:
         if session_lock.locked():
             raise RuntimeError("Codex turn is already running for this session.")
 
+        user_message = self._codex_input_payload_text(prompt)
+        if user_message:
+            self._append_transcript_message(
+                session_id,
+                Message(role="user", content=user_message),
+            )
+
+        _codex_ipc_debug_log(
+            "start_codex_turn_in_background before backend.start_turn",
+            session_id=session_id,
+            prompt_type=type(prompt).__name__,
+        )
         start_response = await backend.start_turn(context, prompt)
         turn = start_response.get("turn")
         if not isinstance(turn, dict):
@@ -805,6 +867,11 @@ class ChatService:
         turn_id = turn.get("id")
         if not isinstance(turn_id, str) or not turn_id:
             raise RuntimeError("Codex start turn response did not include a turn id.")
+        _codex_ipc_debug_log(
+            "start_codex_turn_in_background after backend.start_turn",
+            session_id=session_id,
+            turn_id=turn_id,
+        )
 
         task = asyncio.create_task(
             self._consume_codex_turn_stream_to_event_broker(session_id, turn_id),
@@ -841,11 +908,44 @@ class ChatService:
         backend = self.backends.get(context.backend_id)
         if not isinstance(backend, CodexAppServerBackend):
             raise RuntimeError("Codex backend is not available.")
-        async with self._session_lock(session_id):
-            await backend.consume_turn_stream(
-                context,
-                turn_id,
-                self.event_broker.publish,
+
+        async def emit(event: str, data: dict[str, Any]) -> None:
+            await self._emit_stream_event(
+                event,
+                data,
+                publish_to_event_broker=True,
+            )
+
+        finish_reason = "stop"
+        try:
+            async with self._session_lock(session_id):
+                finish_reason = await backend.consume_turn_stream(
+                    context,
+                    turn_id,
+                    emit,
+                )
+        except Exception as exc:
+            finish_reason = "error"
+            logger.exception(
+                "Failed to consume Codex turn stream for session %s",
+                session_id,
+            )
+            await self._emit_stream_event(
+                "error",
+                {
+                    "session_id": session_id,
+                    "message": str(exc),
+                },
+                publish_to_event_broker=True,
+            )
+        finally:
+            await self._emit_stream_event(
+                "done",
+                {
+                    "session_id": session_id,
+                    "finish_reason": finish_reason,
+                },
+                publish_to_event_broker=True,
             )
 
     async def steer_codex_turn(
@@ -888,6 +988,8 @@ class ChatService:
 
     def build_codex_ipc_conversation_state(self, session_id: str) -> dict[str, Any]:
         metadata = self.get_session_metadata(session_id)
+        context = self.get_session_context(session_id)
+        backend = self.backends.get(context.backend_id)
         runtime = self.get_backend_runtime(session_id)
         backend_state = metadata["backend_state"]
         current_timestamp_ms = int(time() * 1000)
@@ -899,7 +1001,7 @@ class ChatService:
             backend = native_state["backend"]
             thread = native_state["thread"]
             turns = backend.build_ipc_turns(
-                self.get_session_context(session_id),
+                context,
                 [turn for turn in thread.get("turns", []) if isinstance(turn, dict)],
             )
             created_at_ms = int(thread.get("createdAt", 0) or 0) * 1000 or current_timestamp_ms
@@ -923,6 +1025,8 @@ class ChatService:
             }
         else:
             turns = self._build_fallback_codex_ipc_turns(session_id, runtime.status)
+            if isinstance(backend, CodexAppServerBackend):
+                turns = backend.build_ipc_turns(context, turns)
             updated_at = metadata.get("updated_at")
             created_at_ms = (
                 int(updated_at * 1000)
@@ -951,6 +1055,7 @@ class ChatService:
             fallback_type=runtime.status,
             fallback_active_flags=list(runtime.active_flags),
             pending_requests=pending_requests,
+            turns=turns,
         )
 
         conversation_state = {
@@ -987,6 +1092,8 @@ class ChatService:
             return None
         backend = self.backends.get(context.backend_id)
         if not isinstance(backend, CodexAppServerBackend):
+            return None
+        if backend.should_use_local_session_view(context):
             return None
         thread_id = context.backend_state.get("thread_id")
         if not isinstance(thread_id, str) or not thread_id:
@@ -1066,6 +1173,7 @@ class ChatService:
         fallback_type: str,
         fallback_active_flags: list[str],
         pending_requests: list[dict[str, Any]],
+        turns: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         root = value.get("root") if isinstance(value, dict) else None
         payload = root if isinstance(root, dict) else value
@@ -1085,6 +1193,15 @@ class ChatService:
                 ]
         elif isinstance(payload, str) and payload:
             status_type = payload
+
+        if fallback_type == "active" and status_type in {"", "idle"}:
+            status_type = "active"
+
+        if isinstance(turns, list) and any(
+            isinstance(turn, dict) and turn.get("status") == "inProgress"
+            for turn in turns
+        ):
+            status_type = "active"
 
         if self._codex_ipc_has_waiting_on_approval_request(pending_requests):
             if status_type in {"", "idle"}:
@@ -1357,6 +1474,39 @@ class ChatService:
             preview=preview,
             updated_at=time(),
         )
+
+    def _codex_input_payload_text(
+        self,
+        input_payload: list[dict[str, Any]] | dict[str, Any] | str,
+    ) -> str:
+        parts: list[str] = []
+
+        def collect(value: Any) -> None:
+            if isinstance(value, str):
+                normalized = value.strip()
+                if normalized:
+                    parts.append(normalized)
+                return
+            if isinstance(value, list):
+                for entry in value:
+                    collect(entry)
+                return
+            if not isinstance(value, dict):
+                return
+
+            text_value = value.get("text")
+            if isinstance(text_value, str) and text_value.strip():
+                parts.append(text_value.strip())
+
+            content_value = value.get("content")
+            if isinstance(content_value, str) and content_value.strip():
+                parts.append(content_value.strip())
+            elif isinstance(content_value, list):
+                for entry in content_value:
+                    collect(entry)
+
+        collect(input_payload)
+        return "\n".join(parts)
 
     def _session_title(self, messages: list[dict[str, Any]]) -> str:
         for message in messages:

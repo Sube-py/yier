@@ -3049,6 +3049,134 @@ describe('App', () => {
     expect(wrapper.text()).toContain('ready on http://localhost:3000')
   })
 
+  it('refreshes the active session when Codex IPC updates arrive', async () => {
+    localStorage.setItem('yier.active-session-id', 'session-1')
+
+    let sessionRequestCount = 0
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const path = input.toString()
+        if (path.endsWith('/api/health')) {
+          return jsonResponse({
+            frontend: { ready: true, mode: 'static' },
+            llm: { ready: true },
+            mcp: { ready: true, runtime: {} },
+            allowed_roots: ['/tmp/project'],
+          })
+        }
+        if (path.endsWith('/api/config')) {
+          return jsonResponse({
+            llm: { base_url: 'https://example.test', model: 'demo', has_api_key: true },
+            allowed_roots: ['/tmp/project'],
+            mcp_runtime: {},
+          })
+        }
+        if (path.endsWith('/api/config/mcp')) {
+          return jsonResponse({ mcp_servers: {}, runtime: {} })
+        }
+        if (isSessionListRequest(path, init)) {
+          return jsonResponse({
+            sessions: [
+              {
+                session_id: 'session-1',
+                title: 'Codex thread',
+                preview: '',
+                updated_at: 1,
+                message_count: 0,
+                source: 'chat',
+                backend_id: 'codex',
+                project_path: '/tmp/project',
+                channel_meta: null,
+                codex_work_mode: 'build',
+              },
+            ],
+          })
+        }
+        if (path.endsWith('/api/codex/workspace')) {
+          return jsonResponse({ projects: [], paired_editors: [] })
+        }
+        if (path.endsWith('/api/channel/workspace')) {
+          return jsonResponse({ platforms: [], accounts: [] })
+        }
+        if (path.endsWith('/api/channel/platforms')) {
+          return jsonResponse({ platforms: [] })
+        }
+        if (path.endsWith('/api/channel/config')) {
+          return jsonResponse({ enabled_platforms: [], weixin: {} })
+        }
+        if (path.endsWith('/api/channel/monitor/sessions')) {
+          return jsonResponse({ sessions: [] })
+        }
+        if (path.endsWith('/api/chat/sessions/session-1')) {
+          sessionRequestCount += 1
+          const hasSynced = sessionRequestCount > 1
+          return jsonResponse({
+            session_id: 'session-1',
+            source: 'chat',
+            backend_id: 'codex',
+            project_path: '/tmp/project',
+            channel_meta: null,
+            codex_work_mode: 'build',
+            backend_runtime: {
+              backend_id: 'codex',
+              label: 'Codex App Server',
+              ready: true,
+              status: hasSynced ? 'idle' : 'active',
+              thread_id: 'session-1',
+              active_flags: [],
+              detail: hasSynced ? 'Turn completed.' : 'Codex is working on this turn.',
+              pending_approval_count: 0,
+            },
+            pending_approvals: [],
+            messages: hasSynced
+              ? [
+                  {
+                    role: 'user',
+                    content: '没事 休息吧',
+                    reasoning_content: null,
+                    tool_call_id: null,
+                    source: 'chat',
+                    channel_meta: null,
+                  },
+                  {
+                    role: 'assistant',
+                    content: '好，先休息一会儿。你需要我的时候，我随时在。',
+                    reasoning_content: null,
+                    tool_call_id: null,
+                    source: 'chat',
+                    channel_meta: null,
+                  },
+                ]
+              : [],
+            activity_events: [],
+          })
+        }
+        throw new Error(`Unexpected request: ${path}`)
+      }),
+    )
+
+    const wrapper = await mountApp()
+    await flushPromises()
+
+    const eventSource = MockEventSource.instances[0]
+    expect(eventSource).toBeTruthy()
+    if (!eventSource) {
+      throw new Error('Expected persistent EventSource connection.')
+    }
+
+    eventSource.emit('codex_session_updated', {
+      session_id: 'session-1',
+      change_type: 'patches',
+    })
+    await new Promise((resolve) => window.setTimeout(resolve, 80))
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('没事 休息吧')
+    expect(wrapper.text()).toContain('好，先休息一会儿。你需要我的时候，我随时在。')
+  })
+
   it('merges background shell tool updates into one activity', async () => {
     vi.stubGlobal(
       'fetch',

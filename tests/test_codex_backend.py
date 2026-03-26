@@ -293,6 +293,58 @@ def test_codex_backend_emits_turn_completed_for_completed_turn() -> None:
     ]
 
 
+def test_codex_backend_build_ipc_turns_includes_streaming_assistant_item_from_snapshot() -> None:
+    backend = CodexAppServerBackend(SimpleNamespace())
+    context = ChatSessionContext(
+        session_id="session-1",
+        source="chat",
+        backend_id="codex",
+        project_path=Path("/tmp/project"),
+        channel_meta=None,
+        backend_state={"thread_id": "thread-1"},
+    )
+    runtime = CodexSessionRuntime(session_id="session-1", thread_id="thread-1", status="active")
+    runtime.turn_snapshots["turn-1"] = TurnSnapshotState(
+        params={"threadId": "thread-1", "input": [{"type": "text", "text": "谢谢啊"}]},
+        turn_started_at_ms=1000,
+        final_assistant_started_at_ms=1200,
+        assistant_item_id="assistant-1",
+        assistant_text="不客气，今天也辛苦了。",
+    )
+    backend._runtimes["session-1"] = runtime
+
+    payload = backend.build_ipc_turns(
+        context,
+        [
+            {
+                "id": "turn-1",
+                "status": "inProgress",
+                "items": [],
+            }
+        ],
+    )
+
+    assert payload == [
+        {
+            "id": "turn-1",
+            "turnId": "turn-1",
+            "status": "inProgress",
+            "items": [
+                {
+                    "type": "agentMessage",
+                    "id": "assistant-1",
+                    "text": "不客气，今天也辛苦了。",
+                    "phase": "final_answer",
+                    "memoryCitation": None,
+                }
+            ],
+            "turnStartedAtMs": 1000,
+            "finalAssistantStartedAtMs": 1200,
+            "params": {"threadId": "thread-1", "input": [{"type": "text", "text": "谢谢啊"}]},
+        }
+    ]
+
+
 def test_codex_backend_emits_turn_aborted_for_interrupted_turn() -> None:
     chat_service = SimpleNamespace(update_session_backend_state=lambda session_id, state: None)
     backend = CodexAppServerBackend(chat_service)
@@ -637,7 +689,15 @@ def test_codex_backend_build_ipc_turns_merges_snapshot_state() -> None:
             "id": "turn-1",
             "turnId": "turn-1",
             "status": "completed",
-            "items": [],
+            "items": [
+                {
+                    "type": "agentMessage",
+                    "id": "turn-1:assistant",
+                    "text": "",
+                    "phase": "final_answer",
+                    "memoryCitation": None,
+                }
+            ],
             "params": {
                 "threadId": "thread-1",
                 "input": [{"type": "text", "text": "hello"}],
@@ -645,6 +705,56 @@ def test_codex_backend_build_ipc_turns_merges_snapshot_state() -> None:
             },
             "turnStartedAtMs": 111,
             "finalAssistantStartedAtMs": 222,
+        }
+    ]
+
+
+def test_codex_backend_build_ipc_turns_appends_active_snapshot_placeholder() -> None:
+    settings = WebSettings(codex=StoredCodexSettings(sandbox="workspace-write"))
+    chat_service = SimpleNamespace(
+        config_service=SimpleNamespace(load_web_settings=lambda: settings),
+    )
+    backend = CodexAppServerBackend(chat_service)
+    context = ChatSessionContext(
+        session_id="session-1",
+        source="chat",
+        backend_id="codex",
+        project_path=Path("/tmp/project"),
+        channel_meta=None,
+        backend_state={"thread_id": "thread-1"},
+    )
+    backend._runtimes["session-1"] = CodexSessionRuntime(
+        session_id="session-1",
+        status="active",
+        turn_snapshots={
+            "turn-live": TurnSnapshotState(
+                params={
+                    "threadId": "thread-1",
+                    "input": [{"type": "text", "text": "hello"}],
+                    "cwd": "/tmp/project",
+                },
+                turn_started_at_ms=111,
+                final_assistant_started_at_ms=None,
+            )
+        },
+    )
+
+    payload = backend.build_ipc_turns(context, [])
+
+    assert payload == [
+        {
+            "id": "turn-live",
+            "turnId": "turn-live",
+            "status": "inProgress",
+            "items": [],
+            "error": None,
+            "params": {
+                "threadId": "thread-1",
+                "input": [{"type": "text", "text": "hello"}],
+                "cwd": "/tmp/project",
+            },
+            "turnStartedAtMs": 111,
+            "finalAssistantStartedAtMs": None,
         }
     ]
 

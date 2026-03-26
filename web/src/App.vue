@@ -189,6 +189,8 @@ const backendOptions = computed(
 const defaultAllowedRoots = computed(() => health.value?.allowed_roots ?? [])
 let closePersistentEventStream: (() => void) | null = null
 let pairedEditorSyncTimer: number | null = null
+let codexSessionSyncTimer: number | null = null
+let latestSessionLoadRequestId = 0
 let lastPairedEditorSyncSignature = ''
 const backgroundActivityIdsByToolCallId = new Map<string, string>()
 let hydratingLlmForm = false
@@ -348,6 +350,10 @@ onBeforeUnmount(() => {
     window.clearTimeout(pairedEditorSyncTimer)
     pairedEditorSyncTimer = null
   }
+  if (codexSessionSyncTimer !== null) {
+    window.clearTimeout(codexSessionSyncTimer)
+    codexSessionSyncTimer = null
+  }
 })
 
 async function bootstrap() {
@@ -408,18 +414,7 @@ async function refreshDashboard() {
 async function ensureSession() {
   if (activeSessionId.value) {
     try {
-      const transcript = await apiGet<SessionTranscriptResponse>(
-        `/api/chat/sessions/${activeSessionId.value}`,
-      )
-      chatMessages.value = toUiMessages(transcript.messages)
-      activities.value = []
-      activeSessionRuntime.value = transcript.backend_runtime ?? null
-      activeCodexWorkMode.value = transcript.codex_work_mode ?? 'build'
-      backgroundActivityIdsByToolCallId.clear()
-      replaySessionActivityEvents(
-        Array.isArray(transcript.activity_events) ? transcript.activity_events : [],
-      )
-      appendPendingApprovalActivities(transcript.pending_approvals ?? [])
+      await loadSessionTranscript(activeSessionId.value)
       return
     } catch {
       activeSessionId.value = ''
@@ -607,6 +602,25 @@ async function refreshSessionHistory() {
   codexWorkspace.value = codexWorkspacePayload
 }
 
+async function loadSessionTranscript(sessionId: string) {
+  const requestId = ++latestSessionLoadRequestId
+  const transcript = await apiGet<SessionTranscriptResponse>(
+    `/api/chat/sessions/${sessionId}`,
+  )
+  if (requestId !== latestSessionLoadRequestId || sessionId !== activeSessionId.value) {
+    return
+  }
+  chatMessages.value = toUiMessages(transcript.messages)
+  activities.value = []
+  activeSessionRuntime.value = transcript.backend_runtime ?? null
+  activeCodexWorkMode.value = transcript.codex_work_mode ?? 'build'
+  backgroundActivityIdsByToolCallId.clear()
+  replaySessionActivityEvents(
+    Array.isArray(transcript.activity_events) ? transcript.activity_events : [],
+  )
+  appendPendingApprovalActivities(transcript.pending_approvals ?? [])
+}
+
 async function openSessionFromHistory(sessionId: string) {
   if (!sessionId || sessionId === activeSessionId.value) {
     if (!isChatRoute.value) {
@@ -724,6 +738,19 @@ function schedulePairedEditorStateSync() {
   }, 80)
 }
 
+function scheduleCodexSessionSync(sessionId: string) {
+  if (!sessionId || sessionId !== activeSessionId.value) {
+    return
+  }
+  if (codexSessionSyncTimer !== null) {
+    window.clearTimeout(codexSessionSyncTimer)
+  }
+  codexSessionSyncTimer = window.setTimeout(() => {
+    codexSessionSyncTimer = null
+    void loadSessionTranscript(sessionId)
+  }, 40)
+}
+
 async function syncPairedEditorState() {
   const payload: CodexPairedEditorStateRequest = {
     session_id: activeSessionId.value,
@@ -779,6 +806,11 @@ function handleStreamEvent(event: ChatStreamEvent) {
     composerSelectionStart.value = event.data.selection_start
     composerSelectionEnd.value = event.data.selection_end
     composerSelectionVersion.value += 1
+    return
+  }
+
+  if (event.event === 'codex_session_updated') {
+    scheduleCodexSessionSync(event.data.session_id)
     return
   }
 

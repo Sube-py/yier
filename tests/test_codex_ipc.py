@@ -1041,6 +1041,168 @@ def test_codex_thread_follower_bridge_emits_first_assistant_delta_like_codex_app
     asyncio.run(scenario())
 
 
+def test_codex_thread_follower_bridge_waits_for_terminal_done_snapshot() -> None:
+    async def scenario() -> None:
+        socket_path = _test_socket_path()
+        messages_from_client: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        client_ready = asyncio.Event()
+        server_writer: asyncio.StreamWriter | None = None
+
+        async def handle_connection(
+            reader: asyncio.StreamReader,
+            writer: asyncio.StreamWriter,
+        ) -> None:
+            nonlocal server_writer
+            initialize_request = await _read_frame(reader)
+            server_writer = writer
+            await _send_frame(
+                writer,
+                {
+                    "type": "response",
+                    "requestId": initialize_request["requestId"],
+                    "resultType": "success",
+                    "method": "initialize",
+                    "handledByClientId": "router-client",
+                    "result": {"clientId": "client-yier"},
+                },
+            )
+            client_ready.set()
+            while True:
+                try:
+                    message = await _read_frame(reader)
+                except asyncio.IncompleteReadError:
+                    break
+                await messages_from_client.put(message)
+
+        server = await asyncio.start_unix_server(handle_connection, path=socket_path)
+        fake_chat_service = FakeChatService()
+        states = [
+            {
+                "id": "thread-1",
+                "hostId": "local",
+                "turns": [
+                    {
+                        "id": "turn-1",
+                        "turnId": "turn-1",
+                        "status": "inProgress",
+                        "items": [],
+                    }
+                ],
+                "pendingSteers": [],
+                "requests": [],
+                "createdAt": 1,
+                "updatedAt": 2,
+                "title": "Thread 1",
+                "source": "chat",
+                "latestModel": "gpt-test",
+                "latestReasoningEffort": None,
+                "previousTurnModel": None,
+                "latestCollaborationMode": {
+                    "mode": "default",
+                    "settings": {
+                        "model": "gpt-test",
+                        "reasoning_effort": None,
+                        "developer_instructions": None,
+                    },
+                },
+                "hasUnreadTurn": True,
+                "rolloutPath": "",
+                "gitInfo": None,
+                "resumeState": "resumed",
+                "latestTokenUsageInfo": None,
+                "cwd": "/tmp/project",
+                "threadId": "thread-1",
+                "threadRuntimeStatus": {
+                    "type": "active",
+                    "activeFlags": [],
+                },
+            },
+            {
+                "id": "thread-1",
+                "hostId": "local",
+                "turns": [
+                    {
+                        "id": "turn-1",
+                        "turnId": "turn-1",
+                        "status": "completed",
+                        "items": [],
+                    }
+                ],
+                "pendingSteers": [],
+                "requests": [],
+                "createdAt": 1,
+                "updatedAt": 3,
+                "title": "Thread 1",
+                "source": "chat",
+                "latestModel": "gpt-test",
+                "latestReasoningEffort": None,
+                "previousTurnModel": None,
+                "latestCollaborationMode": {
+                    "mode": "default",
+                    "settings": {
+                        "model": "gpt-test",
+                        "reasoning_effort": None,
+                        "developer_instructions": None,
+                    },
+                },
+                "hasUnreadTurn": False,
+                "rolloutPath": "",
+                "gitInfo": None,
+                "resumeState": "resumed",
+                "latestTokenUsageInfo": None,
+                "cwd": "/tmp/project",
+                "threadId": "thread-1",
+                "threadRuntimeStatus": {
+                    "type": "idle",
+                    "activeFlags": [],
+                },
+            },
+        ]
+
+        def build_state(session_id: str) -> dict[str, Any]:
+            assert session_id == "thread-1"
+            if len(states) > 1:
+                return states.pop(0)
+            return states[0]
+
+        fake_chat_service.build_codex_ipc_conversation_state = build_state  # type: ignore[method-assign]
+        bridge = CodexThreadFollowerBridge(
+            chat_service=fake_chat_service,  # type: ignore[arg-type]
+            socket_path=socket_path,
+        )
+
+        try:
+            await bridge.start()
+            assert await bridge.client.wait_until_connected(timeout=2.0)
+            await asyncio.wait_for(client_ready.wait(), timeout=2.0)
+            assert server_writer is not None
+
+            await bridge.notify_stream_event(
+                "done",
+                {"session_id": "thread-1", "finish_reason": "stop"},
+            )
+
+            snapshot_broadcast = await _wait_for_message(
+                messages_from_client,
+                predicate=lambda message: message.get("type") == "broadcast"
+                and message.get("method") == "thread-stream-state-changed"
+                and message.get("params", {}).get("change", {}).get("type") == "snapshot",
+            )
+            conversation_state = snapshot_broadcast["params"]["change"]["conversationState"]
+            assert conversation_state["turns"][0]["status"] == "completed"
+            assert conversation_state["threadRuntimeStatus"]["type"] == "idle"
+            assert conversation_state["_yier_trigger_event"] == "done"
+        finally:
+            await bridge.stop()
+            if server_writer is not None:
+                server_writer.close()
+                await server_writer.wait_closed()
+            server.close()
+            socket_path.unlink(missing_ok=True)
+
+    asyncio.run(scenario())
+
+
 def test_codex_thread_follower_bridge_maps_approval_request_without_request_id(tmp_path: Path) -> None:
     async def scenario() -> None:
         socket_path = _test_socket_path()

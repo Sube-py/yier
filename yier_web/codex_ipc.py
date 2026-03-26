@@ -23,6 +23,8 @@ IPC_RECONNECT_DELAY_SECONDS = 1.0
 IPC_DEBUG_ENV = "YIER_CODEX_IPC_DEBUG"
 IPC_DEBUG_FULL_ENV = "YIER_CODEX_IPC_DEBUG_FULL"
 IPC_DEBUG_TEXT_LIMIT = 300
+DONE_STATE_SETTLE_ATTEMPTS = 5
+DONE_STATE_SETTLE_DELAY_SECONDS = 0.05
 IPC_METHOD_VERSIONS = {
     "thread-stream-state-changed": 5,
     "thread-archived": 2,
@@ -595,7 +597,25 @@ class CodexThreadFollowerBridge:
             "done",
         }
         if event in live_patch_events:
-            if not patches_emitted and event != "done":
+            snapshot_compatibility_events = {
+                "run_started",
+                "assistant_message",
+                "turn_completed",
+                "turn_aborted",
+                "done",
+            }
+            if event in snapshot_compatibility_events:
+                conversation_state = None
+                if event == "done":
+                    conversation_state = await self._settle_done_conversation_state(
+                        session_id
+                    )
+                await self.broadcast_stream_state(
+                    session_id,
+                    trigger_event=event,
+                    conversation_state=conversation_state,
+                )
+            elif not patches_emitted and event != "done":
                 await self.broadcast_stream_state(session_id, trigger_event=event)
             return
 
@@ -660,12 +680,14 @@ class CodexThreadFollowerBridge:
         session_id: str,
         *,
         trigger_event: str | None = None,
+        conversation_state: dict[str, Any] | None = None,
     ) -> None:
         if not self.client.is_connected or not self._is_codex_session(session_id):
             return
-        conversation_state = self.chat_service.build_codex_ipc_conversation_state(
-            session_id
-        )
+        if conversation_state is None:
+            conversation_state = self.chat_service.build_codex_ipc_conversation_state(
+                session_id
+            )
         payload = {
             "conversationId": session_id,
             "change": {
@@ -690,6 +712,49 @@ class CodexThreadFollowerBridge:
         )
         with contextlib.suppress(Exception):
             await self.client.send_broadcast("thread-stream-state-changed", payload)
+
+    async def _settle_done_conversation_state(
+        self,
+        session_id: str,
+    ) -> dict[str, Any]:
+        conversation_state = self.chat_service.build_codex_ipc_conversation_state(
+            session_id
+        )
+        if self._is_terminal_conversation_state(conversation_state):
+            return conversation_state
+
+        for _ in range(DONE_STATE_SETTLE_ATTEMPTS):
+            await asyncio.sleep(DONE_STATE_SETTLE_DELAY_SECONDS)
+            conversation_state = self.chat_service.build_codex_ipc_conversation_state(
+                session_id
+            )
+            if self._is_terminal_conversation_state(conversation_state):
+                return conversation_state
+
+        _ipc_debug_log(
+            "done state still non-terminal after settle wait",
+            session_id=session_id,
+            conversation_state=_conversation_state_summary(conversation_state),
+        )
+        return conversation_state
+
+    def _is_terminal_conversation_state(
+        self,
+        conversation_state: dict[str, Any],
+    ) -> bool:
+        turns = conversation_state.get("turns")
+        if isinstance(turns, list):
+            for turn in turns:
+                if isinstance(turn, dict) and turn.get("status") == "inProgress":
+                    return False
+
+        thread_runtime_status = conversation_state.get("threadRuntimeStatus")
+        if isinstance(thread_runtime_status, dict):
+            status_type = thread_runtime_status.get("type")
+            if isinstance(status_type, str) and status_type == "active":
+                return False
+
+        return True
 
     async def broadcast_queued_followups(self, session_id: str) -> None:
         if not self.client.is_connected or not self._is_codex_session(session_id):

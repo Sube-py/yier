@@ -489,6 +489,29 @@ class CodexAppServerBackend(ChatBackend):
 
         missing_snapshots.sort(key=lambda item: item[1].turn_started_at_ms or 0)
         turn_id, snapshot = missing_snapshots[-1]
+        if normalized_turns and self._can_merge_snapshot_into_last_turn(
+            context,
+            normalized_turns[-1],
+            snapshot,
+        ):
+            last_turn = normalized_turns[-1]
+            last_turn["id"] = turn_id
+            last_turn["turnId"] = turn_id
+            last_turn["status"] = "inProgress"
+            last_turn["error"] = last_turn.get("error")
+            last_turn["diff"] = last_turn.get("diff")
+            last_turn["turnStartedAtMs"] = snapshot.turn_started_at_ms
+            last_turn["finalAssistantStartedAtMs"] = snapshot.final_assistant_started_at_ms
+            last_turn["params"] = dict(snapshot.params)
+            last_turn["items"] = self._normalized_ipc_turn_items(
+                {
+                    "id": turn_id,
+                    "items": last_turn.get("items", []),
+                },
+                snapshot,
+            )
+            return normalized_turns
+
         normalized_turns.append(
             self._normalize_ipc_turn(
                 context,
@@ -779,6 +802,23 @@ class CodexAppServerBackend(ChatBackend):
             status = getattr(notification.payload, "status", None)
             runtime.status = self._thread_status_value(status)
             runtime.active_flags = self._thread_active_flags(status)
+        elif notification.method == "thread/tokenUsage/updated":
+            token_usage = getattr(notification.payload, "token_usage", None)
+            normalized_token_usage = self._safe_model_dump(token_usage)
+            if isinstance(normalized_token_usage, dict):
+                self.chat_service.update_session_backend_state(
+                    context.session_id,
+                    {"latest_token_usage_info": normalized_token_usage},
+                )
+                self._emit_from_thread(
+                    runtime,
+                    "token_usage_updated",
+                    {
+                        "session_id": context.session_id,
+                        "token_usage": normalized_token_usage,
+                    },
+                )
+            return
         elif notification.method == "thread/started":
             thread = getattr(notification.payload, "thread", None)
             if thread is not None:
@@ -1620,6 +1660,21 @@ class CodexAppServerBackend(ChatBackend):
             "activeFlags": list(fallback_active_flags),
         }
 
+    def _can_merge_snapshot_into_last_turn(
+        self,
+        context: ChatSessionContext,
+        turn: dict[str, Any],
+        snapshot: TurnSnapshotState,
+    ) -> bool:
+        turn_id = turn.get("id")
+        if not isinstance(turn_id, str) or not turn_id.startswith(f"{context.session_id}:turn:"):
+            return False
+        turn_input = turn.get("params", {}).get("input") if isinstance(turn.get("params"), dict) else None
+        snapshot_input = snapshot.params.get("input")
+        return self._normalize_input_items_for_state(turn_input or []) == self._normalize_input_items_for_state(
+            snapshot_input or []
+        )
+
     def _normalize_ipc_turn(
         self,
         context: ChatSessionContext,
@@ -1644,6 +1699,8 @@ class CodexAppServerBackend(ChatBackend):
             snapshot,
         )
         normalized["params"] = params
+        normalized["error"] = turn.get("error")
+        normalized["diff"] = turn.get("diff")
         return normalized
 
     def _normalized_ipc_turn_items(
@@ -1742,13 +1799,19 @@ class CodexAppServerBackend(ChatBackend):
         input_payload: list[dict[str, Any]] | dict[str, Any] | str,
     ) -> list[dict[str, Any]]:
         if isinstance(input_payload, str):
-            return [{"type": "text", "text": input_payload}]
+            return [{"type": "text", "text": input_payload, "text_elements": []}]
         if isinstance(input_payload, dict):
-            return [dict(input_payload)]
+            normalized_item = dict(input_payload)
+            if normalized_item.get("type") == "text" and "text_elements" not in normalized_item:
+                normalized_item["text_elements"] = []
+            return [normalized_item]
         normalized: list[dict[str, Any]] = []
         for item in input_payload:
             if isinstance(item, dict):
-                normalized.append(dict(item))
+                normalized_item = dict(item)
+                if normalized_item.get("type") == "text" and "text_elements" not in normalized_item:
+                    normalized_item["text_elements"] = []
+                normalized.append(normalized_item)
         return normalized
 
     def _turn_input_items_from_thread_items(self, items: Any) -> list[dict[str, Any]]:
@@ -2197,11 +2260,38 @@ class CodexAppServerBackend(ChatBackend):
 
     def _safe_model_dump(self, value: Any) -> dict[str, Any]:
         if isinstance(value, dict):
-            return value
+            return {
+                str(key): self._safe_json_value(item)
+                for key, item in value.items()
+            }
         if hasattr(value, "model_dump"):
             dumped = value.model_dump(mode="json")
             return dumped if isinstance(dumped, dict) else {"value": dumped}
+        if hasattr(value, "__dict__"):
+            return {
+                str(key): self._safe_json_value(item)
+                for key, item in vars(value).items()
+                if not str(key).startswith("_")
+            }
         return {"value": value}
+
+    def _safe_json_value(self, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                str(key): self._safe_json_value(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [self._safe_json_value(item) for item in value]
+        if hasattr(value, "model_dump"):
+            return value.model_dump(mode="json")
+        if hasattr(value, "__dict__"):
+            return {
+                str(key): self._safe_json_value(item)
+                for key, item in vars(value).items()
+                if not str(key).startswith("_")
+            }
+        return value
 
     def _summarize_file_change(self, item: Any) -> str:
         changes = getattr(item, "changes", []) or []

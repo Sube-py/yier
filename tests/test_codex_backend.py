@@ -338,9 +338,14 @@ def test_codex_backend_build_ipc_turns_includes_streaming_assistant_item_from_sn
                     "memoryCitation": None,
                 }
             ],
+            "error": None,
+            "diff": None,
             "turnStartedAtMs": 1000,
             "finalAssistantStartedAtMs": 1200,
-            "params": {"threadId": "thread-1", "input": [{"type": "text", "text": "谢谢啊"}]},
+            "params": {
+                "threadId": "thread-1",
+                "input": [{"type": "text", "text": "谢谢啊"}],
+            },
         }
     ]
 
@@ -698,6 +703,8 @@ def test_codex_backend_build_ipc_turns_merges_snapshot_state() -> None:
                     "memoryCitation": None,
                 }
             ],
+            "error": None,
+            "diff": None,
             "params": {
                 "threadId": "thread-1",
                 "input": [{"type": "text", "text": "hello"}],
@@ -748,6 +755,7 @@ def test_codex_backend_build_ipc_turns_appends_active_snapshot_placeholder() -> 
             "status": "inProgress",
             "items": [],
             "error": None,
+            "diff": None,
             "params": {
                 "threadId": "thread-1",
                 "input": [{"type": "text", "text": "hello"}],
@@ -756,6 +764,180 @@ def test_codex_backend_build_ipc_turns_appends_active_snapshot_placeholder() -> 
             "turnStartedAtMs": 111,
             "finalAssistantStartedAtMs": None,
         }
+    ]
+
+
+def test_codex_backend_build_ipc_turns_merges_active_snapshot_into_last_fallback_turn() -> None:
+    settings = WebSettings(codex=StoredCodexSettings(sandbox="workspace-write"))
+    chat_service = SimpleNamespace(
+        config_service=SimpleNamespace(load_web_settings=lambda: settings),
+    )
+    backend = CodexAppServerBackend(chat_service)
+    context = ChatSessionContext(
+        session_id="session-1",
+        source="chat",
+        backend_id="codex",
+        project_path=Path("/tmp/project"),
+        channel_meta=None,
+        backend_state={"thread_id": "thread-1"},
+    )
+    backend._runtimes["session-1"] = CodexSessionRuntime(
+        session_id="session-1",
+        status="active",
+        turn_snapshots={
+            "turn-live": TurnSnapshotState(
+                params={
+                    "threadId": "thread-1",
+                    "input": [{"type": "text", "text": "hello"}],
+                    "cwd": "/tmp/project",
+                },
+                turn_started_at_ms=111,
+                final_assistant_started_at_ms=222,
+                assistant_item_id="assistant-1",
+                assistant_text="world",
+            )
+        },
+    )
+
+    payload = backend.build_ipc_turns(
+        context,
+        [
+            {
+                "id": "session-1:turn:1",
+                "turnId": "session-1:turn:1",
+                "status": "inProgress",
+                "error": None,
+                "diff": None,
+                "items": [
+                    {
+                        "id": "session-1:turn:1:user",
+                        "type": "userMessage",
+                        "content": [{"type": "text", "text": "hello", "text_elements": []}],
+                    }
+                ],
+                "params": {
+                    "threadId": "thread-1",
+                    "input": [{"type": "text", "text": "hello"}],
+                    "cwd": "/tmp/project",
+                },
+                "turnStartedAtMs": 100,
+                "finalAssistantStartedAtMs": None,
+            }
+        ],
+    )
+
+    assert payload == [
+        {
+            "id": "turn-live",
+            "turnId": "turn-live",
+            "status": "inProgress",
+            "error": None,
+            "diff": None,
+            "items": [
+                {
+                    "id": "session-1:turn:1:user",
+                    "type": "userMessage",
+                    "content": [{"type": "text", "text": "hello", "text_elements": []}],
+                },
+                {
+                    "type": "agentMessage",
+                    "id": "assistant-1",
+                    "text": "world",
+                    "phase": "final_answer",
+                    "memoryCitation": None,
+                },
+            ],
+            "params": {
+                "threadId": "thread-1",
+                "input": [{"type": "text", "text": "hello"}],
+                "cwd": "/tmp/project",
+            },
+            "turnStartedAtMs": 111,
+            "finalAssistantStartedAtMs": 222,
+        }
+    ]
+
+
+def test_codex_backend_thread_token_usage_update_persists_backend_state() -> None:
+    updated_states: list[tuple[str, dict[str, object]]] = []
+    chat_service = SimpleNamespace(
+        update_session_backend_state=lambda session_id, state: updated_states.append((session_id, state)),
+    )
+    backend = CodexAppServerBackend(chat_service)
+    context = ChatSessionContext(
+        session_id="session-1",
+        source="chat",
+        backend_id="codex",
+        project_path=Path("/tmp/project"),
+        channel_meta=None,
+    )
+    runtime = CodexSessionRuntime(session_id="session-1", thread_id="thread-1")
+    emitted: list[tuple[str, dict[str, object]]] = []
+    backend._emit_from_thread = lambda runtime, event, data: emitted.append((event, data))  # type: ignore[method-assign]
+
+    backend._handle_thread_notification(
+        runtime,
+        context,
+        SimpleNamespace(
+            method="thread/tokenUsage/updated",
+            payload=SimpleNamespace(
+                token_usage=SimpleNamespace(
+                    total=SimpleNamespace(total_tokens=10, input_tokens=8, cached_input_tokens=2, output_tokens=2, reasoning_output_tokens=0),
+                    last=SimpleNamespace(total_tokens=4, input_tokens=3, cached_input_tokens=1, output_tokens=1, reasoning_output_tokens=0),
+                    model_context_window=1000,
+                ),
+            ),
+        ),
+    )
+
+    assert updated_states == [
+        (
+            "session-1",
+            {
+                "latest_token_usage_info": {
+                    "total": {
+                        "total_tokens": 10,
+                        "input_tokens": 8,
+                        "cached_input_tokens": 2,
+                        "output_tokens": 2,
+                        "reasoning_output_tokens": 0,
+                    },
+                    "last": {
+                        "total_tokens": 4,
+                        "input_tokens": 3,
+                        "cached_input_tokens": 1,
+                        "output_tokens": 1,
+                        "reasoning_output_tokens": 0,
+                    },
+                    "model_context_window": 1000,
+                }
+            },
+        )
+    ]
+    assert emitted == [
+        (
+            "token_usage_updated",
+            {
+                "session_id": "session-1",
+                "token_usage": {
+                    "total": {
+                        "total_tokens": 10,
+                        "input_tokens": 8,
+                        "cached_input_tokens": 2,
+                        "output_tokens": 2,
+                        "reasoning_output_tokens": 0,
+                    },
+                    "last": {
+                        "total_tokens": 4,
+                        "input_tokens": 3,
+                        "cached_input_tokens": 1,
+                        "output_tokens": 1,
+                        "reasoning_output_tokens": 0,
+                    },
+                    "model_context_window": 1000,
+                },
+            },
+        )
     ]
 
 

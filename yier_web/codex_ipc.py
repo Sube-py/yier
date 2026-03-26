@@ -567,10 +567,13 @@ class CodexThreadFollowerBridge:
         if not self._is_codex_session(session_id):
             return
 
+        await self.broadcast_stream_event_patches(session_id, event, data)
+
         if event in {
             "run_started",
             "assistant_delta",
             "assistant_message",
+            "token_usage_updated",
             "approval_requested",
             "approval_resolved",
             "turn_completed",
@@ -586,6 +589,39 @@ class CodexThreadFollowerBridge:
             "background_followup_finished",
         }:
             await self.broadcast_queued_followups(session_id)
+
+    async def broadcast_stream_event_patches(
+        self,
+        session_id: str,
+        event: str,
+        data: dict[str, Any],
+    ) -> None:
+        if not self.client.is_connected or not self._is_codex_session(session_id):
+            return
+        conversation_state = self.chat_service.build_codex_ipc_conversation_state(
+            session_id
+        )
+        patches = self._patches_for_stream_event(event, data, conversation_state)
+        if not patches:
+            return
+        payload = {
+            "conversationId": session_id,
+            "change": {
+                "type": "patches",
+                "patches": patches,
+            },
+            "version": _ipc_method_version("thread-stream-state-changed"),
+            "type": "thread-stream-state-changed",
+        }
+        _ipc_debug_log(
+            "broadcast stream patches",
+            session_id=session_id,
+            trigger_event=event,
+            patch_count=len(patches),
+            payload=payload if _ipc_debug_full_enabled() else None,
+        )
+        with contextlib.suppress(Exception):
+            await self.client.send_broadcast("thread-stream-state-changed", payload)
 
     async def broadcast_stream_state(
         self,
@@ -608,6 +644,8 @@ class CodexThreadFollowerBridge:
                     "_yier_updated_at": time(),
                 },
             },
+            "version": _ipc_method_version("thread-stream-state-changed"),
+            "type": "thread-stream-state-changed",
         }
         _ipc_debug_log(
             "broadcast stream state",
@@ -637,6 +675,8 @@ class CodexThreadFollowerBridge:
                 {
                     "conversationId": session_id,
                     "messages": messages,
+                    "version": _ipc_method_version("thread-queued-followups-changed"),
+                    "type": "thread-queued-followups-changed",
                 },
             )
 
@@ -1024,6 +1064,97 @@ class CodexThreadFollowerBridge:
             if isinstance(value, str) and value.strip():
                 return value.strip()
         return ""
+
+    def _patches_for_stream_event(
+        self,
+        event: str,
+        data: dict[str, Any],
+        conversation_state: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        turns = conversation_state.get("turns")
+        if not isinstance(turns, list):
+            turns = []
+        latest_turn_index = len(turns) - 1
+        latest_turn = turns[-1] if turns else None
+        patches: list[dict[str, Any]] = []
+
+        if event == "token_usage_updated":
+            patches.append(
+                {
+                    "op": "replace",
+                    "path": ["latestTokenUsageInfo"],
+                    "value": conversation_state.get("latestTokenUsageInfo"),
+                }
+            )
+            return patches
+
+        if isinstance(latest_turn, dict) and latest_turn_index >= 0:
+            items = latest_turn.get("items")
+            if not isinstance(items, list):
+                items = []
+            agent_item_index = None
+            for index in range(len(items) - 1, -1, -1):
+                item = items[index]
+                if isinstance(item, dict) and item.get("type") == "agentMessage":
+                    agent_item_index = index
+                    break
+
+            if event == "assistant_delta":
+                if agent_item_index is not None:
+                    agent_item = items[agent_item_index]
+                    patches.append(
+                        {
+                            "op": "replace",
+                            "path": ["turns", latest_turn_index, "items", agent_item_index, "text"],
+                            "value": agent_item.get("text", ""),
+                        }
+                    )
+                final_started_at_ms = latest_turn.get("finalAssistantStartedAtMs")
+                if final_started_at_ms is not None:
+                    patches.append(
+                        {
+                            "op": "replace",
+                            "path": ["turns", latest_turn_index, "finalAssistantStartedAtMs"],
+                            "value": final_started_at_ms,
+                        }
+                    )
+                return patches
+
+            if event == "assistant_message" and agent_item_index is not None:
+                patches.append(
+                    {
+                        "op": "replace",
+                        "path": ["turns", latest_turn_index, "items", agent_item_index],
+                        "value": items[agent_item_index],
+                    }
+                )
+                return patches
+
+            if event in {"turn_completed", "turn_aborted", "done"}:
+                patches.append(
+                    {
+                        "op": "replace",
+                        "path": ["turns", latest_turn_index, "status"],
+                        "value": latest_turn.get("status"),
+                    }
+                )
+                patches.append(
+                    {
+                        "op": "replace",
+                        "path": ["threadRuntimeStatus"],
+                        "value": conversation_state.get("threadRuntimeStatus"),
+                    }
+                )
+                patches.append(
+                    {
+                        "op": "replace",
+                        "path": ["hasUnreadTurn"],
+                        "value": conversation_state.get("hasUnreadTurn"),
+                    }
+                )
+                return patches
+
+        return patches
 
     def _params(self, request: dict[str, Any]) -> dict[str, Any]:
         params = request.get("params")

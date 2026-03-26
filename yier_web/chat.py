@@ -1072,7 +1072,7 @@ class ChatService:
             "latestReasoningEffort": latest_reasoning_effort,
             "previousTurnModel": None,
             "latestCollaborationMode": latest_collaboration_mode,
-            "hasUnreadTurn": False,
+            "hasUnreadTurn": bool(backend_state.get("has_unread_turn")),
             "rolloutPath": backend_state.get("rollout_path") or "",
             "gitInfo": git_info,
             "resumeState": backend_state.get("resume_state") or "resumed",
@@ -1257,11 +1257,13 @@ class ChatService:
                     "id": f"{session_id}:turn:{turn_index}",
                     "turnId": f"{session_id}:turn:{turn_index}",
                     "status": "completed",
+                    "error": None,
+                    "diff": None,
                     "items": [
                         {
                             "id": f"{session_id}:turn:{turn_index}:user",
                             "type": "userMessage",
-                            "content": [{"type": "text", "text": content}],
+                            "content": [{"type": "text", "text": content, "text_elements": []}],
                         }
                     ],
                     "turnStartedAtMs": current_timestamp_ms,
@@ -1276,6 +1278,8 @@ class ChatService:
                     "id": f"{session_id}:turn:{turn_index}",
                     "turnId": f"{session_id}:turn:{turn_index}",
                     "status": "completed",
+                    "error": None,
+                    "diff": None,
                     "items": [],
                     "turnStartedAtMs": current_timestamp_ms,
                     "finalAssistantStartedAtMs": current_timestamp_ms,
@@ -1285,6 +1289,8 @@ class ChatService:
                     "id": f"{session_id}:turn:{turn_index}:assistant:{len(current_turn['items'])}",
                     "type": "agentMessage",
                     "text": content,
+                    "phase": "final_answer",
+                    "memoryCitation": None,
                 }
             )
             if current_turn.get("finalAssistantStartedAtMs") is None:
@@ -1572,6 +1578,13 @@ class ChatService:
 
     def _handle_internal_event(self, event: str, data: dict[str, Any]) -> None:
         if event != "background_command_started":
+            session_id = data.get("session_id")
+            if not isinstance(session_id, str) or not session_id:
+                return
+            if event in {"assistant_message", "turn_completed"}:
+                self.update_session_backend_state(session_id, {"has_unread_turn": True})
+            elif event == "run_started":
+                self.update_session_backend_state(session_id, {"has_unread_turn": False})
             return
 
         background_session_id = data.get("background_session_id")

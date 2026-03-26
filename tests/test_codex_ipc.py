@@ -352,6 +352,8 @@ def test_codex_thread_follower_bridge_handles_start_turn_and_broadcast(tmp_path:
                 and message.get("params", {}).get("change", {}).get("type") == "snapshot",
             )
             assert request_broadcast["params"]["conversationId"] == "thread-1"
+            assert request_broadcast["params"]["type"] == "thread-stream-state-changed"
+            assert request_broadcast["params"]["version"] == 5
             assert (
                 request_broadcast["params"]["change"]["conversationState"]["_yier_trigger_event"]
                 == "thread-follower-start-turn"
@@ -383,6 +385,8 @@ def test_codex_thread_follower_bridge_handles_start_turn_and_broadcast(tmp_path:
             assert broadcast["type"] == "broadcast"
             assert broadcast["method"] == "thread-stream-state-changed"
             assert broadcast["params"]["conversationId"] == "thread-1"
+            assert broadcast["params"]["type"] == "thread-stream-state-changed"
+            assert broadcast["params"]["version"] == 5
             assert broadcast["params"]["change"]["conversationState"]["threadRuntimeStatus"] == {
                 "type": "active",
                 "activeFlags": ["streaming"],
@@ -486,6 +490,150 @@ def test_codex_thread_follower_bridge_accepts_object_collaboration_mode() -> Non
                     }
                 },
             )
+        finally:
+            await bridge.stop()
+            if server_writer is not None:
+                server_writer.close()
+                await server_writer.wait_closed()
+            server.close()
+            socket_path.unlink(missing_ok=True)
+
+    asyncio.run(scenario())
+
+
+def test_codex_thread_follower_bridge_emits_patches_for_assistant_message() -> None:
+    async def scenario() -> None:
+        socket_path = _test_socket_path()
+        messages_from_client: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        client_ready = asyncio.Event()
+        server_writer: asyncio.StreamWriter | None = None
+
+        async def handle_connection(
+            reader: asyncio.StreamReader,
+            writer: asyncio.StreamWriter,
+        ) -> None:
+            nonlocal server_writer
+            initialize_request = await _read_frame(reader)
+            server_writer = writer
+            await _send_frame(
+                writer,
+                {
+                    "type": "response",
+                    "requestId": initialize_request["requestId"],
+                    "resultType": "success",
+                    "method": "initialize",
+                    "handledByClientId": "router-client",
+                    "result": {"clientId": "client-yier"},
+                },
+            )
+            client_ready.set()
+            while True:
+                try:
+                    message = await _read_frame(reader)
+                except asyncio.IncompleteReadError:
+                    break
+                await messages_from_client.put(message)
+
+        server = await asyncio.start_unix_server(handle_connection, path=socket_path)
+        fake_chat_service = FakeChatService()
+        fake_chat_service.build_codex_ipc_conversation_state = lambda session_id: {  # type: ignore[method-assign]
+            "id": session_id,
+            "hostId": "local",
+            "turns": [
+                {
+                    "id": "turn-1",
+                    "turnId": "turn-1",
+                    "status": "inProgress",
+                    "items": [
+                        {
+                            "type": "userMessage",
+                            "id": "item-user-1",
+                            "content": [{"type": "text", "text": "hello", "text_elements": []}],
+                        },
+                        {
+                            "type": "agentMessage",
+                            "id": "item-agent-1",
+                            "text": "world",
+                            "phase": "final_answer",
+                            "memoryCitation": None,
+                        },
+                    ],
+                    "error": None,
+                    "diff": None,
+                    "turnStartedAtMs": 100,
+                    "finalAssistantStartedAtMs": 120,
+                    "params": {
+                        "threadId": session_id,
+                        "input": [{"type": "text", "text": "hello", "text_elements": []}],
+                    },
+                }
+            ],
+            "pendingSteers": [],
+            "requests": [],
+            "createdAt": 1,
+            "updatedAt": 2,
+            "title": "Thread 1",
+            "source": "chat",
+            "latestModel": "gpt-test",
+            "latestReasoningEffort": None,
+            "previousTurnModel": None,
+            "latestCollaborationMode": {
+                "mode": "default",
+                "settings": {
+                    "model": "gpt-test",
+                    "reasoning_effort": None,
+                    "developer_instructions": None,
+                },
+            },
+            "hasUnreadTurn": True,
+            "rolloutPath": "",
+            "gitInfo": None,
+            "resumeState": "resumed",
+            "latestTokenUsageInfo": None,
+            "cwd": "/tmp/project",
+            "threadId": session_id,
+            "threadRuntimeStatus": {
+                "type": "idle",
+                "activeFlags": [],
+            },
+        }
+        bridge = CodexThreadFollowerBridge(
+            chat_service=fake_chat_service,  # type: ignore[arg-type]
+            socket_path=socket_path,
+        )
+
+        try:
+            await bridge.start()
+            assert await bridge.client.wait_until_connected(timeout=2.0)
+            await asyncio.wait_for(client_ready.wait(), timeout=2.0)
+            assert server_writer is not None
+
+            await bridge.notify_stream_event(
+                "assistant_message",
+                {"session_id": "thread-1", "item_id": "item-agent-1", "content": "world"},
+            )
+
+            patch_broadcast = await _wait_for_message(
+                messages_from_client,
+                predicate=lambda message: message.get("type") == "broadcast"
+                and message.get("method") == "thread-stream-state-changed"
+                and message.get("params", {}).get("change", {}).get("type") == "patches",
+            )
+            assert patch_broadcast["params"]["type"] == "thread-stream-state-changed"
+            assert patch_broadcast["params"]["version"] == 5
+            assert patch_broadcast["params"]["change"]["patches"] == [
+                {
+                    "op": "replace",
+                    "path": ["turns", 0, "items", 1],
+                    "value": {
+                        "type": "agentMessage",
+                        "id": "item-agent-1",
+                        "text": "world",
+                        "phase": "final_answer",
+                        "memoryCitation": None,
+                    },
+                }
+            ]
         finally:
             await bridge.stop()
             if server_writer is not None:

@@ -168,23 +168,39 @@ const selectNewProject = async () => {
 </script>
 
 <template>
-  <div class="side-card side-card--history side-card--codex">
-    <div class="codex-sidebar-toolbar">
+  <div
+    class="flex min-h-0 flex-1 flex-col gap-[0.85rem] overflow-hidden rounded-[1.3rem] border border-[color:var(--app-border)] bg-[linear-gradient(180deg,rgba(255,252,247,0.95),rgba(245,239,228,0.82)),rgba(255,252,245,0.84)] p-4 shadow-[var(--app-shadow)] backdrop-blur-[14px]"
+  >
+    <div class="flex items-stretch gap-[0.85rem]">
       <Button
         label="New thread"
         icon="pi pi-pen-to-square"
-        class="codex-toolbar-primary"
+        class="w-full"
+        :pt="{
+          root: {
+            class:
+              'justify-start gap-2.5 border border-transparent bg-white/52 px-[0.82rem] py-[0.72rem] text-[color:var(--app-text)] shadow-none',
+          },
+          label: {
+            class: 'flex-1 text-left font-semibold',
+          },
+          icon: {
+            class: 'm-0',
+          },
+        }"
         @click="startNewChat()"
       />
     </div>
 
-    <div class="codex-threads-toolbar">
-      <p class="codex-threads-title">Threads</p>
+    <div class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-2xl bg-white/32 px-[0.8rem] py-[0.1rem] pr-[0.1rem]">
+      <p class="m-0 text-xs font-bold uppercase tracking-[0.08em] text-[color:var(--app-text-soft)]">
+        Threads
+      </p>
       <Button
         rounded
         text
         icon="pi pi-folder-plus"
-        class="codex-project-action codex-toolbar-action codex-select-project-action"
+        class="text-[color:var(--app-text-soft)]"
         aria-label="Open thread actions"
         @click="selectNewProject"
       />
@@ -192,47 +208,43 @@ const selectNewProject = async () => {
 
     <ScrollPanel
       v-if="sortedProjects.length"
-      class="session-history-scroll"
+      class="min-h-0 flex-1"
     >
-      <div class="codex-project-list">
+      <div class="grid gap-[0.55rem] overflow-x-hidden pr-[0.35rem]">
         <section
           v-for="project in sortedProjects"
           :key="project.project_path"
-          class="codex-project-group"
-          :class="{ 'codex-project-group--expanded': isProjectExpanded(project.project_path) }"
+          class="grid gap-[0.2rem]"
+          :class="{ 'pb-[0.15rem]': isProjectExpanded(project.project_path) }"
         >
-          <div class="codex-project-row">
+          <div class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-2xl p-[0.1rem] transition duration-150 hover:bg-white/44 focus-within:bg-white/44">
             <button
               type="button"
-              class="codex-project-toggle"
-              :class="{ 'codex-project-toggle--expanded': isProjectExpanded(project.project_path) }"
+              class="flex w-full items-start gap-[0.65rem] rounded-[0.9rem] px-[0.7rem] py-[0.62rem] text-left transition duration-150 hover:bg-white/36"
+              :class="{ 'bg-white/36': isProjectExpanded(project.project_path) }"
               :aria-expanded="isProjectExpanded(project.project_path)"
               :title="project.project_path"
               @click="toggleProject(project.project_path)"
             >
               <span
-                class="codex-project-chevron-wrap"
+                class="relative mt-[0.12rem] inline-flex h-[1.2rem] w-4 flex-none items-center justify-center"
                 aria-hidden="true"
               >
-                <i class="pi pi-folder-open codex-project-chevron codex-project-chevron--default" />
                 <i
-                  class="pi codex-project-chevron codex-project-chevron--hover"
-                  :class="[
-                    isProjectExpanded(project.project_path) ? 'pi-chevron-down' : 'pi-chevron-right'
-                  ]"
+                  class="pi absolute inset-0 inline-flex items-center justify-center text-[0.92rem] leading-none text-[color:var(--app-text-soft)] transition duration-150"
+                  :class="isProjectExpanded(project.project_path) ? 'pi-chevron-down' : 'pi-chevron-right'"
                 />
               </span>
-              <div class="codex-project-toggle-copy">
-                <p class="codex-project-title">{{ projectLabel(project) }}</p>
+              <div class="min-w-0">
+                <p class="m-0 text-base leading-[1.3] font-bold">{{ projectLabel(project) }}</p>
               </div>
             </button>
 
-            <div class="codex-project-actions">
+            <div class="flex items-center justify-end">
               <Button
                 rounded
                 text
                 icon="pi pi-pen-to-square"
-                class="codex-project-action codex-project-start-action"
                 :title="`Start a new chat in ${projectLabel(project)}`"
                 @click.stop="startNewChat(project.project_path)"
               />
@@ -241,26 +253,29 @@ const selectNewProject = async () => {
 
           <div
             v-if="isProjectExpanded(project.project_path)"
-            class="codex-session-tree"
+            class="ml-[1.55rem] grid gap-[0.24rem]"
           >
             <button
               v-for="session in project.sessions"
               :key="session.thread_id"
               type="button"
-              class="codex-session-item"
-              :class="{ 'codex-session-item--active': session.thread_id === activeSessionId }"
+              class="block w-full overflow-hidden rounded-[0.95rem] px-[0.5rem] py-[0.5rem] pr-[0.72rem] text-left transition duration-150 hover:bg-white/48 focus-visible:bg-white/48"
+              :class="{
+                'bg-[rgba(232,244,241,0.72)] shadow-[inset_3px_0_0_rgba(21,94,99,0.52)]':
+                  session.thread_id === activeSessionId,
+              }"
               :title="session.cwd || session.title"
               @click="emit('openSession', session.thread_id)"
             >
-              <div class="codex-session-copy">
-                <div class="codex-session-topline">
+              <div class="block min-w-0 max-w-full overflow-hidden">
+                <div class="grid w-full min-w-0 max-w-full grid-cols-[minmax(0,1fr)_auto] items-baseline gap-[0.8rem] overflow-hidden">
                   <p
-                    class="codex-session-title"
+                    class="block min-w-0 max-w-full overflow-hidden text-ellipsis whitespace-nowrap text-[0.8rem] leading-[1.4]"
                     :title="session.title"
                   >
                     {{ session.title }}
                   </p>
-                  <p class="codex-session-meta">
+                  <p class="shrink-0 whitespace-nowrap text-right text-[0.72rem] leading-[1.35] text-[color:var(--app-text-soft)]">
                     <span>{{ formatTimestamp(session.updated_at) }}</span>
                   </p>
                 </div>
@@ -273,7 +288,7 @@ const selectNewProject = async () => {
 
     <p
       v-else
-      class="side-card-empty"
+      class="m-0 text-[color:var(--app-text-soft)] leading-[1.6]"
     >No native Codex sessions found in this machine yet.</p>
   </div>
 </template>

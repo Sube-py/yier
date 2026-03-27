@@ -58,10 +58,10 @@ let copiedResetTimer: number | null = null
 const bottomThreshold = 72
 const timelineScrollPt = {
   contentContainer: {
-    class: 'timeline-body-scrollpanel__container',
+    class: 'h-full w-full',
   },
   content: {
-    class: 'timeline-body',
+    class: 'flex min-h-0 flex-col gap-4 pr-[0.35rem]',
     ref: (element: HTMLElement | null) => {
       timelineBody.value = element
     },
@@ -177,7 +177,16 @@ async function copyShellCommand(activity: ChatActivity) {
 }
 
 function activityMarkerClass(activity: ChatActivity) {
-  return `activity-state--${activity.state}`
+  if (activity.state === 'running') {
+    return 'bg-[#347f86]'
+  }
+  if (activity.state === 'done') {
+    return 'bg-[#4b8b58]'
+  }
+  if (activity.state === 'error') {
+    return 'bg-[#b85d48]'
+  }
+  return 'bg-[#7a6b4e]'
 }
 
 function activityUsesMarkdown(activity: ChatActivity) {
@@ -471,92 +480,131 @@ watch(
 </script>
 
 <template>
-  <section class="timeline-shell">
-    <div class="timeline-meta">
+  <section
+    class="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden rounded-3xl border border-[color:var(--app-border)] bg-[color:var(--app-panel)] p-[1.1rem] shadow-[var(--app-shadow)] backdrop-blur-[14px]"
+  >
+    <div class="flex items-center justify-between gap-3">
       <div>
         <p class="eyebrow">Current session</p>
-        <div class="timeline-title-row">
-          <h3>Session {{ sessionLabel }}</h3>
+        <div class="flex items-center justify-start gap-3">
+          <h3 class="m-0 font-['Iowan_Old_Style','Palatino_Linotype',Palatino,serif] text-2xl font-semibold">
+            Session {{ sessionLabel }}
+          </h3>
           <Tag
             :value="messages.length ? `${messages.length} msgs` : 'New'"
             rounded
             severity="secondary"
           />
         </div>
-        <p v-if="sessionRuntime" class="activity-meta">
+        <p v-if="sessionRuntime" class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]">
           {{ sessionRuntime.label }} · {{ runtimeStatusLabel(sessionRuntime.status) }}
           <span v-if="sessionRuntime.thread_id"> · {{ sessionRuntime.thread_id }}</span>
         </p>
-        <p v-if="sessionRuntime?.detail" class="activity-meta">{{ sessionRuntime.detail }}</p>
-        <p v-if="projectPath" class="activity-meta">{{ projectPath }}</p>
+        <p v-if="sessionRuntime?.detail" class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]">
+          {{ sessionRuntime.detail }}
+        </p>
+        <p v-if="projectPath" class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]">
+          {{ projectPath }}
+        </p>
       </div>
-      <div v-if="isSending" class="timeline-processing">
-        <ProgressSpinner stroke-width="4" />
+      <div v-if="isSending" class="inline-flex items-center gap-2.5 text-[color:var(--app-text-soft)]">
+        <ProgressSpinner stroke-width="4" class="h-[1.1rem] w-[1.1rem]" />
         <span>Working…</span>
       </div>
     </div>
 
-    <div v-if="!messages.length && !visibleActivities.length" class="timeline-empty">
+    <div
+      v-if="!messages.length && !visibleActivities.length"
+      class="grid place-items-center gap-2 p-10 text-center"
+    >
       <p class="eyebrow">Ready</p>
-      <h4>Start with a local task.</h4>
-      <p>
+      <h4 class="m-0 font-['Iowan_Old_Style','Palatino_Linotype',Palatino,serif] text-xl font-semibold">
+        Start with a local task.
+      </h4>
+      <p class="m-0 max-w-[30rem] text-[color:var(--app-text-soft)]">
         Try asking yier to inspect this repo, summarize a file, or edit code inside the allowed
         roots.
       </p>
     </div>
 
-    <ScrollPanel v-else class="timeline-body-scrollpanel" :pt="timelineScrollPt">
-      <div class="message-stack">
+    <ScrollPanel v-else class="min-h-0 flex-1" :pt="timelineScrollPt">
+      <div class="grid gap-4">
         <article
           v-for="message in leadingMessages"
           :key="message.id"
-          class="message-bubble"
-          :class="`message-bubble--${message.role}`"
+          class="max-w-[min(48rem,85%)] rounded-[1.3rem] border p-4 [@media(max-width:960px)]:max-w-full"
+          :class="
+            message.role === 'user'
+              ? 'ml-auto border-[rgba(21,94,99,0.16)] bg-[linear-gradient(135deg,rgba(21,94,99,0.13),rgba(69,141,145,0.08))]'
+              : 'border-[rgba(153,125,93,0.15)] bg-[color:var(--app-panel-strong)]'
+          "
         >
-          <p class="message-role">{{ message.role === 'user' ? 'You' : assistantLabel ?? 'Yier' }}</p>
-          <p v-if="message.role === 'user'" class="message-content">{{ message.content }}</p>
+          <p class="mb-[0.35rem] mt-0 text-[0.82rem] font-bold uppercase tracking-[0.08em] text-[color:var(--app-text-soft)]">
+            {{ message.role === 'user' ? 'You' : assistantLabel ?? 'Yier' }}
+          </p>
+          <p v-if="message.role === 'user'" class="m-0 whitespace-pre-wrap leading-[1.65]">
+            {{ message.content }}
+          </p>
           <div
             v-else
-            class="message-content message-content--markdown"
+            class="prose prose-stone max-w-none prose-a:text-[color:var(--app-accent)] prose-code:rounded-md prose-code:bg-[rgba(21,94,99,0.1)] prose-code:px-1.5 prose-code:py-0.5 prose-code:text-[color:var(--app-accent-deep)] prose-pre:rounded-2xl prose-pre:bg-[rgba(17,38,42,0.92)] prose-pre:px-4 prose-pre:py-3 prose-pre:text-[#f2f5f6] prose-blockquote:border-l-[3px] prose-blockquote:border-[rgba(21,94,99,0.32)] prose-blockquote:text-[color:var(--app-text-soft)]"
             v-html="renderAssistantMessage(message.content)"
           ></div>
         </article>
       </div>
 
-      <div v-if="visibleActivities.length" class="activity-panel">
+      <div
+        v-if="visibleActivities.length"
+        class="border-t border-[color:var(--app-border)] pt-[0.4rem]"
+      >
         <p class="eyebrow">Run activity</p>
-        <Timeline :value="visibleActivities" align="left" class="activity-timeline">
+        <Timeline
+          :value="visibleActivities"
+          align="left"
+          class="mt-[0.85rem]"
+          :pt="{
+            root: {
+              class:
+                '[&_.p-timeline-event]:items-stretch [&_.p-timeline-event-content]:min-w-0 [&_.p-timeline-event-content]:flex-1 [&_.p-timeline-event-content]:pb-4 [&_.p-timeline-event-marker]:bg-transparent [&_.p-timeline-event-marker]:shadow-none [&_.p-timeline-event-opposite]:hidden [&_.p-timeline-event-separator]:basis-[2.2rem] [&_.p-timeline-event-connector]:w-0.5 [&_.p-timeline-event-connector]:bg-[linear-gradient(180deg,rgba(52,127,134,0.18),rgba(52,127,134,0.42))]',
+            },
+          }"
+        >
           <template #marker="slotProps">
-            <span class="activity-timeline-marker">
-              <span class="activity-state" :class="activityMarkerClass(slotProps.item)"></span>
+            <span
+              class="mt-[0.15rem] inline-flex h-[1.4rem] w-[1.4rem] items-center justify-center rounded-full border border-[rgba(34,66,72,0.1)] bg-[rgba(255,250,242,0.96)]"
+            >
+              <span
+                class="h-3 w-3 rounded-full"
+                :class="activityMarkerClass(slotProps.item)"
+              ></span>
             </span>
           </template>
           <template #content="slotProps">
             <details
-              class="activity-item"
+              class="overflow-hidden rounded-2xl border border-[rgba(34,66,72,0.08)] bg-[rgba(255,250,242,0.8)]"
               :open="
                 slotProps.item.state === 'running' ||
                 Boolean(slotProps.item.stdout || slotProps.item.stderr) ||
                 activityUsesMarkdown(slotProps.item)
               "
             >
-              <summary class="activity-summary">
-                <div class="activity-summary-copy">
-                  <p class="activity-title">{{ slotProps.item.title }}</p>
+              <summary class="grid cursor-pointer list-none grid-cols-[minmax(0,1fr)_auto] items-start gap-[0.7rem] px-[0.9rem] py-[0.8rem]">
+                <div class="min-w-0">
+                  <p class="m-0 font-bold">{{ slotProps.item.title }}</p>
                   <p
                     v-if="
                       !isShellActivity(slotProps.item) &&
                       slotProps.item.detail &&
                       !activityUsesMarkdown(slotProps.item)
                     "
-                    class="activity-detail"
+                    class="mt-1 mb-0 break-words whitespace-pre-wrap text-[color:var(--app-text-soft)]"
                   >
                     {{ slotProps.item.detail }}
                   </p>
                 </div>
                 <p
                   v-if="isShellActivity(slotProps.item) && shellCwd(slotProps.item)"
-                  class="activity-summary-cwd"
+                  class="m-0 max-w-[min(40vw,24rem)] overflow-hidden text-ellipsis whitespace-nowrap font-mono text-[0.78rem] text-[color:var(--app-text-soft)]"
                 >
                   {{ shellCwd(slotProps.item) }}
                 </p>
@@ -564,16 +612,18 @@ watch(
 
               <div
                 v-if="isShellActivity(slotProps.item)"
-                class="activity-body activity-body--terminal"
+                class="grid gap-[0.7rem] border-t border-[rgba(34,66,72,0.08)] px-[0.9rem] pb-[0.9rem] pl-[2.35rem]"
               >
                 <p
                   v-if="shellCommand(slotProps.item)"
-                  class="activity-command activity-command--terminal"
+                  class="m-0 flex items-center justify-between gap-3 rounded-t-[0.85rem] bg-[linear-gradient(180deg,rgba(16,33,37,0.98),rgba(21,43,48,0.98))] px-4 py-[0.85rem] font-mono text-[0.9rem] text-[#f7fffc] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.04)]"
                 >
-                  <span class="activity-command-text">$ {{ shellCommand(slotProps.item) }}</span>
+                  <span class="min-w-0 flex-1 break-words whitespace-pre-wrap">
+                    $ {{ shellCommand(slotProps.item) }}
+                  </span>
                   <button
                     type="button"
-                    class="activity-command-copy"
+                    class="shrink-0 rounded-full border-0 bg-white/12 px-[0.7rem] py-[0.28rem] text-[0.76rem] font-bold text-[#f7fffc] transition hover:bg-white/18 active:translate-y-px"
                     :aria-label="`Copy command ${shellCommand(slotProps.item)}`"
                     @click="copyShellCommand(slotProps.item)"
                   >
@@ -583,59 +633,71 @@ watch(
 
                 <div
                   v-if="hasShellTranscript(slotProps.item)"
-                  class="activity-stream activity-stream--terminal"
+                  class="relative grid gap-0"
                 >
-                  <ScrollPanel class="activity-stream-panel activity-stream-panel--terminal">
-                    <pre class="activity-stream-output">{{
+                  <ScrollPanel class="max-h-72 w-full">
+                    <pre class="min-h-16 rounded-b-[0.85rem] bg-[rgba(17,38,42,0.94)] px-[0.9rem] pt-[0.3rem] pb-[1.7rem] font-mono text-[0.86rem] leading-[1.55] break-words whitespace-pre-wrap text-[#f2f5f6]">{{
                       shellOutputTranscript(slotProps.item)
                     }}</pre>
                   </ScrollPanel>
-                  <span v-if="shellRuntime(slotProps.item)" class="activity-runtime">
+                  <span
+                    v-if="shellRuntime(slotProps.item)"
+                    class="absolute right-[0.85rem] bottom-[0.7rem] font-mono text-[0.74rem] leading-none text-[rgba(242,245,246,0.72)]"
+                  >
                     {{ shellRuntime(slotProps.item) }}
                   </span>
                 </div>
 
                 <div
                   v-if="!hasShellTranscript(slotProps.item) && slotProps.item.stdout"
-                  class="activity-stream activity-stream--terminal"
+                  class="relative grid gap-0"
                 >
-                  <ScrollPanel class="activity-stream-panel activity-stream-panel--terminal">
-                    <pre class="activity-stream-output">{{ slotProps.item.stdout }}</pre>
+                  <ScrollPanel class="max-h-72 w-full">
+                    <pre class="min-h-16 rounded-b-[0.85rem] bg-[rgba(17,38,42,0.94)] px-[0.9rem] pt-[0.3rem] pb-[1.7rem] font-mono text-[0.86rem] leading-[1.55] break-words whitespace-pre-wrap text-[#f2f5f6]">{{ slotProps.item.stdout }}</pre>
                   </ScrollPanel>
-                  <span v-if="shellRuntime(slotProps.item)" class="activity-runtime">
+                  <span
+                    v-if="shellRuntime(slotProps.item)"
+                    class="absolute right-[0.85rem] bottom-[0.7rem] font-mono text-[0.74rem] leading-none text-[rgba(242,245,246,0.72)]"
+                  >
                     {{ shellRuntime(slotProps.item) }}
                   </span>
                 </div>
 
                 <div
                   v-if="!hasShellTranscript(slotProps.item) && slotProps.item.stderr"
-                  class="activity-stream activity-stream--stderr activity-stream--terminal"
+                  class="grid gap-0"
                 >
-                  <ScrollPanel class="activity-stream-panel activity-stream-panel--terminal">
-                    <pre class="activity-stream-output">{{ slotProps.item.stderr }}</pre>
+                  <ScrollPanel class="max-h-72 w-full">
+                    <pre class="min-h-16 rounded-b-[0.85rem] bg-[rgba(78,31,24,0.92)] px-[0.9rem] pt-[0.3rem] pb-[1.7rem] font-mono text-[0.86rem] leading-[1.55] break-words whitespace-pre-wrap text-[#f2f5f6]">{{ slotProps.item.stderr }}</pre>
                   </ScrollPanel>
                 </div>
 
                 <p
                   v-for="note in slotProps.item.meta"
                   :key="`${slotProps.item.id}-${note}`"
-                  class="activity-meta"
+                  class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]"
                 >
                   {{ note }}
                 </p>
               </div>
 
-              <div v-else class="activity-body">
+              <div class="grid gap-[0.55rem] border-t border-[rgba(34,66,72,0.08)] px-[0.9rem] pb-[0.9rem] pl-[2.35rem]">
                 <div
                   v-if="activityUsesMarkdown(slotProps.item) && slotProps.item.detail"
-                  class="message-content message-content--markdown"
+                  class="prose prose-stone max-w-none prose-a:text-[color:var(--app-accent)] prose-code:rounded-md prose-code:bg-[rgba(21,94,99,0.1)] prose-code:px-1.5 prose-code:py-0.5 prose-code:text-[color:var(--app-accent-deep)] prose-pre:rounded-2xl prose-pre:bg-[rgba(17,38,42,0.92)] prose-pre:px-4 prose-pre:py-3 prose-pre:text-[#f2f5f6] prose-blockquote:border-l-[3px] prose-blockquote:border-[rgba(21,94,99,0.32)] prose-blockquote:text-[color:var(--app-text-soft)]"
                   v-html="renderActivityMarkdown(slotProps.item.detail)"
                 ></div>
-                <div v-if="isApprovalActivity(slotProps.item)" class="approval-card">
-                  <p v-if="approvalMessage(slotProps.item)" class="activity-meta">
+                <div v-if="isApprovalActivity(slotProps.item)" class="grid gap-[0.7rem]">
+                  <p
+                    v-if="approvalMessage(slotProps.item)"
+                    class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]"
+                  >
                     {{ approvalMessage(slotProps.item) }}
                   </p>
-                  <p v-if="approvalHasUrl(slotProps.item)" class="activity-meta">
+                  <p
+                    v-if="approvalHasUrl(slotProps.item)"
+                    class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]"
+                  >
                     Open
                     <a
                       :href="approvalUrl(slotProps.item)"
@@ -647,41 +709,44 @@ watch(
                   </p>
                   <div
                     v-if="approvalSchemaPreview(slotProps.item)"
-                    class="activity-stream"
+                    class="grid gap-[0.3rem]"
                   >
-                    <p class="activity-stream-label">Requested schema</p>
-                    <ScrollPanel class="activity-stream-panel">
-                      <pre class="activity-stream-output">{{
+                    <p class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]">Requested schema</p>
+                    <ScrollPanel class="w-full">
+                      <pre class="rounded-[0.85rem] bg-[rgba(17,38,42,0.94)] px-[0.9rem] py-[0.8rem] font-mono text-[0.86rem] leading-[1.55] break-words whitespace-pre-wrap text-[#f2f5f6]">{{
                         approvalSchemaPreview(slotProps.item)
                       }}</pre>
                     </ScrollPanel>
                   </div>
                   <div
                     v-if="approvalUsesStructuredForm(slotProps.item) && slotProps.item.approval"
-                    class="approval-form"
+                    class="grid gap-[0.7rem]"
                   >
                     <label
                       v-for="field in slotProps.item.approval.formFields"
                       :key="`${slotProps.item.id}-${field.id}`"
-                      class="approval-field"
+                      class="grid gap-1"
                     >
-                      <span class="approval-field-label">
+                      <span class="text-[0.92rem] font-bold text-[color:var(--app-text)]">
                         {{ field.label }}
-                        <span v-if="field.required" class="approval-field-required">*</span>
+                        <span v-if="field.required" class="text-[#bc5f38]">*</span>
                       </span>
-                      <span v-if="approvalFieldPrompt(field)" class="approval-field-prompt">
+                      <span
+                        v-if="approvalFieldPrompt(field)"
+                        class="text-[0.82rem] leading-[1.5] text-[color:var(--app-text-soft)]"
+                      >
                         {{ approvalFieldPrompt(field) }}
                       </span>
                       <input
                         v-if="field.kind === 'text'"
-                        class="approval-input"
+                        class="w-full rounded-[0.85rem] border border-[rgba(34,66,72,0.12)] bg-[rgba(255,252,247,0.9)] px-[0.8rem] py-[0.7rem] text-[color:var(--app-text)] outline-none focus:border-[rgba(21,94,99,0.35)] focus:shadow-[0_0_0_3px_rgba(21,94,99,0.08)]"
                         type="text"
                         :value="approvalFieldValue(field)"
                         @input="onApprovalInput(field, $event, slotProps.item)"
                       />
                       <input
                         v-else-if="field.kind === 'number'"
-                        class="approval-input"
+                        class="w-full rounded-[0.85rem] border border-[rgba(34,66,72,0.12)] bg-[rgba(255,252,247,0.9)] px-[0.8rem] py-[0.7rem] text-[color:var(--app-text)] outline-none focus:border-[rgba(21,94,99,0.35)] focus:shadow-[0_0_0_3px_rgba(21,94,99,0.08)]"
                         :step="field.integer ? 1 : 'any'"
                         :min="field.min ?? undefined"
                         :max="field.max ?? undefined"
@@ -691,7 +756,7 @@ watch(
                       />
                       <select
                         v-else-if="field.kind === 'boolean' || field.kind === 'select'"
-                        class="approval-select"
+                        class="w-full rounded-[0.85rem] border border-[rgba(34,66,72,0.12)] bg-[rgba(255,252,247,0.9)] px-[0.8rem] py-[0.7rem] text-[color:var(--app-text)] outline-none focus:border-[rgba(21,94,99,0.35)] focus:shadow-[0_0_0_3px_rgba(21,94,99,0.08)]"
                         :value="approvalFieldValue(field)"
                         @change="onApprovalSelect(field, $event, slotProps.item)"
                       >
@@ -712,7 +777,7 @@ watch(
                       </select>
                       <select
                         v-else-if="field.kind === 'multiselect'"
-                        class="approval-select approval-select--multiple"
+                        class="min-h-28 w-full rounded-[0.85rem] border border-[rgba(34,66,72,0.12)] bg-[rgba(255,252,247,0.9)] px-[0.8rem] py-[0.7rem] text-[color:var(--app-text)] outline-none focus:border-[rgba(21,94,99,0.35)] focus:shadow-[0_0_0_3px_rgba(21,94,99,0.08)]"
                         multiple
                         :value="approvalFieldValue(field)"
                         @change="onApprovalMultiSelect(field, $event, slotProps.item)"
@@ -729,7 +794,7 @@ watch(
                   </div>
                   <p
                     v-if="approvalUsesJsonFallback(slotProps.item)"
-                    class="activity-stream-label"
+                    class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]"
                   >
                     JSON response
                   </p>
@@ -742,11 +807,11 @@ watch(
                   />
                   <p
                     v-if="slotProps.item.approval?.validationError"
-                    class="approval-validation"
+                    class="m-0 text-[0.84rem] leading-[1.45] text-[#bc5f38]"
                   >
                     {{ slotProps.item.approval.validationError }}
                   </p>
-                  <div v-if="slotProps.item.approval" class="approval-actions">
+                  <div v-if="slotProps.item.approval" class="flex flex-wrap gap-2">
                     <Button
                       v-for="option in slotProps.item.approval.options"
                       :key="`${slotProps.item.id}-${option.value}`"
@@ -759,29 +824,37 @@ watch(
                   </div>
                 </div>
 
-                <p v-if="slotProps.item.command" class="activity-command">
+                <p
+                  v-if="slotProps.item.command"
+                  class="m-0 break-words whitespace-pre-wrap font-mono text-[0.9rem] text-[color:var(--app-accent-deep)]"
+                >
                   {{ slotProps.item.command }}
                 </p>
-                <p v-if="slotProps.item.cwd" class="activity-meta">cwd {{ slotProps.item.cwd }}</p>
+                <p
+                  v-if="slotProps.item.cwd"
+                  class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]"
+                >
+                  cwd {{ slotProps.item.cwd }}
+                </p>
                 <p
                   v-for="note in slotProps.item.meta"
                   :key="`${slotProps.item.id}-${note}`"
-                  class="activity-meta"
+                  class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]"
                 >
                   {{ note }}
                 </p>
 
-                <div v-if="slotProps.item.stdout" class="activity-stream">
-                  <p class="activity-stream-label">stdout</p>
-                  <ScrollPanel class="activity-stream-panel">
-                    <pre class="activity-stream-output">{{ slotProps.item.stdout }}</pre>
+                <div v-if="slotProps.item.stdout" class="grid gap-[0.3rem]">
+                  <p class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]">stdout</p>
+                  <ScrollPanel class="w-full">
+                    <pre class="rounded-[0.85rem] bg-[rgba(17,38,42,0.94)] px-[0.9rem] py-[0.8rem] font-mono text-[0.86rem] leading-[1.55] break-words whitespace-pre-wrap text-[#f2f5f6]">{{ slotProps.item.stdout }}</pre>
                   </ScrollPanel>
                 </div>
 
-                <div v-if="slotProps.item.stderr" class="activity-stream activity-stream--stderr">
-                  <p class="activity-stream-label">stderr</p>
-                  <ScrollPanel class="activity-stream-panel">
-                    <pre class="activity-stream-output">{{ slotProps.item.stderr }}</pre>
+                <div v-if="slotProps.item.stderr" class="grid gap-[0.3rem]">
+                  <p class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]">stderr</p>
+                  <ScrollPanel class="w-full">
+                    <pre class="rounded-[0.85rem] bg-[rgba(78,31,24,0.92)] px-[0.9rem] py-[0.8rem] font-mono text-[0.86rem] leading-[1.55] break-words whitespace-pre-wrap text-[#f2f5f6]">{{ slotProps.item.stderr }}</pre>
                   </ScrollPanel>
                 </div>
               </div>
@@ -790,14 +863,16 @@ watch(
         </Timeline>
       </div>
 
-      <div v-if="trailingAssistantMessage" class="message-stack">
+      <div v-if="trailingAssistantMessage" class="grid gap-4">
         <article
           :key="trailingAssistantMessage.id"
-          class="message-bubble message-bubble--assistant"
+          class="max-w-[min(48rem,85%)] rounded-[1.3rem] border border-[rgba(153,125,93,0.15)] bg-[color:var(--app-panel-strong)] p-4 [@media(max-width:960px)]:max-w-full"
         >
-          <p class="message-role">{{ assistantLabel ?? 'Yier' }}</p>
+          <p class="mb-[0.35rem] mt-0 text-[0.82rem] font-bold uppercase tracking-[0.08em] text-[color:var(--app-text-soft)]">
+            {{ assistantLabel ?? 'Yier' }}
+          </p>
           <div
-            class="message-content message-content--markdown"
+            class="prose prose-stone max-w-none prose-a:text-[color:var(--app-accent)] prose-code:rounded-md prose-code:bg-[rgba(21,94,99,0.1)] prose-code:px-1.5 prose-code:py-0.5 prose-code:text-[color:var(--app-accent-deep)] prose-pre:rounded-2xl prose-pre:bg-[rgba(17,38,42,0.92)] prose-pre:px-4 prose-pre:py-3 prose-pre:text-[#f2f5f6] prose-blockquote:border-l-[3px] prose-blockquote:border-[rgba(21,94,99,0.32)] prose-blockquote:text-[color:var(--app-text-soft)]"
             v-html="renderAssistantMessage(trailingAssistantMessage.content)"
           ></div>
         </article>

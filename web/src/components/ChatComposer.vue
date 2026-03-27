@@ -77,8 +77,10 @@ watch(
 </script>
 
 <template>
-  <div class="composer-shell">
-    <div class="composer-panel">
+  <div class="sticky bottom-0 shrink-0">
+    <div
+      class="rounded-[1.4rem] border border-[color:var(--app-border)] bg-[color:var(--app-panel)] p-4 shadow-[var(--app-shadow)] backdrop-blur-[14px]"
+    >
       <Textarea
         ref="textareaRef"
         v-model="model"
@@ -93,8 +95,11 @@ watch(
         @click="emitSelectionChange"
         @keyup="emitSelectionChange"
       />
-      <div class="composer-actions">
-        <p class="composer-hint">Press <span>Ctrl/Cmd + Enter</span> to send.</p>
+      <div class="mt-3 flex items-center justify-between gap-3">
+        <p class="m-0 text-sm text-[color:var(--app-text-soft)]">
+          Press <span class="font-bold text-[color:var(--app-accent-deep)]">Ctrl/Cmd + Enter</span>
+          to send.
+        </p>
         <Button
           label="Send"
           icon="pi pi-arrow-up"

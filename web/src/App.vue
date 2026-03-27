@@ -3013,24 +3013,32 @@ function toErrorMessage(error: unknown) {
 </script>
 
 <template>
-  <div class="app-shell">
-    <aside class="side-rail">
-      <div v-if="!isCodexWorkspace" class="brand-panel">
+  <div class="grid h-screen grid-cols-[minmax(17rem,20rem)_minmax(0,1fr)] gap-6 overflow-hidden p-6 max-[960px]:h-auto max-[960px]:grid-cols-1 max-[960px]:overflow-visible">
+    <aside class="flex min-h-0 flex-col gap-4 overflow-hidden max-[960px]:order-2 max-[960px]:overflow-visible">
+      <div
+        v-if="!isCodexWorkspace"
+        class="relative overflow-hidden rounded-[1.6rem] border border-[color:var(--app-border)] bg-[color:var(--app-panel)] p-[1.4rem] shadow-[var(--app-shadow)] backdrop-blur-[14px] after:pointer-events-none after:absolute after:top-[-3rem] after:right-[-3rem] after:h-40 after:w-40 after:rounded-full after:bg-[radial-gradient(circle,rgba(21,94,99,0.16),transparent_70%)] after:content-['']"
+      >
         <p class="eyebrow">Local-first assistant</p>
-        <h1>yier</h1>
-        <p class="brand-copy">
+        <h1 class="m-0 font-['Iowan_Old_Style','Palatino_Linotype',Palatino,serif] text-[2.8rem] leading-none font-semibold">
+          yier
+        </h1>
+        <p class="mt-3 mb-0 leading-[1.6] text-[color:var(--app-text-soft)]">
           Chat with your local agent, manage MCP connections, and keep everything anchored to your
           own machine.
         </p>
       </div>
 
-      <div v-if="!isCodexWorkspace" class="side-card side-card--status">
-        <div class="side-card-row">
-          <span class="side-card-label">Session</span>
+      <div
+        v-if="!isCodexWorkspace"
+        class="rounded-[1.3rem] border border-[color:var(--app-border)] bg-[color:var(--app-panel)] p-4 shadow-[var(--app-shadow)] backdrop-blur-[14px]"
+      >
+        <div class="flex items-center justify-between gap-4">
+          <span class="m-0 text-[0.92rem] text-[color:var(--app-text-soft)]">Session</span>
           <Tag :value="sessionLabel" rounded />
         </div>
-        <div class="side-card-row">
-          <span class="side-card-label">Frontend</span>
+        <div class="mt-[0.85rem] flex items-center justify-between gap-4">
+          <span class="m-0 text-[0.92rem] text-[color:var(--app-text-soft)]">Frontend</span>
           <Tag
             :value="frontendMode"
             :severity="
@@ -3039,16 +3047,16 @@ function toErrorMessage(error: unknown) {
             rounded
           />
         </div>
-        <div class="side-card-row">
-          <span class="side-card-label">LLM</span>
+        <div class="mt-[0.85rem] flex items-center justify-between gap-4">
+          <span class="m-0 text-[0.92rem] text-[color:var(--app-text-soft)]">LLM</span>
           <Tag
             :value="llmReady ? 'Ready' : 'Needs setup'"
             :severity="llmReady ? 'success' : 'warn'"
             rounded
           />
         </div>
-        <div class="side-card-row">
-          <span class="side-card-label">Backend</span>
+        <div class="mt-[0.85rem] flex items-center justify-between gap-4">
+          <span class="m-0 text-[0.92rem] text-[color:var(--app-text-soft)]">Backend</span>
           <Tag
             :value="activeBackendId"
             :severity="activeBackendReady ? 'success' : 'warn'"
@@ -3057,15 +3065,18 @@ function toErrorMessage(error: unknown) {
         </div>
       </div>
 
-      <div v-if="!isBooting && !isCodexWorkspace" class="rail-actions">
-        <select v-model="newSessionDraft.backendId" class="session-target-select">
+      <div v-if="!isBooting && !isCodexWorkspace" class="grid gap-3">
+        <select
+          v-model="newSessionDraft.backendId"
+          class="min-h-11 rounded-2xl border border-[color:var(--app-border)] bg-[rgba(255,252,245,0.92)] px-4 text-[color:var(--app-text)]"
+        >
           <option v-for="backend in backendOptions" :key="backend.id" :value="backend.id">
             {{ backend.label }}
           </option>
         </select>
         <input
           v-model="newSessionDraft.projectPath"
-          class="session-target-input"
+          class="min-h-11 rounded-2xl border border-[color:var(--app-border)] bg-[rgba(255,252,245,0.92)] px-4 text-[color:var(--app-text)]"
           type="text"
           placeholder="Project path for the next session"
         />
@@ -3081,31 +3092,40 @@ function toErrorMessage(error: unknown) {
         @open-session="openCodexNativeSession"
         @start-session="startNewCodexSession"
       />
-      <div v-else-if="!isBooting" class="side-card side-card--history">
-        <div class="side-card-row">
-          <p class="side-card-label">Recent sessions</p>
+      <div
+        v-else-if="!isBooting"
+        class="flex min-h-0 flex-1 flex-col gap-[0.85rem] overflow-hidden rounded-[1.3rem] border border-[color:var(--app-border)] bg-[color:var(--app-panel)] p-4 shadow-[var(--app-shadow)] backdrop-blur-[14px]"
+      >
+        <div class="flex items-center justify-between gap-4">
+          <p class="m-0 text-[0.92rem] text-[color:var(--app-text-soft)]">Recent sessions</p>
           <Tag :value="String(sessionHistoryCount)" severity="secondary" rounded />
         </div>
 
-        <ScrollPanel v-if="sessionHistory.length" class="session-history-scroll">
-          <div class="session-history-list">
+        <ScrollPanel v-if="sessionHistory.length" class="min-h-0 flex-1">
+          <div class="grid gap-[0.65rem] pr-[0.35rem]">
             <div
               v-for="session in sessionHistory"
               :key="session.session_id"
-              class="session-history-item"
-              :class="{ 'session-history-item--active': session.session_id === activeSessionId }"
+              class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-2xl border border-[rgba(34,66,72,0.08)] bg-[rgba(255,250,242,0.72)] p-1 transition duration-150 hover:border-[rgba(21,94,99,0.18)] hover:bg-[rgba(255,250,242,0.92)] hover:-translate-y-px"
+              :class="{
+                'border-[rgba(21,94,99,0.28)] bg-[rgba(222,241,239,0.52)] shadow-[inset_0_0_0_1px_rgba(21,94,99,0.08)]':
+                  session.session_id === activeSessionId,
+              }"
             >
               <button
                 type="button"
-                class="session-history-main"
+                class="rounded-[0.8rem] border-0 bg-transparent px-[0.65rem] py-[0.55rem] text-left text-inherit transition hover:bg-[rgba(21,94,99,0.06)] focus-visible:outline-2 focus-visible:outline-[rgba(21,94,99,0.38)]"
                 @click="openSessionFromHistory(session.session_id)"
               >
-                <div class="session-history-copy">
-                  <p class="session-history-title">{{ session.title }}</p>
-                  <p v-if="session.preview" class="session-history-preview">
+                <div class="min-w-0">
+                  <p class="m-0 font-bold leading-[1.35]">{{ session.title }}</p>
+                  <p
+                    v-if="session.preview"
+                    class="mt-[0.18rem] mb-0 break-words text-[0.88rem] leading-[1.45] text-[color:var(--app-text-soft)]"
+                  >
                     {{ session.preview }}
                   </p>
-                  <p class="session-history-meta">
+                  <p class="mt-[0.28rem] mb-0 text-[0.76rem] text-[color:var(--app-text-soft)]">
                     <span>{{ session.source }}</span>
                     <span> · {{ session.backend_id }}</span>
                     <span v-if="session.project_path"> · {{ displayNameForPath(session.project_path) }}</span>
@@ -3123,7 +3143,7 @@ function toErrorMessage(error: unknown) {
               </button>
               <Button
                 icon="pi pi-trash"
-                class="session-history-delete"
+                class="shrink-0"
                 text
                 rounded
                 severity="secondary"
@@ -3135,10 +3155,13 @@ function toErrorMessage(error: unknown) {
           </div>
         </ScrollPanel>
 
-        <p v-else class="side-card-empty">No saved sessions yet.</p>
+        <p v-else class="m-0 leading-[1.6] text-[color:var(--app-text-soft)]">No saved sessions yet.</p>
       </div>
 
-      <div v-if="!isBooting && !isCodexWorkspace" class="side-card side-card--nav">
+      <div
+        v-if="!isBooting && !isCodexWorkspace"
+        class="grid gap-3 rounded-[1.3rem] border border-[color:var(--app-border)] bg-[color:var(--app-panel)] p-4 shadow-[var(--app-shadow)] backdrop-blur-[14px]"
+      >
         <Button
           label="Chat"
           icon="pi pi-comment"
@@ -3165,8 +3188,10 @@ function toErrorMessage(error: unknown) {
         />
       </div>
 
-      <div class="side-card side-card--workspace-switcher">
-        <p class="side-card-label">Workspaces</p>
+      <div
+        class="grid gap-3 rounded-[1.3rem] border border-[color:var(--app-border)] bg-[color:var(--app-panel)] p-4 shadow-[var(--app-shadow)] backdrop-blur-[14px]"
+      >
+        <p class="m-0 text-[0.92rem] text-[color:var(--app-text-soft)]">Workspaces</p>
         <Select
           v-if="!isBooting"
           v-model="workspaceSurfaceModel"
@@ -3174,33 +3199,50 @@ function toErrorMessage(error: unknown) {
           option-label="label"
           option-value="value"
           option-disabled="disabled"
-          class="workspace-switcher-control"
+          class="w-full"
           size="small"
           aria-label="Switch workspace"
         />
-        <div v-else class="workspace-switcher-placeholder">Loading workspace…</div>
+        <div
+          v-else
+          class="flex min-h-[2.65rem] items-center rounded-2xl bg-[rgba(248,243,234,0.7)] px-[0.95rem] py-[0.78rem] text-[0.93rem] text-[color:var(--app-text-soft)]"
+        >
+          Loading workspace…
+        </div>
       </div>
 
-      <div v-if="!isBooting && !isCodexWorkspace" class="side-card side-card--muted">
-        <p class="side-card-label">Allowed roots</p>
-        <ul class="root-list">
+      <div
+        v-if="!isBooting && !isCodexWorkspace"
+        class="rounded-[1.3rem] border border-[color:var(--app-border)] bg-[rgba(247,243,232,0.88)] p-4 shadow-[var(--app-shadow)] backdrop-blur-[14px]"
+      >
+        <p class="m-0 text-[0.92rem] text-[color:var(--app-text-soft)]">Allowed roots</p>
+        <ul class="mt-3 ml-4 p-0 leading-[1.5] text-[color:var(--app-text-soft)]">
           <li v-for="root in config?.allowed_roots ?? []" :key="root">{{ root }}</li>
         </ul>
       </div>
     </aside>
 
-    <main class="workspace-panel">
-      <header class="workspace-header">
+    <main
+      class="flex min-h-0 flex-col gap-4 overflow-hidden rounded-[1.8rem] border border-[color:var(--app-border)] bg-[color:var(--app-panel)] p-[1.15rem] shadow-[var(--app-shadow)] backdrop-blur-[14px] max-[960px]:min-h-auto max-[960px]:overflow-visible"
+    >
+      <header class="flex items-start justify-between gap-4 max-[960px]:flex-col max-[960px]:items-stretch">
         <div>
           <p class="eyebrow">{{ workspaceEyebrow }}</p>
-          <h2>{{ workspaceTitle }}</h2>
+          <h2 class="m-0 font-['Iowan_Old_Style','Palatino_Linotype',Palatino,serif] text-[clamp(1.6rem,2vw,2.4rem)] leading-[1.1] font-semibold">
+            {{ workspaceTitle }}
+          </h2>
         </div>
-        <div class="workspace-header-actions">
-          <div v-if="isCodexWorkspace" class="codex-mode-switch">
+        <div class="flex items-center gap-3 max-[960px]:flex-col max-[960px]:items-stretch">
+          <div
+            v-if="isCodexWorkspace"
+            class="inline-flex rounded-full border border-[color:var(--app-border)] bg-[rgba(248,243,233,0.9)] p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.6)]"
+          >
             <button
               type="button"
-              class="codex-mode-button"
-              :class="{ 'codex-mode-button--active': activeCodexWorkMode === 'plan' }"
+              class="min-w-[4.8rem] cursor-pointer rounded-full bg-transparent px-[0.9rem] py-[0.55rem] font-bold text-[color:var(--app-text-soft)] transition disabled:cursor-default disabled:opacity-65"
+              :class="{
+                'bg-[color:var(--app-accent)] text-[#f7f5ef]': activeCodexWorkMode === 'plan',
+              }"
               :disabled="savingState.codexMode"
               @click="updateCodexWorkMode('plan')"
             >
@@ -3208,8 +3250,10 @@ function toErrorMessage(error: unknown) {
             </button>
             <button
               type="button"
-              class="codex-mode-button"
-              :class="{ 'codex-mode-button--active': activeCodexWorkMode === 'build' }"
+              class="min-w-[4.8rem] cursor-pointer rounded-full bg-transparent px-[0.9rem] py-[0.55rem] font-bold text-[color:var(--app-text-soft)] transition disabled:cursor-default disabled:opacity-65"
+              :class="{
+                'bg-[color:var(--app-accent)] text-[#f7f5ef]': activeCodexWorkMode === 'build',
+              }"
               :disabled="savingState.codexMode"
               @click="updateCodexWorkMode('build')"
             >
@@ -3226,29 +3270,35 @@ function toErrorMessage(error: unknown) {
         </div>
       </header>
 
-      <Message v-if="errorMessage" severity="error" class="status-banner">{{
+      <Message v-if="errorMessage" severity="error" class="m-0">{{
         errorMessage
       }}</Message>
-      <Message v-else-if="successMessage" severity="success" class="status-banner">
+      <Message v-else-if="successMessage" severity="success" class="m-0">
         {{ successMessage }}
       </Message>
 
-      <section v-if="isBooting" class="loading-state">
+      <section
+        v-if="isBooting"
+        class="grid min-h-72 place-items-center justify-items-center gap-3 rounded-3xl border border-dashed border-[color:var(--app-border-strong)] bg-[rgba(255,252,245,0.7)] p-8 text-center"
+      >
         <ProgressSpinner stroke-width="4" />
         <p>Preparing your local workspace…</p>
       </section>
 
       <template v-else>
-        <section v-if="!activeBackendReady && isChatRoute" class="empty-state">
+        <section
+          v-if="!activeBackendReady && isChatRoute"
+          class="grid min-h-72 place-items-center justify-items-center gap-3 rounded-3xl border border-dashed border-[color:var(--app-border-strong)] bg-[rgba(255,252,245,0.7)] p-8 text-center"
+        >
           <p class="eyebrow">Setup needed</p>
-          <h3>
+          <h3 class="m-0 font-['Iowan_Old_Style','Palatino_Linotype',Palatino,serif] text-2xl font-semibold">
             {{
               activeBackendId === 'codex'
                 ? 'Configure the Codex backend before sending messages.'
                 : 'Configure the LLM connection before sending messages.'
             }}
           </h3>
-          <p>
+          <p class="m-0 max-w-3xl text-[color:var(--app-text-soft)]">
             {{
               activeBackendId === 'codex'
                 ? 'Set the Codex launcher command in Settings and make sure the executable is on your PATH.'
@@ -3260,11 +3310,14 @@ function toErrorMessage(error: unknown) {
 
         <section
           v-else
-          class="workspace-content"
-          :class="{ 'workspace-content--codex': isCodexWorkspace }"
+          class="flex min-h-0 flex-1 flex-col overflow-hidden max-[960px]:overflow-visible"
+          :class="{
+            'grid grid-cols-[minmax(0,1fr)_20rem] gap-4 items-stretch max-[960px]:grid-cols-1':
+              isCodexWorkspace,
+          }"
         >
           <template v-if="isChatRoute">
-            <div class="chat-stage">
+            <div class="flex min-h-0 flex-col gap-4">
               <ChatTimeline
                 :messages="chatMessages"
                 :activities="activities"
@@ -3278,7 +3331,7 @@ function toErrorMessage(error: unknown) {
               <Message
                 v-if="activeSession?.source === 'channel'"
                 severity="info"
-                class="status-banner"
+                class="m-0"
               >
                 This session comes from {{ activeSession.channel_meta?.platform ?? 'channel' }} and
                 is read-only in the chat workspace.

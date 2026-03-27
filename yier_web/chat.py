@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from contextlib import suppress
 import json
 import logging
@@ -634,7 +635,43 @@ class ChatService:
                 self.get_session_activity_events(session_id),
             )
 
+        cached_ipc_view = self._cached_codex_ipc_session_view(session_id)
+        if cached_ipc_view is not None:
+            return cached_ipc_view
+
         view = backend.load_thread_view(context)
+        self.ensure_session_metadata(
+            session_id,
+            source=context.source,
+            channel_meta=context.channel_meta,
+            backend_id=context.backend_id,
+            project_path=str(context.project_path),
+            backend_state=context.backend_state,
+            codex_work_mode=self.get_session_metadata(session_id)["codex_work_mode"],
+            title=view["title"],
+            preview=view["preview"],
+            updated_at=view["updated_at"],
+        )
+        return (view["messages"], view["activity_events"])
+
+    def _cached_codex_ipc_session_view(
+        self,
+        session_id: str,
+    ) -> tuple[list[StoredSessionMessage], list[dict[str, Any]]] | None:
+        context = self.get_session_context(session_id)
+        if context.backend_id != "codex":
+            return None
+
+        backend_state = context.backend_state
+        conversation_state = backend_state.get("ipc_conversation_state")
+        if not isinstance(conversation_state, dict):
+            return None
+
+        backend = self.backends.get(context.backend_id)
+        if not isinstance(backend, CodexAppServerBackend):
+            return None
+
+        view = backend.ipc_conversation_view(context, conversation_state)
         self.ensure_session_metadata(
             session_id,
             source=context.source,
@@ -1085,6 +1122,143 @@ class ChatService:
             if value is not None:
                 conversation_state[key] = value
         return conversation_state
+
+    def apply_codex_ipc_stream_change(
+        self,
+        session_id: str,
+        change: dict[str, Any],
+    ) -> None:
+        metadata = self.get_session_metadata(session_id)
+        if metadata["backend_id"] != "codex":
+            return
+
+        change_type = change.get("type")
+        next_conversation_state: dict[str, Any] | None = None
+        if change_type == "snapshot":
+            conversation_state = change.get("conversationState")
+            if isinstance(conversation_state, dict):
+                next_conversation_state = deepcopy(conversation_state)
+        elif change_type == "patches":
+            patches = change.get("patches")
+            if isinstance(patches, list):
+                cached_state = metadata["backend_state"].get("ipc_conversation_state")
+                base_state = deepcopy(cached_state) if isinstance(cached_state, dict) else {}
+                if self._apply_codex_ipc_patches(base_state, patches):
+                    next_conversation_state = base_state
+
+        if next_conversation_state is None:
+            return
+
+        backend_updates: dict[str, Any] = {
+            "ipc_conversation_state": next_conversation_state,
+        }
+        if "hasUnreadTurn" in next_conversation_state:
+            backend_updates["has_unread_turn"] = bool(
+                next_conversation_state.get("hasUnreadTurn")
+            )
+        if "latestTokenUsageInfo" in next_conversation_state:
+            backend_updates["latest_token_usage_info"] = next_conversation_state.get(
+                "latestTokenUsageInfo"
+            )
+        if "resumeState" in next_conversation_state:
+            backend_updates["resume_state"] = (
+                next_conversation_state.get("resumeState") or "resumed"
+            )
+        self.update_session_backend_state(session_id, backend_updates)
+
+    def _apply_codex_ipc_patches(
+        self,
+        root: dict[str, Any],
+        patches: list[dict[str, Any]],
+    ) -> bool:
+        try:
+            for patch in patches:
+                if not isinstance(patch, dict):
+                    continue
+                operation = patch.get("op")
+                path = patch.get("path")
+                if not isinstance(operation, str) or not isinstance(path, list) or not path:
+                    continue
+                if operation in {"add", "replace"}:
+                    self._set_codex_ipc_path(root, path, deepcopy(patch.get("value")))
+                elif operation == "remove":
+                    self._remove_codex_ipc_path(root, path)
+        except (KeyError, IndexError, TypeError, ValueError):
+            return False
+        return True
+
+    def _set_codex_ipc_path(
+        self,
+        root: dict[str, Any],
+        path: list[Any],
+        value: Any,
+    ) -> None:
+        current: Any = root
+        for index, segment in enumerate(path[:-1]):
+            next_segment = path[index + 1]
+            if isinstance(current, list):
+                if not isinstance(segment, int):
+                    raise TypeError("List path segment must be an integer.")
+                while len(current) <= segment:
+                    current.append({} if not isinstance(next_segment, int) else [])
+                child = current[segment]
+                if not isinstance(child, (dict, list)):
+                    child = {} if not isinstance(next_segment, int) else []
+                    current[segment] = child
+                current = child
+                continue
+
+            if not isinstance(current, dict):
+                raise TypeError("Patch parent must be a dict or list.")
+            child = current.get(segment)
+            if not isinstance(child, (dict, list)):
+                child = {} if not isinstance(next_segment, int) else []
+                current[segment] = child
+            current = child
+
+        last_segment = path[-1]
+        if isinstance(current, list):
+            if not isinstance(last_segment, int):
+                raise TypeError("List path segment must be an integer.")
+            if last_segment < len(current):
+                current[last_segment] = value
+            elif last_segment == len(current):
+                current.append(value)
+            else:
+                while len(current) < last_segment:
+                    current.append(None)
+                current.append(value)
+            return
+
+        if not isinstance(current, dict):
+            raise TypeError("Patch parent must be a dict or list.")
+        current[last_segment] = value
+
+    def _remove_codex_ipc_path(
+        self,
+        root: dict[str, Any],
+        path: list[Any],
+    ) -> None:
+        current: Any = root
+        for segment in path[:-1]:
+            if isinstance(current, list):
+                if not isinstance(segment, int):
+                    raise TypeError("List path segment must be an integer.")
+                current = current[segment]
+                continue
+            if not isinstance(current, dict):
+                raise TypeError("Patch parent must be a dict or list.")
+            current = current[segment]
+
+        last_segment = path[-1]
+        if isinstance(current, list):
+            if not isinstance(last_segment, int):
+                raise TypeError("List path segment must be an integer.")
+            del current[last_segment]
+            return
+        if not isinstance(current, dict):
+            raise TypeError("Patch parent must be a dict or list.")
+        current.pop(last_segment, None)
 
     def _native_codex_ipc_conversation_state(self, session_id: str) -> dict[str, Any] | None:
         context = self.get_session_context(session_id)

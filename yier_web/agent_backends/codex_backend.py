@@ -1968,6 +1968,40 @@ class CodexAppServerBackend(ChatBackend):
             "activity_events": activity_events,
         }
 
+    def ipc_conversation_view(
+        self,
+        context: ChatSessionContext,
+        conversation_state: dict[str, Any],
+    ) -> dict[str, Any]:
+        messages: list[StoredSessionMessage] = []
+        activity_events: list[dict[str, Any]] = []
+
+        turns = conversation_state.get("turns")
+        if isinstance(turns, list):
+            for turn in turns:
+                if not isinstance(turn, dict):
+                    continue
+                items = turn.get("items")
+                if not isinstance(items, list):
+                    continue
+                for raw_item in items:
+                    item = self._unwrap_thread_item(raw_item)
+                    if item is None:
+                        continue
+                    self._append_thread_item_view(context, item, messages, activity_events)
+
+        title = conversation_state.get("title") or conversation_state.get("preview") or context.session_id
+        preview = conversation_state.get("preview") or title
+        updated_at_raw = conversation_state.get("updatedAt")
+        updated_at = float(updated_at_raw or 0) / 1000 if isinstance(updated_at_raw, (int, float)) else 0.0
+        return {
+            "title": title,
+            "preview": preview,
+            "updated_at": updated_at,
+            "messages": messages,
+            "activity_events": activity_events,
+        }
+
     def _append_thread_item_view(
         self,
         context: ChatSessionContext,
@@ -1975,9 +2009,11 @@ class CodexAppServerBackend(ChatBackend):
         messages: list[StoredSessionMessage],
         activity_events: list[dict[str, Any]],
     ) -> None:
-        item_type = getattr(item, "type", "")
+        item_type = self._thread_item_value(item, "type", "")
         if item_type == "userMessage":
-            content = self._thread_user_message_text(getattr(item, "content", []))
+            content = self._thread_user_message_text(
+                self._thread_item_value(item, "content", [])
+            )
             if content:
                 messages.append(
                     StoredSessionMessage(
@@ -1990,7 +2026,7 @@ class CodexAppServerBackend(ChatBackend):
             return
 
         if item_type == "agentMessage":
-            content = getattr(item, "text", "") or ""
+            content = self._thread_item_value(item, "text", "") or ""
             if content.strip():
                 messages.append(
                     StoredSessionMessage(
@@ -2008,22 +2044,26 @@ class CodexAppServerBackend(ChatBackend):
                 "plan",
                 {
                     "session_id": context.session_id,
-                    "item_id": item.id,
-                    "content": getattr(item, "text", ""),
+                    "item_id": self._thread_item_value(item, "id", ""),
+                    "content": self._thread_item_value(item, "text", ""),
                     "iteration": 0,
                 },
             )
             return
 
         if item_type == "reasoning":
-            content = "\n".join(getattr(item, "summary", []) or getattr(item, "content", []) or [])
+            content = "\n".join(
+                self._thread_item_value(item, "summary", [])
+                or self._thread_item_value(item, "content", [])
+                or []
+            )
             if content.strip():
                 self._append_activity_event(
                     activity_events,
                     "reasoning",
                     {
                         "session_id": context.session_id,
-                        "item_id": item.id,
+                        "item_id": self._thread_item_value(item, "id", ""),
                         "content": content,
                         "iteration": 0,
                     },
@@ -2036,21 +2076,21 @@ class CodexAppServerBackend(ChatBackend):
                 "command_start",
                 {
                     "session_id": context.session_id,
-                    "tool_call_id": item.id,
+                    "tool_call_id": self._thread_item_value(item, "id", ""),
                     "tool_name": "command_execution",
-                    "command": getattr(item, "command", ""),
-                    "cwd": getattr(item, "cwd", ""),
+                    "command": self._thread_item_value(item, "command", ""),
+                    "cwd": self._thread_item_value(item, "cwd", ""),
                     "is_background": False,
                 },
             )
-            output = getattr(item, "aggregated_output", None)
+            output = self._thread_item_value(item, "aggregated_output", None)
             if isinstance(output, str) and output:
                 self._append_activity_event(
                     activity_events,
                     "command_output",
                     {
                         "session_id": context.session_id,
-                        "tool_call_id": item.id,
+                        "tool_call_id": self._thread_item_value(item, "id", ""),
                         "tool_name": "command_execution",
                         "stream": "stdout",
                         "content": output,
@@ -2062,11 +2102,11 @@ class CodexAppServerBackend(ChatBackend):
                 "command_end",
                 {
                     "session_id": context.session_id,
-                    "tool_call_id": item.id,
+                    "tool_call_id": self._thread_item_value(item, "id", ""),
                     "tool_name": "command_execution",
-                    "command": getattr(item, "command", ""),
-                    "cwd": getattr(item, "cwd", ""),
-                    "exit_code": int(getattr(item, "exit_code", 0) or 0),
+                    "command": self._thread_item_value(item, "command", ""),
+                    "cwd": self._thread_item_value(item, "cwd", ""),
+                    "exit_code": int(self._thread_item_value(item, "exit_code", 0) or 0),
                     "timed_out": False,
                     "is_background": False,
                 },
@@ -2078,13 +2118,13 @@ class CodexAppServerBackend(ChatBackend):
                 context.session_id,
                 activity_events,
                 tool_name="file_change",
-                tool_call_id=item.id,
-                arguments={"change_count": len(getattr(item, "changes", []) or [])},
+                tool_call_id=self._thread_item_value(item, "id", ""),
+                arguments={"change_count": len(self._thread_item_value(item, "changes", []) or [])},
                 result=self._summarize_file_change(item),
-                is_error=getattr(item, "status", "") not in {"completed", "inProgress"},
+                is_error=self._thread_item_value(item, "status", "") not in {"completed", "inProgress"},
                 metadata={
-                    "status": getattr(item, "status", ""),
-                    "change_count": len(getattr(item, "changes", []) or []),
+                    "status": self._thread_item_value(item, "status", ""),
+                    "change_count": len(self._thread_item_value(item, "changes", []) or []),
                 },
             )
             return
@@ -2093,12 +2133,12 @@ class CodexAppServerBackend(ChatBackend):
             self._append_tool_activity_events(
                 context.session_id,
                 activity_events,
-                tool_name=f"mcp:{getattr(item, 'server', 'unknown')}/{getattr(item, 'tool', 'tool')}",
-                tool_call_id=item.id,
-                arguments=self._safe_model_dump(getattr(item, "arguments", {})),
+                tool_name=f"mcp:{self._thread_item_value(item, 'server', 'unknown')}/{self._thread_item_value(item, 'tool', 'tool')}",
+                tool_call_id=self._thread_item_value(item, "id", ""),
+                arguments=self._safe_model_dump(self._thread_item_value(item, "arguments", {})),
                 result=self._summarize_tool_result(item),
-                is_error=getattr(item, "error", None) is not None,
-                metadata={"status": getattr(item, "status", "")},
+                is_error=self._thread_item_value(item, "error", None) is not None,
+                metadata={"status": self._thread_item_value(item, "status", "")},
             )
             return
 
@@ -2106,12 +2146,12 @@ class CodexAppServerBackend(ChatBackend):
             self._append_tool_activity_events(
                 context.session_id,
                 activity_events,
-                tool_name=f"dynamic:{getattr(item, 'tool', 'tool')}",
-                tool_call_id=item.id,
-                arguments=self._safe_model_dump(getattr(item, "arguments", {})),
+                tool_name=f"dynamic:{self._thread_item_value(item, 'tool', 'tool')}",
+                tool_call_id=self._thread_item_value(item, "id", ""),
+                arguments=self._safe_model_dump(self._thread_item_value(item, "arguments", {})),
                 result=self._summarize_tool_result(item),
-                is_error=getattr(item, "success", True) is False,
-                metadata={"status": getattr(item, "status", "")},
+                is_error=self._thread_item_value(item, "success", True) is False,
+                metadata={"status": self._thread_item_value(item, "status", "")},
             )
             return
 
@@ -2119,15 +2159,15 @@ class CodexAppServerBackend(ChatBackend):
             self._append_tool_activity_events(
                 context.session_id,
                 activity_events,
-                tool_name=f"collab:{getattr(item, 'tool', 'tool')}",
-                tool_call_id=item.id,
+                tool_name=f"collab:{self._thread_item_value(item, 'tool', 'tool')}",
+                tool_call_id=self._thread_item_value(item, "id", ""),
                 arguments={
-                    "receiver_thread_ids": list(getattr(item, "receiver_thread_ids", []) or []),
-                    "prompt": getattr(item, "prompt", None),
+                    "receiver_thread_ids": list(self._thread_item_value(item, "receiver_thread_ids", []) or []),
+                    "prompt": self._thread_item_value(item, "prompt", None),
                 },
                 result=self._summarize_collab_result(item),
-                is_error=getattr(item, "status", "") not in {"completed", "inProgress"},
-                metadata={"status": getattr(item, "status", "")},
+                is_error=self._thread_item_value(item, "status", "") not in {"completed", "inProgress"},
+                metadata={"status": self._thread_item_value(item, "status", "")},
             )
             return
 
@@ -2136,9 +2176,9 @@ class CodexAppServerBackend(ChatBackend):
                 context.session_id,
                 activity_events,
                 tool_name="web_search",
-                tool_call_id=item.id,
-                arguments={"query": getattr(item, "query", "")},
-                result=f"Searched the web for {getattr(item, 'query', '')}.",
+                tool_call_id=self._thread_item_value(item, "id", ""),
+                arguments={"query": self._thread_item_value(item, "query", "")},
+                result=f"Searched the web for {self._thread_item_value(item, 'query', '')}.",
                 is_error=False,
                 metadata={},
             )
@@ -2222,15 +2262,20 @@ class CodexAppServerBackend(ChatBackend):
         parts: list[str] = []
         for item in contents:
             root = getattr(item, "root", item)
-            item_type = getattr(root, "type", None)
+            item_type = self._thread_item_value(root, "type", None)
             if item_type != "text":
                 continue
-            text = getattr(root, "text", None)
+            text = self._thread_item_value(root, "text", None)
             if isinstance(text, str) and text.strip():
                 parts.append(text.strip())
         if not parts:
             return ""
         return self._strip_plan_mode_prompt("\n".join(parts))
+
+    def _thread_item_value(self, item: Any, key: str, default: Any = None) -> Any:
+        if isinstance(item, dict):
+            return item.get(key, default)
+        return getattr(item, key, default)
 
     def _strip_plan_mode_prompt(self, value: str) -> str:
         normalized = value.strip()

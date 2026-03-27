@@ -1340,6 +1340,127 @@ def test_chat_service_load_session_view_prefers_native_thread_view_without_local
     ]
 
 
+def test_chat_service_load_session_view_prefers_cached_ipc_state_for_remote_codex_updates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog())
+
+    project_root = tmp_path / "project"
+    project_root.mkdir(parents=True)
+    service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
+    chat_service = ChatService(
+        project_root=project_root,
+        config_service=service,
+        mcp_manager=FakeMCPManager(),  # type: ignore[arg-type]
+    )
+    codex_backend = chat_service.backends["codex"]
+    assert isinstance(codex_backend, CodexAppServerBackend)
+
+    monkeypatch.setattr(
+        codex_backend,
+        "bootstrap_session",
+        lambda project_path, source="chat", channel_meta=None: {
+            "thread_id": "thread-native-41",
+            "status": "idle",
+            "active_flags": [],
+            "detail": None,
+        },
+    )
+    session_id = chat_service.create_session(backend_id="codex")
+    chat_service.update_session_backend_state(session_id, {"status": "idle"})
+
+    monkeypatch.setattr(
+        codex_backend,
+        "load_thread_view",
+        lambda context: {
+            "title": "Stale Native Thread",
+            "preview": "stale-preview",
+            "updated_at": 10.0,
+            "messages": [
+                Message(role="assistant", content="stale-assistant"),
+            ],
+            "activity_events": [],
+        },
+    )
+
+    chat_service.apply_codex_ipc_stream_change(
+        session_id,
+        {
+            "type": "patches",
+            "patches": [
+                {
+                    "op": "replace",
+                    "path": ["turns"],
+                    "value": [
+                        {
+                            "id": "turn-1",
+                            "turnId": "turn-1",
+                            "status": "inProgress",
+                            "items": [],
+                            "error": None,
+                            "diff": None,
+                            "params": {
+                                "threadId": session_id,
+                                "input": [
+                                    {"type": "text", "text": "hello", "text_elements": []}
+                                ],
+                            },
+                        }
+                    ],
+                },
+                {
+                    "op": "replace",
+                    "path": ["updatedAt"],
+                    "value": 123000,
+                },
+                {
+                    "op": "replace",
+                    "path": ["title"],
+                    "value": "Remote Thread",
+                },
+            ],
+        },
+    )
+    chat_service.apply_codex_ipc_stream_change(
+        session_id,
+        {
+            "type": "patches",
+            "patches": [
+                {
+                    "op": "add",
+                    "path": ["turns", 0, "items", 0],
+                    "value": {
+                        "type": "userMessage",
+                        "id": "item-user-1",
+                        "content": [
+                            {"type": "text", "text": "hello", "text_elements": []}
+                        ],
+                    },
+                },
+                {
+                    "op": "add",
+                    "path": ["turns", 0, "items", 1],
+                    "value": {
+                        "type": "agentMessage",
+                        "id": "item-agent-1",
+                        "text": "world",
+                        "phase": "final_answer",
+                    },
+                },
+            ],
+        },
+    )
+
+    messages, activity_events = chat_service.load_session_view(session_id)
+
+    assert [(message.role, message.content) for message in messages] == [
+        ("user", "hello"),
+        ("assistant", "world"),
+    ]
+    assert activity_events == []
+
+
 def test_chat_service_run_command_tool_supports_shell_pipes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

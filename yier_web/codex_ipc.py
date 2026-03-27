@@ -900,6 +900,10 @@ class CodexThreadFollowerBridge:
 
         change = params.get("change")
         change_type = change.get("type") if isinstance(change, dict) else None
+        if isinstance(change, dict) and hasattr(
+            self.chat_service, "apply_codex_ipc_stream_change"
+        ):
+            self.chat_service.apply_codex_ipc_stream_change(session_id, change)
         _ipc_debug_log(
             "handle stream state broadcast",
             session_id=session_id,

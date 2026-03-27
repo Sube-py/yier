@@ -7,19 +7,31 @@ import ScrollPanel from 'primevue/scrollpanel'
 import { apiPost } from '../lib/api'
 import type { CodexProjectGroup, SelectDirectoryResponse } from '../types/api'
 
-const props = defineProps<{
-  projects: CodexProjectGroup[]
-  activeSessionId: string
-  activeSessionStatus?: string | null
-  activeProjectPath?: string
-}>()
+const props = withDefaults(
+  defineProps<{
+    projects: CodexProjectGroup[]
+    activeSessionId: string
+    activeSessionStatus?: string | null
+    activeProjectPath?: string
+    surface?: 'sidebar' | 'sheet'
+    closeable?: boolean
+  }>(),
+  {
+    activeSessionStatus: null,
+    activeProjectPath: '',
+    surface: 'sidebar',
+    closeable: false,
+  },
+)
 
 const emit = defineEmits<{
   openSession: [threadId: string]
   startSession: [projectPath: string]
+  close: []
 }>()
 
 const expandedProjectPaths = ref<string[]>([])
+const isSheet = computed(() => props.surface === 'sheet')
 
 const sortedProjects = computed(() =>
   props.projects
@@ -141,8 +153,22 @@ function projectLabel(project: CodexProjectGroup) {
   return project.project || pathDisplayName(project.project_path) || 'Untitled project'
 }
 
-function startNewChat(projectPath?: string) {
+function requestClose() {
+  emit('close')
+}
+
+function startSessionForProject(projectPath?: string) {
   emit('startSession', projectPath?.trim() || props.activeProjectPath?.trim() || '')
+  if (isSheet.value) {
+    requestClose()
+  }
+}
+
+function openSession(threadId: string) {
+  emit('openSession', threadId)
+  if (isSheet.value) {
+    requestClose()
+  }
 }
 
 const selectNewProject = async () => {
@@ -160,6 +186,9 @@ const selectNewProject = async () => {
     }
 
     emit('startSession', projectPath)
+    if (isSheet.value) {
+      requestClose()
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to select a project directory.'
     window.alert(message)
@@ -169,8 +198,34 @@ const selectNewProject = async () => {
 
 <template>
   <div
-    class="flex min-h-0 flex-1 flex-col gap-[0.85rem] overflow-hidden rounded-[1.3rem] border border-[color:var(--app-border)] bg-[linear-gradient(180deg,rgba(255,252,247,0.95),rgba(245,239,228,0.82)),rgba(255,252,245,0.84)] p-4 shadow-[var(--app-shadow)] backdrop-blur-[14px]"
+    :class="
+      isSheet
+        ? 'flex min-h-0 flex-1 flex-col gap-4 overflow-hidden'
+        : 'flex min-h-0 flex-1 flex-col gap-[0.85rem] overflow-hidden rounded-[1.3rem] border border-[color:var(--app-border)] bg-[linear-gradient(180deg,rgba(255,252,247,0.95),rgba(245,239,228,0.82)),rgba(255,252,245,0.84)] p-4 shadow-[var(--app-shadow)] backdrop-blur-[14px]'
+    "
   >
+    <div
+      v-if="isSheet"
+      class="flex flex-col gap-3 border-b border-[color:var(--app-border)] pb-3"
+    >
+      <div class="sheet-handle"></div>
+      <div class="flex items-start justify-between gap-3">
+        <div>
+          <p class="eyebrow">Codex workspace</p>
+          <h4>Threads</h4>
+        </div>
+        <Button
+          v-if="closeable"
+          icon="pi pi-times"
+          rounded
+          text
+          severity="secondary"
+          aria-label="Close threads panel"
+          @click="requestClose"
+        />
+      </div>
+    </div>
+
     <div class="flex items-stretch gap-[0.85rem]">
       <Button
         label="New thread"
@@ -188,7 +243,7 @@ const selectNewProject = async () => {
             class: 'm-0',
           },
         }"
-        @click="startNewChat()"
+        @click="startSessionForProject()"
       />
     </div>
 
@@ -246,7 +301,7 @@ const selectNewProject = async () => {
                 text
                 icon="pi pi-pen-to-square"
                 :title="`Start a new chat in ${projectLabel(project)}`"
-                @click.stop="startNewChat(project.project_path)"
+                @click.stop="startSessionForProject(project.project_path)"
               />
             </div>
           </div>
@@ -265,7 +320,7 @@ const selectNewProject = async () => {
                   session.thread_id === activeSessionId,
               }"
               :title="session.cwd || session.title"
-              @click="emit('openSession', session.thread_id)"
+              @click="openSession(session.thread_id)"
             >
               <div class="block min-w-0 max-w-full overflow-hidden">
                 <div class="grid w-full min-w-0 max-w-full grid-cols-[minmax(0,1fr)_auto] items-baseline gap-[0.8rem] overflow-hidden">

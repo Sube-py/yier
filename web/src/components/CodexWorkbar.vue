@@ -1,22 +1,35 @@
 <script setup lang="ts">
+import { computed } from 'vue'
+
 import Button from 'primevue/button'
 import Select from 'primevue/select'
 import Tag from 'primevue/tag'
 
 import type { BackendRuntime, CodexPairingExtensionSummary } from '../types/api'
 
-defineProps<{
-  runtime: BackendRuntime | null
-  projectPath: string
-  pairedEditors: CodexPairingExtensionSummary[]
-  sandbox: 'read-only' | 'workspace-write' | 'danger-full-access'
-  saving: boolean
-}>()
+const props = withDefaults(
+  defineProps<{
+    runtime: BackendRuntime | null
+    projectPath: string
+    pairedEditors: CodexPairingExtensionSummary[]
+    sandbox: 'read-only' | 'workspace-write' | 'danger-full-access'
+    saving: boolean
+    surface?: 'sidebar' | 'sheet'
+    closeable?: boolean
+  }>(),
+  {
+    surface: 'sidebar',
+    closeable: false,
+  },
+)
 
 const emit = defineEmits<{
   updateSandbox: [value: 'read-only' | 'workspace-write' | 'danger-full-access']
   saveSandbox: []
+  close: []
 }>()
+
+const isSheet = computed(() => props.surface === 'sheet')
 
 const sandboxOptions = [
   { label: 'Read only', value: 'read-only' },
@@ -75,6 +88,28 @@ function pairingCapabilitySummary(capabilityNames: string[]) {
 
 <template>
   <aside class="flex min-h-0 flex-col gap-4">
+    <div
+      v-if="isSheet"
+      class="flex flex-col gap-3 border-b border-[color:var(--app-border)] pb-3"
+    >
+      <div class="sheet-handle"></div>
+      <div class="flex items-start justify-between gap-3">
+        <div>
+          <p class="eyebrow">Codex workspace</p>
+          <h4>Runtime</h4>
+        </div>
+        <Button
+          v-if="closeable"
+          icon="pi pi-times"
+          rounded
+          text
+          severity="secondary"
+          aria-label="Close runtime panel"
+          @click="emit('close')"
+        />
+      </div>
+    </div>
+
     <section
       class="grid gap-4 rounded-[1.2rem] border border-[color:var(--app-border)] bg-[color:var(--app-panel)] p-4 shadow-[var(--app-shadow)] backdrop-blur-[14px]"
     >
@@ -124,6 +159,40 @@ function pairingCapabilitySummary(capabilityNames: string[]) {
 
     <section
       class="grid gap-4 rounded-[1.2rem] border border-[color:var(--app-border)] bg-[color:var(--app-panel)] p-4 shadow-[var(--app-shadow)] backdrop-blur-[14px]"
+      :class="{ 'order-2': isSheet }"
+    >
+      <div class="flex items-start justify-between gap-3">
+        <div>
+          <p class="eyebrow">Permission mode</p>
+          <h4>Global sandbox default</h4>
+        </div>
+      </div>
+
+      <div class="grid gap-3.5">
+        <Select
+          :model-value="sandbox"
+          :options="sandboxOptions"
+          option-label="label"
+          option-value="value"
+          fluid
+          @update:model-value="emit('updateSandbox', $event)"
+        />
+        <p class="m-0 text-sm leading-[1.55] text-[color:var(--app-text-soft)]">
+          This updates the default Codex sandbox for all sessions and applies on the next turn.
+        </p>
+        <Button
+          label="Save Permission Mode"
+          icon="pi pi-shield"
+          class="w-full"
+          :loading="saving"
+          @click="emit('saveSandbox')"
+        />
+      </div>
+    </section>
+
+    <section
+      class="grid gap-4 rounded-[1.2rem] border border-[color:var(--app-border)] bg-[color:var(--app-panel)] p-4 shadow-[var(--app-shadow)] backdrop-blur-[14px]"
+      :class="{ 'order-3': isSheet }"
     >
       <div class="flex items-start justify-between gap-3">
         <div>
@@ -137,9 +206,9 @@ function pairingCapabilitySummary(capabilityNames: string[]) {
         <article
           v-for="editor in pairedEditors"
           :key="editor.id"
-          class="grid gap-2 rounded-2xl border border-[rgba(136,109,67,0.18)] bg-[linear-gradient(180deg,rgba(255,251,245,0.9),rgba(247,238,224,0.72))] p-3.5"
+          class="grid gap-2 rounded-2xl border border-[rgba(136,109,67,0.18)] bg-[linear-gradient(180deg,rgba(255,251,245,0.9),rgba(247,238,224,0.72))] p-3 max-sm:p-2.5"
         >
-          <div class="flex items-start justify-between gap-3">
+          <div class="flex items-start justify-between gap-3 max-sm:flex-col max-sm:items-stretch">
             <div>
               <p class="m-0 font-semibold text-[color:var(--app-text)]">
                 {{ editor.workspace_name || editor.app_name }}
@@ -170,37 +239,6 @@ function pairingCapabilitySummary(capabilityNames: string[]) {
           app_pairing_extensions
         </code>.
       </p>
-    </section>
-
-    <section
-      class="grid gap-4 rounded-[1.2rem] border border-[color:var(--app-border)] bg-[color:var(--app-panel)] p-4 shadow-[var(--app-shadow)] backdrop-blur-[14px]"
-    >
-      <div class="flex items-start justify-between gap-3">
-        <div>
-          <p class="eyebrow">Permission mode</p>
-          <h4>Global sandbox default</h4>
-        </div>
-      </div>
-
-      <div class="grid gap-3.5">
-        <Select
-          :model-value="sandbox"
-          :options="sandboxOptions"
-          option-label="label"
-          option-value="value"
-          fluid
-          @update:model-value="emit('updateSandbox', $event)"
-        />
-        <p class="m-0 text-sm leading-[1.55] text-[color:var(--app-text-soft)]">
-          This updates the default Codex sandbox for all sessions and applies on the next turn.
-        </p>
-        <Button
-          label="Save Permission Mode"
-          icon="pi pi-shield"
-          :loading="saving"
-          @click="emit('saveSandbox')"
-        />
-      </div>
     </section>
   </aside>
 </template>

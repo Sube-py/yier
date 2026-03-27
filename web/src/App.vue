@@ -76,6 +76,7 @@ import type {
 
 const SESSION_STORAGE_KEY = 'yier.active-session-id'
 const WORKSPACE_SURFACE_STORAGE_KEY = 'yier.workspace-surface'
+const CODEX_COMPACT_MEDIA_QUERY = '(max-width: 1023px)'
 const LLM_PROVIDER_DEFAULTS: Record<
   Exclude<LlmProvider, ''>,
   { baseUrl: string; model: string }
@@ -126,6 +127,9 @@ const chatMessages = ref<UiChatMessage[]>([])
 const activities = ref<ChatActivity[]>([])
 const sessionHistory = ref<SessionSummary[]>([])
 const activeCodexWorkMode = ref<CodexWorkMode>('build')
+const isCodexCompactLayout = ref(false)
+const isSidebarDrawerOpen = ref(false)
+const isRuntimeSheetOpen = ref(false)
 const composerText = ref('')
 const composerSelectionStart = ref(0)
 const composerSelectionEnd = ref(0)
@@ -190,6 +194,7 @@ const defaultAllowedRoots = computed(() => health.value?.allowed_roots ?? [])
 let closePersistentEventStream: (() => void) | null = null
 let pairedEditorSyncTimer: number | null = null
 let codexSessionSyncTimer: number | null = null
+let codexCompactMediaQuery: MediaQueryList | null = null
 let latestSessionLoadRequestId = 0
 let lastPairedEditorSyncSignature = ''
 const backgroundActivityIdsByToolCallId = new Map<string, string>()
@@ -258,7 +263,40 @@ const sessionHistoryCount = computed(() => sessionHistory.value.length)
 const isCodexWorkspace = computed(() => isChatRoute.value && activeBackendId.value === 'codex')
 const activeCodexProjects = computed(() => codexWorkspace.value?.projects ?? [])
 const activeCodexPairedEditors = computed(() => codexWorkspace.value?.paired_editors ?? [])
+const pendingCodexApprovals = computed(() => activeSessionRuntime.value?.pending_approval_count ?? 0)
 const assistantLabel = computed(() => (activeBackendId.value === 'codex' ? 'Codex' : 'Yier'))
+const showCodexMobileChrome = computed(
+  () => isCodexWorkspace.value && isCodexCompactLayout.value,
+)
+const isMobileChatPage = computed(
+  () => isChatRoute.value && isCodexCompactLayout.value,
+)
+const showSidebarDrawer = computed(
+  () => showCodexMobileChrome.value && isSidebarDrawerOpen.value,
+)
+const showRuntimeSheet = computed(
+  () => showCodexMobileChrome.value && isRuntimeSheetOpen.value,
+)
+const codexRuntimeButtonSummary = computed(() => {
+  if (pendingCodexApprovals.value > 0) {
+    return `${pendingCodexApprovals.value} pending approvals`
+  }
+
+  const status = (activeSessionRuntime.value?.status ?? '').trim()
+  if (status === 'active') {
+    return 'Working now'
+  }
+  if (status === 'error' || status === 'failed') {
+    return 'Needs attention'
+  }
+  if (status === 'interrupted') {
+    return 'Last turn interrupted'
+  }
+  if (activeSessionRuntime.value?.thread_id) {
+    return 'Session connected'
+  }
+  return 'Ready for the next turn'
+})
 const activeWorkspaceSurface = computed<WorkspaceSurface>(() => {
   if (activeSession.value?.backend_id === 'codex') {
     return 'codex'
@@ -292,6 +330,72 @@ const composerPlaceholder = computed(() =>
       : 'Ask Codex to inspect, edit, or operate in the current workspace…'
     : 'Ask yier to inspect code, read files, or operate inside the allowed roots…',
 )
+
+function updateCodexCompactLayout(matches: boolean) {
+  isCodexCompactLayout.value = matches
+}
+
+function handleCodexCompactLayoutChange(event: MediaQueryListEvent) {
+  updateCodexCompactLayout(event.matches)
+}
+
+function setupCodexCompactLayoutWatcher() {
+  codexCompactMediaQuery = window.matchMedia(CODEX_COMPACT_MEDIA_QUERY)
+  updateCodexCompactLayout(codexCompactMediaQuery.matches)
+  if (typeof codexCompactMediaQuery.addEventListener === 'function') {
+    codexCompactMediaQuery.addEventListener('change', handleCodexCompactLayoutChange)
+    return
+  }
+  codexCompactMediaQuery.addListener(handleCodexCompactLayoutChange)
+}
+
+function teardownCodexCompactLayoutWatcher() {
+  if (!codexCompactMediaQuery) {
+    return
+  }
+  if (typeof codexCompactMediaQuery.removeEventListener === 'function') {
+    codexCompactMediaQuery.removeEventListener('change', handleCodexCompactLayoutChange)
+  } else {
+    codexCompactMediaQuery.removeListener(handleCodexCompactLayoutChange)
+  }
+  codexCompactMediaQuery = null
+}
+
+function closeCodexSheets() {
+  isSidebarDrawerOpen.value = false
+  isRuntimeSheetOpen.value = false
+}
+
+function openSidebarDrawer() {
+  isRuntimeSheetOpen.value = false
+  isSidebarDrawerOpen.value = true
+}
+
+function openRuntimeSheet() {
+  isSidebarDrawerOpen.value = false
+  isRuntimeSheetOpen.value = true
+}
+
+function closeSidebarDrawer() {
+  isSidebarDrawerOpen.value = false
+}
+
+function closeRuntimeSheet() {
+  isRuntimeSheetOpen.value = false
+}
+
+function syncSheetScrollLock(locked: boolean) {
+  if (typeof document === 'undefined') {
+    return
+  }
+  document.body.classList.toggle('yier-sheet-lock', locked)
+}
+
+function handleGlobalKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape') {
+    closeCodexSheets()
+  }
+}
 
 watch(activeSessionId, (value) => {
   if (!value) {
@@ -338,12 +442,31 @@ watch(
   { flush: 'sync' },
 )
 
+watch(showCodexMobileChrome, (visible) => {
+  if (!visible) {
+    closeCodexSheets()
+  }
+})
+
+watch(
+  () => showSidebarDrawer.value || showRuntimeSheet.value,
+  (locked) => {
+    syncSheetScrollLock(locked)
+  },
+  { immediate: true },
+)
+
 onMounted(async () => {
+  setupCodexCompactLayoutWatcher()
+  window.addEventListener('keydown', handleGlobalKeydown)
   startPersistentEvents()
   await bootstrap()
 })
 
 onBeforeUnmount(() => {
+  syncSheetScrollLock(false)
+  window.removeEventListener('keydown', handleGlobalKeydown)
+  teardownCodexCompactLayoutWatcher()
   closePersistentEventStream?.()
   closePersistentEventStream = null
   if (pairedEditorSyncTimer !== null) {
@@ -471,6 +594,11 @@ function latestChatSessionIdForBackend(backendId: BackendId) {
 function startNewCodexSession(projectPath: string) {
   const nextProjectPath = projectPath.trim() || activeProjectPath.value || newSessionDraft.projectPath
   void createSession('codex', nextProjectPath, true)
+}
+
+function handleCodexSessionStart(projectPath: string) {
+  closeSidebarDrawer()
+  startNewCodexSession(projectPath)
 }
 
 function backendIdForWorkspaceSurface(surface: WorkspaceSurface): BackendId {
@@ -622,6 +750,7 @@ async function loadSessionTranscript(sessionId: string) {
 }
 
 async function openSessionFromHistory(sessionId: string) {
+  closeCodexSheets()
   if (!sessionId || sessionId === activeSessionId.value) {
     if (!isChatRoute.value) {
       await router.push({ name: 'chat' })
@@ -645,6 +774,7 @@ async function openCodexNativeSession(threadId: string) {
     return
   }
 
+  closeSidebarDrawer()
   errorMessage.value = ''
   successMessage.value = ''
   try {
@@ -3013,8 +3143,16 @@ function toErrorMessage(error: unknown) {
 </script>
 
 <template>
-  <div class="grid h-screen grid-cols-[minmax(17rem,20rem)_minmax(0,1fr)] gap-6 overflow-hidden p-6 max-[960px]:h-auto max-[960px]:grid-cols-1 max-[960px]:overflow-visible">
-    <aside class="flex min-h-0 flex-col gap-4 overflow-hidden max-[960px]:order-2 max-[960px]:overflow-visible">
+  <div
+    class="grid h-screen grid-cols-[minmax(17rem,20rem)_minmax(0,1fr)] gap-6 overflow-hidden p-6 max-[1023px]:h-auto max-[1023px]:grid-cols-1 max-[1023px]:gap-4 max-[1023px]:overflow-visible max-[1023px]:p-4 max-sm:gap-3 max-sm:p-3"
+    :class="{
+      'max-[1023px]:gap-0 max-[1023px]:p-0': isMobileChatPage,
+    }"
+  >
+    <aside
+      v-if="!showCodexMobileChrome"
+      class="flex min-h-0 flex-col gap-4 overflow-hidden max-[1023px]:order-2 max-[1023px]:gap-3 max-[1023px]:overflow-visible"
+    >
       <div
         v-if="!isCodexWorkspace"
         class="relative overflow-hidden rounded-[1.6rem] border border-[color:var(--app-border)] bg-[color:var(--app-panel)] p-[1.4rem] shadow-[var(--app-shadow)] backdrop-blur-[14px] after:pointer-events-none after:absolute after:top-[-3rem] after:right-[-3rem] after:h-40 after:w-40 after:rounded-full after:bg-[radial-gradient(circle,rgba(21,94,99,0.16),transparent_70%)] after:content-['']"
@@ -3084,13 +3222,13 @@ function toErrorMessage(error: unknown) {
       </div>
 
       <CodexSessionExplorer
-        v-if="!isBooting && isCodexWorkspace"
+        v-if="!isBooting && isCodexWorkspace && !isCodexCompactLayout"
         :projects="activeCodexProjects"
         :active-session-id="activeSessionId"
         :active-session-status="activeSessionRuntime?.status ?? null"
         :active-project-path="activeProjectPath"
         @open-session="openCodexNativeSession"
-        @start-session="startNewCodexSession"
+        @start-session="handleCodexSessionStart"
       />
       <div
         v-else-if="!isBooting"
@@ -3223,16 +3361,20 @@ function toErrorMessage(error: unknown) {
     </aside>
 
     <main
-      class="flex min-h-0 flex-col gap-4 overflow-hidden rounded-[1.8rem] border border-[color:var(--app-border)] bg-[color:var(--app-panel)] p-[1.15rem] shadow-[var(--app-shadow)] backdrop-blur-[14px] max-[960px]:min-h-auto max-[960px]:overflow-visible"
+      class="flex min-h-0 flex-col gap-4 overflow-hidden rounded-[1.8rem] border border-[color:var(--app-border)] bg-[color:var(--app-panel)] p-[1.15rem] shadow-[var(--app-shadow)] backdrop-blur-[14px] max-[1023px]:min-h-auto max-[1023px]:gap-3 max-[1023px]:overflow-visible max-[1023px]:rounded-[1.45rem] max-[1023px]:p-4 max-sm:p-3"
+      :class="{
+        'max-[1023px]:rounded-none max-[1023px]:border-0 max-[1023px]:bg-transparent max-[1023px]:p-0 max-[1023px]:shadow-none max-[1023px]:backdrop-blur-none':
+          isMobileChatPage,
+      }"
     >
-      <header class="flex items-start justify-between gap-4 max-[960px]:flex-col max-[960px]:items-stretch">
+      <header class="flex items-start justify-between gap-4 max-[1023px]:flex-col max-[1023px]:items-stretch">
         <div>
           <p class="eyebrow">{{ workspaceEyebrow }}</p>
           <h2 class="m-0 font-['Iowan_Old_Style','Palatino_Linotype',Palatino,serif] text-[clamp(1.6rem,2vw,2.4rem)] leading-[1.1] font-semibold">
             {{ workspaceTitle }}
           </h2>
         </div>
-        <div class="flex items-center gap-3 max-[960px]:flex-col max-[960px]:items-stretch">
+        <div class="flex items-center gap-3 max-[1023px]:flex-col max-[1023px]:items-stretch">
           <div
             v-if="isCodexWorkspace"
             class="inline-flex rounded-full border border-[color:var(--app-border)] bg-[rgba(248,243,233,0.9)] p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.6)]"
@@ -3277,6 +3419,40 @@ function toErrorMessage(error: unknown) {
         {{ successMessage }}
       </Message>
 
+      <div
+        v-if="showCodexMobileChrome && !isBooting"
+        class="grid grid-cols-2 gap-3 max-sm:grid-cols-1"
+      >
+        <button
+          type="button"
+          class="rounded-[1.15rem] border border-[color:var(--app-border)] bg-white/72 px-4 py-3 text-left transition hover:bg-white"
+          @click="openSidebarDrawer"
+        >
+          <span class="block text-sm font-semibold text-[color:var(--app-text)]">Menu</span>
+          <span class="mt-1 block text-[0.82rem] leading-[1.45] text-[color:var(--app-text-soft)]">
+            Open the Codex sidebar and recent projects
+          </span>
+        </button>
+        <button
+          type="button"
+          class="rounded-[1.15rem] border border-[color:var(--app-border)] bg-white/72 px-4 py-3 text-left transition hover:bg-white"
+          @click="openRuntimeSheet"
+        >
+          <span class="flex items-center justify-between gap-2 text-sm font-semibold text-[color:var(--app-text)]">
+            <span>Runtime</span>
+            <span
+              v-if="pendingCodexApprovals"
+              class="inline-flex min-w-6 items-center justify-center rounded-full bg-[color:var(--app-accent)] px-2 py-0.5 text-[0.72rem] font-bold text-white"
+            >
+              {{ pendingCodexApprovals }}
+            </span>
+          </span>
+          <span class="mt-1 block text-[0.82rem] leading-[1.45] text-[color:var(--app-text-soft)]">
+            {{ codexRuntimeButtonSummary }}
+          </span>
+        </button>
+      </div>
+
       <section
         v-if="isBooting"
         class="grid min-h-72 place-items-center justify-items-center gap-3 rounded-3xl border border-dashed border-[color:var(--app-border-strong)] bg-[rgba(255,252,245,0.7)] p-8 text-center"
@@ -3310,10 +3486,10 @@ function toErrorMessage(error: unknown) {
 
         <section
           v-else
-          class="flex min-h-0 flex-1 flex-col overflow-hidden max-[960px]:overflow-visible"
+          class="flex min-h-0 flex-1 flex-col overflow-hidden max-[1023px]:overflow-visible"
           :class="{
-            'grid grid-cols-[minmax(0,1fr)_20rem] gap-4 items-stretch max-[960px]:grid-cols-1':
-              isCodexWorkspace,
+            'grid grid-cols-[minmax(0,1fr)_20rem] gap-4 items-stretch':
+              isCodexWorkspace && !isCodexCompactLayout,
           }"
         >
           <template v-if="isChatRoute">
@@ -3349,7 +3525,7 @@ function toErrorMessage(error: unknown) {
               />
             </div>
             <CodexWorkbar
-              v-if="isCodexWorkspace"
+              v-if="isCodexWorkspace && !isCodexCompactLayout"
               :runtime="activeSessionRuntime"
               :project-path="activeProjectPath"
               :paired-editors="activeCodexPairedEditors"
@@ -3401,4 +3577,97 @@ function toErrorMessage(error: unknown) {
       </template>
     </main>
   </div>
+
+  <Teleport to="body">
+    <Transition name="sheet-fade">
+      <div
+        v-if="showSidebarDrawer"
+        class="sheet-overlay"
+        @click="closeSidebarDrawer"
+      ></div>
+    </Transition>
+    <Transition name="drawer-slide">
+      <aside
+        v-if="showSidebarDrawer"
+        class="drawer-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Codex sidebar"
+      >
+        <div class="flex items-center justify-between gap-3 border-b border-[color:var(--app-border)] px-4 py-4">
+          <div>
+            <p class="eyebrow">Codex workspace</p>
+            <h4>Sidebar</h4>
+          </div>
+          <Button
+            icon="pi pi-times"
+            rounded
+            text
+            severity="secondary"
+            aria-label="Close sidebar"
+            @click="closeSidebarDrawer"
+          />
+        </div>
+
+        <div class="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
+          <CodexSessionExplorer
+            :projects="activeCodexProjects"
+            :active-session-id="activeSessionId"
+            :active-session-status="activeSessionRuntime?.status ?? null"
+            :active-project-path="activeProjectPath"
+            @open-session="openCodexNativeSession"
+            @start-session="handleCodexSessionStart"
+          />
+
+          <div
+            class="grid gap-3 rounded-[1.3rem] border border-[color:var(--app-border)] bg-[color:var(--app-panel)] p-4 shadow-[var(--app-shadow)] backdrop-blur-[14px]"
+          >
+            <p class="m-0 text-[0.92rem] text-[color:var(--app-text-soft)]">Workspaces</p>
+            <Select
+              v-model="workspaceSurfaceModel"
+              :options="workspaceSurfaceOptions"
+              option-label="label"
+              option-value="value"
+              option-disabled="disabled"
+              class="w-full"
+              size="small"
+              aria-label="Switch workspace"
+            />
+          </div>
+        </div>
+      </aside>
+    </Transition>
+  </Teleport>
+
+  <Teleport to="body">
+    <Transition name="sheet-fade">
+      <div
+        v-if="showRuntimeSheet"
+        class="sheet-overlay"
+        @click="closeRuntimeSheet"
+      ></div>
+    </Transition>
+    <Transition name="sheet-slide">
+      <section
+        v-if="showRuntimeSheet"
+        class="sheet-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Codex runtime"
+      >
+        <CodexWorkbar
+          surface="sheet"
+          closeable
+          :runtime="activeSessionRuntime"
+          :project-path="activeProjectPath"
+          :paired-editors="activeCodexPairedEditors"
+          :sandbox="appForm.codexSandbox"
+          :saving="savingState.codexSandbox"
+          @close="closeRuntimeSheet"
+          @update-sandbox="appForm.codexSandbox = $event"
+          @save-sandbox="saveCodexSandboxMode"
+        />
+      </section>
+    </Transition>
+  </Teleport>
 </template>

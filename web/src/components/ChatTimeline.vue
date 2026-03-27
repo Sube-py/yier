@@ -481,12 +481,12 @@ watch(
 
 <template>
   <section
-    class="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden rounded-3xl border border-[color:var(--app-border)] bg-[color:var(--app-panel)] p-[1.1rem] shadow-[var(--app-shadow)] backdrop-blur-[14px]"
+    class="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden rounded-3xl border border-[color:var(--app-border)] bg-[color:var(--app-panel)] p-[1.1rem] shadow-[var(--app-shadow)] backdrop-blur-[14px] max-[1023px]:rounded-[1.35rem] max-[1023px]:p-4 max-sm:gap-3 max-sm:p-3"
   >
-    <div class="flex items-center justify-between gap-3">
+    <div class="flex items-start justify-between gap-3 max-[1023px]:flex-col max-[1023px]:items-stretch">
       <div>
         <p class="eyebrow">Current session</p>
-        <div class="flex items-center justify-start gap-3">
+        <div class="flex items-center justify-start gap-3 max-sm:flex-wrap">
           <h3 class="m-0 font-['Iowan_Old_Style','Palatino_Linotype',Palatino,serif] text-2xl font-semibold">
             Session {{ sessionLabel }}
           </h3>
@@ -507,7 +507,10 @@ watch(
           {{ projectPath }}
         </p>
       </div>
-      <div v-if="isSending" class="inline-flex items-center gap-2.5 text-[color:var(--app-text-soft)]">
+      <div
+        v-if="isSending"
+        class="inline-flex items-center gap-2.5 self-start text-[color:var(--app-text-soft)]"
+      >
         <ProgressSpinner stroke-width="4" class="h-[1.1rem] w-[1.1rem]" />
         <span>Working…</span>
       </div>
@@ -532,7 +535,7 @@ watch(
         <article
           v-for="message in leadingMessages"
           :key="message.id"
-          class="max-w-[min(48rem,85%)] rounded-[1.3rem] border p-4 [@media(max-width:960px)]:max-w-full"
+          class="max-w-[min(48rem,85%)] rounded-[1.3rem] border p-4 max-[1023px]:max-w-full max-sm:rounded-[1.1rem] max-sm:p-3"
           :class="
             message.role === 'user'
               ? 'ml-auto border-[rgba(21,94,99,0.16)] bg-[linear-gradient(135deg,rgba(21,94,99,0.13),rgba(69,141,145,0.08))]'
@@ -547,7 +550,7 @@ watch(
           </p>
           <div
             v-else
-            class="prose prose-stone max-w-none prose-a:text-[color:var(--app-accent)] prose-code:rounded-md prose-code:bg-[rgba(21,94,99,0.1)] prose-code:px-1.5 prose-code:py-0.5 prose-code:text-[color:var(--app-accent-deep)] prose-pre:rounded-2xl prose-pre:bg-[rgba(17,38,42,0.92)] prose-pre:px-4 prose-pre:py-3 prose-pre:text-[#f2f5f6] prose-blockquote:border-l-[3px] prose-blockquote:border-[rgba(21,94,99,0.32)] prose-blockquote:text-[color:var(--app-text-soft)]"
+            class="prose prose-stone max-w-none prose-headings:text-[color:var(--app-text)] prose-p:text-[color:var(--app-text)] prose-li:text-[color:var(--app-text)] prose-strong:text-[color:var(--app-text)] prose-a:text-[color:var(--app-accent)] prose-code:rounded-md prose-code:bg-[rgba(21,94,99,0.1)] prose-code:px-1.5 prose-code:py-0.5 prose-code:text-[color:var(--app-accent-deep)] prose-pre:rounded-2xl prose-pre:bg-[rgba(17,38,42,0.92)] prose-pre:px-4 prose-pre:py-3 prose-pre:text-[#f2f5f6] prose-pre:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06)] prose-blockquote:border-l-[3px] prose-blockquote:border-[rgba(21,94,99,0.32)] prose-blockquote:text-[color:var(--app-text-soft)]"
             v-html="renderAssistantMessage(message.content)"
           ></div>
         </article>
@@ -588,7 +591,7 @@ watch(
                 activityUsesMarkdown(slotProps.item)
               "
             >
-              <summary class="grid cursor-pointer list-none grid-cols-[minmax(0,1fr)_auto] items-start gap-[0.7rem] px-[0.9rem] py-[0.8rem]">
+              <summary class="grid cursor-pointer list-none grid-cols-[minmax(0,1fr)_auto] items-start gap-[0.7rem] px-[0.9rem] py-[0.8rem] max-[1023px]:grid-cols-1 max-sm:px-3 max-sm:py-3">
                 <div class="min-w-0">
                   <p class="m-0 font-bold">{{ slotProps.item.title }}</p>
                   <p
@@ -604,7 +607,7 @@ watch(
                 </div>
                 <p
                   v-if="isShellActivity(slotProps.item) && shellCwd(slotProps.item)"
-                  class="m-0 max-w-[min(40vw,24rem)] overflow-hidden text-ellipsis whitespace-nowrap font-mono text-[0.78rem] text-[color:var(--app-text-soft)]"
+                  class="m-0 max-w-[min(40vw,24rem)] overflow-hidden text-ellipsis whitespace-nowrap font-mono text-[0.78rem] text-[color:var(--app-text-soft)] max-[1023px]:max-w-full max-[1023px]:whitespace-normal max-[1023px]:break-all"
                 >
                   {{ shellCwd(slotProps.item) }}
                 </p>
@@ -612,18 +615,18 @@ watch(
 
               <div
                 v-if="isShellActivity(slotProps.item)"
-                class="grid gap-[0.7rem] border-t border-[rgba(34,66,72,0.08)] px-[0.9rem] pb-[0.9rem] pl-[2.35rem]"
+                class="grid gap-[0.7rem] border-t border-[rgba(34,66,72,0.08)] px-[0.9rem] pb-[0.9rem] pl-[2.35rem] max-[1023px]:pl-4 max-sm:px-3 max-sm:pb-3"
               >
                 <p
                   v-if="shellCommand(slotProps.item)"
-                  class="m-0 flex items-center justify-between gap-3 rounded-t-[0.85rem] bg-[linear-gradient(180deg,rgba(16,33,37,0.98),rgba(21,43,48,0.98))] px-4 py-[0.85rem] font-mono text-[0.9rem] text-[#f7fffc] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.04)]"
+                  class="m-0 flex items-center justify-between gap-3 rounded-t-[0.85rem] bg-[linear-gradient(180deg,rgba(16,33,37,0.98),rgba(21,43,48,0.98))] px-4 py-[0.85rem] font-mono text-[0.9rem] text-[#f7fffc] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.04)] max-[1023px]:flex-col max-[1023px]:items-stretch max-sm:px-3"
                 >
                   <span class="min-w-0 flex-1 break-words whitespace-pre-wrap">
                     $ {{ shellCommand(slotProps.item) }}
                   </span>
                   <button
                     type="button"
-                    class="shrink-0 rounded-full border-0 bg-white/12 px-[0.7rem] py-[0.28rem] text-[0.76rem] font-bold text-[#f7fffc] transition hover:bg-white/18 active:translate-y-px"
+                    class="shrink-0 rounded-full border-0 bg-white/12 px-[0.7rem] py-[0.28rem] text-[0.76rem] font-bold text-[#f7fffc] transition hover:bg-white/18 active:translate-y-px max-[1023px]:self-start"
                     :aria-label="`Copy command ${shellCommand(slotProps.item)}`"
                     @click="copyShellCommand(slotProps.item)"
                   >
@@ -681,10 +684,10 @@ watch(
                 </p>
               </div>
 
-              <div class="grid gap-[0.55rem] border-t border-[rgba(34,66,72,0.08)] px-[0.9rem] pb-[0.9rem] pl-[2.35rem]">
+              <div class="grid gap-[0.55rem] border-t border-[rgba(34,66,72,0.08)] px-[0.9rem] pb-[0.9rem] pl-[2.35rem] max-[1023px]:pl-4 max-sm:px-3 max-sm:pb-3">
                 <div
                   v-if="activityUsesMarkdown(slotProps.item) && slotProps.item.detail"
-                  class="prose prose-stone max-w-none prose-a:text-[color:var(--app-accent)] prose-code:rounded-md prose-code:bg-[rgba(21,94,99,0.1)] prose-code:px-1.5 prose-code:py-0.5 prose-code:text-[color:var(--app-accent-deep)] prose-pre:rounded-2xl prose-pre:bg-[rgba(17,38,42,0.92)] prose-pre:px-4 prose-pre:py-3 prose-pre:text-[#f2f5f6] prose-blockquote:border-l-[3px] prose-blockquote:border-[rgba(21,94,99,0.32)] prose-blockquote:text-[color:var(--app-text-soft)]"
+                  class="prose prose-stone max-w-none prose-headings:text-[color:var(--app-text)] prose-p:text-[color:var(--app-text)] prose-li:text-[color:var(--app-text)] prose-strong:text-[color:var(--app-text)] prose-a:text-[color:var(--app-accent)] prose-code:rounded-md prose-code:bg-[rgba(21,94,99,0.1)] prose-code:px-1.5 prose-code:py-0.5 prose-code:text-[color:var(--app-accent-deep)] prose-pre:rounded-2xl prose-pre:bg-[rgba(17,38,42,0.92)] prose-pre:px-4 prose-pre:py-3 prose-pre:text-[#f2f5f6] prose-pre:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06)] prose-blockquote:border-l-[3px] prose-blockquote:border-[rgba(21,94,99,0.32)] prose-blockquote:text-[color:var(--app-text-soft)]"
                   v-html="renderActivityMarkdown(slotProps.item.detail)"
                 ></div>
                 <div v-if="isApprovalActivity(slotProps.item)" class="grid gap-[0.7rem]">
@@ -866,13 +869,13 @@ watch(
       <div v-if="trailingAssistantMessage" class="grid gap-4">
         <article
           :key="trailingAssistantMessage.id"
-          class="max-w-[min(48rem,85%)] rounded-[1.3rem] border border-[rgba(153,125,93,0.15)] bg-[color:var(--app-panel-strong)] p-4 [@media(max-width:960px)]:max-w-full"
+          class="max-w-[min(48rem,85%)] rounded-[1.3rem] border border-[rgba(153,125,93,0.15)] bg-[color:var(--app-panel-strong)] p-4 max-[1023px]:max-w-full max-sm:rounded-[1.1rem] max-sm:p-3"
         >
           <p class="mb-[0.35rem] mt-0 text-[0.82rem] font-bold uppercase tracking-[0.08em] text-[color:var(--app-text-soft)]">
             {{ assistantLabel ?? 'Yier' }}
           </p>
           <div
-            class="prose prose-stone max-w-none prose-a:text-[color:var(--app-accent)] prose-code:rounded-md prose-code:bg-[rgba(21,94,99,0.1)] prose-code:px-1.5 prose-code:py-0.5 prose-code:text-[color:var(--app-accent-deep)] prose-pre:rounded-2xl prose-pre:bg-[rgba(17,38,42,0.92)] prose-pre:px-4 prose-pre:py-3 prose-pre:text-[#f2f5f6] prose-blockquote:border-l-[3px] prose-blockquote:border-[rgba(21,94,99,0.32)] prose-blockquote:text-[color:var(--app-text-soft)]"
+            class="prose prose-stone max-w-none prose-headings:text-[color:var(--app-text)] prose-p:text-[color:var(--app-text)] prose-li:text-[color:var(--app-text)] prose-strong:text-[color:var(--app-text)] prose-a:text-[color:var(--app-accent)] prose-code:rounded-md prose-code:bg-[rgba(21,94,99,0.1)] prose-code:px-1.5 prose-code:py-0.5 prose-code:text-[color:var(--app-accent-deep)] prose-pre:rounded-2xl prose-pre:bg-[rgba(17,38,42,0.92)] prose-pre:px-4 prose-pre:py-3 prose-pre:text-[#f2f5f6] prose-pre:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06)] prose-blockquote:border-l-[3px] prose-blockquote:border-[rgba(21,94,99,0.32)] prose-blockquote:text-[color:var(--app-text-soft)]"
             v-html="renderAssistantMessage(trailingAssistantMessage.content)"
           ></div>
         </article>

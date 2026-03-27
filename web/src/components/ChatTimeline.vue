@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import MarkdownIt from 'markdown-it'
+import hljs from 'highlight.js/lib/common'
 import Button from 'primevue/button'
 import ProgressSpinner from 'primevue/progressspinner'
 import ScrollPanel from 'primevue/scrollpanel'
@@ -21,6 +22,88 @@ const markdown = new MarkdownIt({
   breaks: true,
   linkify: true,
 })
+
+const markdownCopyResetTimers = new WeakMap<HTMLButtonElement, number>()
+const markdownCopyButtonLabel = 'Copy code block'
+const markdownCopiedButtonLabel = 'Copied'
+const markdownCopyButtonIcon = '<i class="pi pi-copy" aria-hidden="true"></i>'
+const markdownCopiedButtonIcon = '<i class="pi pi-check" aria-hidden="true"></i>'
+const markdownLanguageAliases: Record<string, string> = {
+  jsonc: 'json',
+  shell: 'bash',
+  text: 'plaintext',
+  txt: 'plaintext',
+  vue: 'xml',
+  yml: 'yaml',
+  zsh: 'bash',
+}
+
+function highlightMarkdownCode(content: string, language = '') {
+  const normalizedLanguage = language.trim().toLowerCase()
+  const highlightLanguage = markdownLanguageAliases[normalizedLanguage] ?? normalizedLanguage
+  const escapedContent = markdown.utils.escapeHtml(content)
+
+  if (!highlightLanguage || !hljs.getLanguage(highlightLanguage)) {
+    return {
+      classNames: normalizedLanguage ? ['hljs', `language-${normalizedLanguage}`] : [],
+      content: escapedContent,
+    }
+  }
+
+  return {
+    classNames: ['hljs', `language-${normalizedLanguage}`],
+    content: hljs.highlight(content, { language: highlightLanguage, ignoreIllegals: true }).value,
+  }
+}
+
+function renderMarkdownCodeBlock(
+  content: string,
+  languageClass = '',
+  languageLabel = '',
+) {
+  const escapedLabel = languageLabel ? markdown.utils.escapeHtml(languageLabel) : ''
+  return `
+    <div class="markdown-code-block">
+      <div class="markdown-code-toolbar">
+        ${escapedLabel ? `<span class="markdown-code-language">${escapedLabel}</span>` : '<span></span>'}
+        <button
+          type="button"
+          class="markdown-code-copy"
+          data-copy-markdown-code
+          aria-label="${markdownCopyButtonLabel}"
+          title="${markdownCopyButtonLabel}"
+        >
+          ${markdownCopyButtonIcon}
+        </button>
+      </div>
+      <pre><code${languageClass}>${content}</code></pre>
+    </div>
+  `
+}
+
+markdown.renderer.rules.fence = (tokens, idx) => {
+  const token = tokens[idx]
+  if (!token) {
+    return ''
+  }
+  const info = token.info ? markdown.utils.unescapeAll(token.info).trim() : ''
+  const language = info ? info.split(/\s+/g)[0] ?? '' : ''
+  const highlightedCode = highlightMarkdownCode(token.content, language)
+  const languageClasses = highlightedCode.classNames
+  const languageClass = languageClasses.length
+    ? ` class="${markdown.utils.escapeHtml(languageClasses.join(' '))}"`
+    : ''
+  return renderMarkdownCodeBlock(
+    highlightedCode.content,
+    languageClass,
+    language,
+  )
+}
+
+markdown.renderer.rules.code_block = (tokens, idx) => {
+  const token = tokens[idx]
+  return renderMarkdownCodeBlock(highlightMarkdownCode(token?.content ?? '').content, ' class="hljs"')
+}
 
 const props = defineProps<{
   messages: UiChatMessage[]
@@ -174,6 +257,45 @@ async function copyShellCommand(activity: ChatActivity) {
     }
     copiedResetTimer = null
   }, 1600)
+}
+
+async function onMarkdownClick(event: MouseEvent) {
+  const target = event.target
+  if (!(target instanceof Element)) {
+    return
+  }
+
+  const button = target.closest('[data-copy-markdown-code]')
+  if (!(button instanceof HTMLButtonElement)) {
+    return
+  }
+
+  const block = button.closest('.markdown-code-block')
+  const codeElement = block?.querySelector('code')
+  if (!(codeElement instanceof HTMLElement)) {
+    return
+  }
+
+  await navigator.clipboard.writeText(codeElement.innerText)
+  button.dataset.state = 'copied'
+  button.innerHTML = markdownCopiedButtonIcon
+  button.setAttribute('aria-label', markdownCopiedButtonLabel)
+  button.setAttribute('title', markdownCopiedButtonLabel)
+
+  const existingTimer = markdownCopyResetTimers.get(button)
+  if (existingTimer) {
+    window.clearTimeout(existingTimer)
+  }
+
+  const resetTimer = window.setTimeout(() => {
+    delete button.dataset.state
+    button.innerHTML = markdownCopyButtonIcon
+    button.setAttribute('aria-label', markdownCopyButtonLabel)
+    button.setAttribute('title', markdownCopyButtonLabel)
+    markdownCopyResetTimers.delete(button)
+  }, 1600)
+
+  markdownCopyResetTimers.set(button, resetTimer)
 }
 
 function activityMarkerClass(activity: ChatActivity) {
@@ -531,11 +653,11 @@ watch(
     </div>
 
     <ScrollPanel v-else class="min-h-0 flex-1" :pt="timelineScrollPt">
-      <div class="grid gap-4">
+      <div class="grid min-w-0 grid-cols-1 gap-4">
         <article
           v-for="message in leadingMessages"
           :key="message.id"
-          class="max-w-[min(48rem,85%)] rounded-[1.3rem] border p-4 max-[1023px]:max-w-full max-sm:rounded-[1.1rem] max-sm:p-3"
+          class="min-w-0 max-w-[min(48rem,85%)] overflow-hidden rounded-[1.3rem] border p-4 max-[1023px]:w-full max-[1023px]:max-w-full max-sm:rounded-[1.1rem] max-sm:p-3"
           :class="
             message.role === 'user'
               ? 'ml-auto border-[rgba(21,94,99,0.16)] bg-[linear-gradient(135deg,rgba(21,94,99,0.13),rgba(69,141,145,0.08))]'
@@ -550,7 +672,8 @@ watch(
           </p>
           <div
             v-else
-            class="prose prose-stone max-w-none prose-headings:text-[color:var(--app-text)] prose-p:text-[color:var(--app-text)] prose-li:text-[color:var(--app-text)] prose-strong:text-[color:var(--app-text)] prose-a:text-[color:var(--app-accent)] prose-code:rounded-md prose-code:bg-[rgba(21,94,99,0.1)] prose-code:px-1.5 prose-code:py-0.5 prose-code:text-[color:var(--app-accent-deep)] prose-pre:rounded-2xl prose-pre:bg-[rgba(17,38,42,0.92)] prose-pre:px-4 prose-pre:py-3 prose-pre:text-[#f2f5f6] prose-pre:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06)] prose-blockquote:border-l-[3px] prose-blockquote:border-[rgba(21,94,99,0.32)] prose-blockquote:text-[color:var(--app-text-soft)]"
+            class="markdown-prose"
+            @click="onMarkdownClick"
             v-html="renderAssistantMessage(message.content)"
           ></div>
         </article>
@@ -687,7 +810,8 @@ watch(
               <div class="grid gap-[0.55rem] border-t border-[rgba(34,66,72,0.08)] px-[0.9rem] pb-[0.9rem] pl-[2.35rem] max-[1023px]:pl-4 max-sm:px-3 max-sm:pb-3">
                 <div
                   v-if="activityUsesMarkdown(slotProps.item) && slotProps.item.detail"
-                  class="prose prose-stone max-w-none prose-headings:text-[color:var(--app-text)] prose-p:text-[color:var(--app-text)] prose-li:text-[color:var(--app-text)] prose-strong:text-[color:var(--app-text)] prose-a:text-[color:var(--app-accent)] prose-code:rounded-md prose-code:bg-[rgba(21,94,99,0.1)] prose-code:px-1.5 prose-code:py-0.5 prose-code:text-[color:var(--app-accent-deep)] prose-pre:rounded-2xl prose-pre:bg-[rgba(17,38,42,0.92)] prose-pre:px-4 prose-pre:py-3 prose-pre:text-[#f2f5f6] prose-pre:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06)] prose-blockquote:border-l-[3px] prose-blockquote:border-[rgba(21,94,99,0.32)] prose-blockquote:text-[color:var(--app-text-soft)]"
+                  class="markdown-prose"
+                  @click="onMarkdownClick"
                   v-html="renderActivityMarkdown(slotProps.item.detail)"
                 ></div>
                 <div v-if="isApprovalActivity(slotProps.item)" class="grid gap-[0.7rem]">
@@ -866,16 +990,17 @@ watch(
         </Timeline>
       </div>
 
-      <div v-if="trailingAssistantMessage" class="grid gap-4">
+      <div v-if="trailingAssistantMessage" class="grid min-w-0 grid-cols-1 gap-4">
         <article
           :key="trailingAssistantMessage.id"
-          class="max-w-[min(48rem,85%)] rounded-[1.3rem] border border-[rgba(153,125,93,0.15)] bg-[color:var(--app-panel-strong)] p-4 max-[1023px]:max-w-full max-sm:rounded-[1.1rem] max-sm:p-3"
+          class="min-w-0 max-w-[min(48rem,85%)] overflow-hidden rounded-[1.3rem] border border-[rgba(153,125,93,0.15)] bg-[color:var(--app-panel-strong)] p-4 max-[1023px]:w-full max-[1023px]:max-w-full max-sm:rounded-[1.1rem] max-sm:p-3"
         >
           <p class="mb-[0.35rem] mt-0 text-[0.82rem] font-bold uppercase tracking-[0.08em] text-[color:var(--app-text-soft)]">
             {{ assistantLabel ?? 'Yier' }}
           </p>
           <div
-            class="prose prose-stone max-w-none prose-headings:text-[color:var(--app-text)] prose-p:text-[color:var(--app-text)] prose-li:text-[color:var(--app-text)] prose-strong:text-[color:var(--app-text)] prose-a:text-[color:var(--app-accent)] prose-code:rounded-md prose-code:bg-[rgba(21,94,99,0.1)] prose-code:px-1.5 prose-code:py-0.5 prose-code:text-[color:var(--app-accent-deep)] prose-pre:rounded-2xl prose-pre:bg-[rgba(17,38,42,0.92)] prose-pre:px-4 prose-pre:py-3 prose-pre:text-[#f2f5f6] prose-pre:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06)] prose-blockquote:border-l-[3px] prose-blockquote:border-[rgba(21,94,99,0.32)] prose-blockquote:text-[color:var(--app-text-soft)]"
+            class="markdown-prose"
+            @click="onMarkdownClick"
             v-html="renderAssistantMessage(trailingAssistantMessage.content)"
           ></div>
         </article>

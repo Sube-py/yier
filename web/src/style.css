@@ -121,6 +121,216 @@
     @apply -translate-x-6 opacity-0;
   }
 
+  .markdown-prose {
+    @apply prose prose-stone max-w-none prose-headings:text-[color:var(--app-text)] prose-p:text-[color:var(--app-text)] prose-li:text-[color:var(--app-text)] prose-strong:text-[color:var(--app-text)] prose-a:text-[color:var(--app-accent)] prose-code:rounded-md prose-code:bg-[rgba(21,94,99,0.1)] prose-code:px-1.5 prose-code:py-0.5 prose-code:text-[color:var(--app-accent-deep)] prose-pre:rounded-2xl prose-pre:bg-[rgba(17,38,42,0.92)] prose-pre:px-4 prose-pre:py-3 prose-pre:text-[#f2f5f6] prose-pre:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06)] prose-blockquote:border-l-[3px] prose-blockquote:border-[rgba(21,94,99,0.32)] prose-blockquote:text-[color:var(--app-text-soft)];
+    min-width: 0;
+    width: 100%;
+  }
+
+  .markdown-prose > * {
+    max-width: 100%;
+  }
+
+  .markdown-prose pre {
+    max-width: 100%;
+    max-height: min(24rem, 52vh);
+    overflow-x: auto;
+    overflow-y: auto;
+    overscroll-behavior-x: contain;
+    overscroll-behavior-y: contain;
+    -webkit-overflow-scrolling: touch;
+    color: #f4f7f8;
+  }
+
+  .markdown-prose .markdown-code-block {
+    margin: 0.65rem 0;
+    overflow: hidden;
+    border-radius: 0.95rem;
+    background: rgba(17, 38, 42, 0.92);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+  }
+
+  .markdown-prose .markdown-code-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.55rem;
+    padding: 0.42rem 0.72rem 0.14rem;
+    background: linear-gradient(180deg, rgba(24, 48, 54, 0.38), rgba(24, 48, 54, 0));
+  }
+
+  .markdown-prose .markdown-code-block pre {
+    margin: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    padding: 0.12rem 0.78rem 0.78rem;
+  }
+
+  .markdown-prose .markdown-code-language {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: rgba(242, 245, 246, 0.72);
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .markdown-prose .markdown-code-copy {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    border: 0;
+    border-radius: 999px;
+    width: 1.9rem;
+    height: 1.9rem;
+    padding: 0;
+    background: rgba(255, 255, 255, 0.12);
+    color: #f4f7f8;
+    font-size: 0.92rem;
+    cursor: pointer;
+    transition:
+      background-color 120ms ease,
+      color 120ms ease,
+      transform 120ms ease;
+  }
+
+  .markdown-prose .markdown-code-copy .pi {
+    line-height: 1;
+  }
+
+  .markdown-prose .markdown-code-copy:hover {
+    background: rgba(255, 255, 255, 0.18);
+  }
+
+  .markdown-prose .markdown-code-copy:active {
+    transform: translateY(1px);
+  }
+
+  .markdown-prose .markdown-code-copy[data-state='copied'] {
+    background: rgba(139, 211, 221, 0.2);
+    color: #d9fbff;
+  }
+
+  .markdown-prose pre code {
+    display: block;
+    white-space: pre;
+    word-break: normal;
+    overflow-wrap: normal;
+    color: #f4f7f8;
+    background: transparent;
+    text-shadow: none;
+  }
+
+  .markdown-prose pre code *,
+  .markdown-prose pre .token,
+  .markdown-prose pre .hljs {
+    color: inherit;
+  }
+
+  .markdown-prose pre .token.property,
+  .markdown-prose pre .token.attr-name,
+  .markdown-prose pre .token.tag,
+  .markdown-prose pre .token.selector,
+  .markdown-prose pre .hljs-attr,
+  .markdown-prose pre .hljs-selector-tag,
+  .markdown-prose pre .hljs-selector-class,
+  .markdown-prose pre .hljs-selector-id {
+    color: #8bd3dd;
+  }
+
+  .markdown-prose pre .token.string,
+  .markdown-prose pre .token.char,
+  .markdown-prose pre .token.inserted,
+  .markdown-prose pre .hljs-string,
+  .markdown-prose pre .hljs-title,
+  .markdown-prose pre .hljs-section {
+    color: #b8e986;
+  }
+
+  .markdown-prose pre .token.number,
+  .markdown-prose pre .token.boolean,
+  .markdown-prose pre .token.constant,
+  .markdown-prose pre .token.symbol,
+  .markdown-prose pre .hljs-number,
+  .markdown-prose pre .hljs-literal {
+    color: #f6c177;
+  }
+
+  .markdown-prose pre .token.keyword,
+  .markdown-prose pre .token.builtin,
+  .markdown-prose pre .token.operator,
+  .markdown-prose pre .hljs-keyword,
+  .markdown-prose pre .hljs-built_in,
+  .markdown-prose pre .hljs-operator {
+    color: #c4b5fd;
+  }
+
+  .markdown-prose pre .token.punctuation,
+  .markdown-prose pre .token.comment,
+  .markdown-prose pre .hljs-punctuation,
+  .markdown-prose pre .hljs-comment,
+  .markdown-prose pre .hljs-meta {
+    color: #9fb3b8;
+  }
+
+  .markdown-prose table {
+    display: block;
+    width: 100%;
+    min-width: 100%;
+    max-height: min(22rem, 48vh);
+    overflow-x: auto;
+    overflow-y: auto;
+    border-collapse: collapse;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .markdown-prose thead,
+  .markdown-prose tbody {
+    white-space: nowrap;
+  }
+
+  .markdown-prose th,
+  .markdown-prose td {
+    border-color: rgba(34, 66, 72, 0.14);
+    white-space: nowrap;
+  }
+
+  @media (max-width: 640px) {
+    .markdown-prose {
+      @apply prose-sm;
+    }
+
+    .markdown-prose pre {
+      max-height: min(18rem, 44vh);
+      margin-inline: 0;
+      border-radius: 0.9rem;
+    }
+
+    .markdown-prose .markdown-code-toolbar {
+      padding: 0.38rem 0.6rem 0.12rem;
+    }
+
+    .markdown-prose .markdown-code-copy {
+      width: 1.8rem;
+      height: 1.8rem;
+      font-size: 0.88rem;
+    }
+
+    .markdown-prose .markdown-code-block pre {
+      padding: 0.08rem 0.66rem 0.66rem;
+    }
+
+    .markdown-prose table {
+      max-height: min(16rem, 38vh);
+      font-size: 0.85rem;
+    }
+  }
+
   .p-button,
   .p-inputtext,
   .p-password-input,

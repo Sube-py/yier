@@ -623,6 +623,169 @@ def test_codex_backend_load_thread_state_returns_native_thread_dump(
     assert payload["threadRuntimeStatus"]["type"] == "idle"
 
 
+def test_codex_backend_load_thread_state_uses_cached_thread_while_streaming_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chat_service = SimpleNamespace(
+        update_session_backend_state=lambda session_id, state: None,
+        get_session_metadata=lambda session_id: {"codex_work_mode": "build"},
+    )
+    backend = CodexAppServerBackend(chat_service)
+    context = ChatSessionContext(
+        session_id="session-1",
+        source="chat",
+        backend_id="codex",
+        project_path=Path("/tmp/project"),
+        channel_meta=None,
+    )
+    runtime = CodexSessionRuntime(
+        session_id="session-1",
+        client=object(),
+        thread_id="thread-1",
+        status="active",
+        streaming_turn_id="turn-live",
+        thread_state_cache={
+            "id": "thread-1",
+            "status": {"type": "active", "activeFlags": []},
+            "turns": [
+                {
+                    "id": "turn-1",
+                    "status": "completed",
+                    "items": [],
+                },
+                {
+                    "id": "turn-live",
+                    "status": "inProgress",
+                    "items": [],
+                },
+            ],
+        },
+    )
+
+    monkeypatch.setattr(backend, "_ensure_runtime_blocking", lambda _context: runtime)
+
+    class FakeThreadHandle:
+        def __init__(self, client: object, thread_id: str) -> None:
+            raise AssertionError("load_thread_state should not read native thread during active streaming")
+
+    monkeypatch.setattr(codex_backend_module, "CodexThread", FakeThreadHandle)
+
+    payload = backend.load_thread_state(context)
+
+    assert payload["thread"]["id"] == "thread-1"
+    assert payload["thread"]["turns"][-1]["id"] == "turn-live"
+    assert payload["threadRuntimeStatus"]["type"] == "active"
+
+
+def test_codex_backend_start_turn_blocking_updates_cached_thread_turns() -> None:
+    chat_service = SimpleNamespace(
+        update_session_backend_state=lambda session_id, state: None,
+        get_session_metadata=lambda session_id: {"codex_work_mode": "build"},
+    )
+    backend = CodexAppServerBackend(chat_service)
+    context = ChatSessionContext(
+        session_id="session-1",
+        source="chat",
+        backend_id="codex",
+        project_path=Path("/tmp/project"),
+        channel_meta=None,
+    )
+
+    class FakeClient:
+        def turn_start(self, thread_id: str, turn_input: object, params: dict[str, object]) -> SimpleNamespace:
+            assert thread_id == "thread-1"
+            assert turn_input == "hello"
+            assert params == {}
+            return SimpleNamespace(turn=SimpleNamespace(id="turn-live"))
+
+    runtime = CodexSessionRuntime(
+        session_id="session-1",
+        client=FakeClient(),
+        thread_id="thread-1",
+        thread_state_cache={
+            "id": "thread-1",
+            "turns": [
+                {
+                    "id": "turn-1",
+                    "status": "completed",
+                    "items": [],
+                }
+            ],
+        },
+    )
+
+    backend._normalize_turn_input_payload = lambda context, payload: payload  # type: ignore[method-assign]
+    backend._turn_params = lambda context: {}  # type: ignore[method-assign]
+    backend._build_turn_state_params = lambda context, turn_input: {  # type: ignore[method-assign]
+        "threadId": "thread-1",
+        "input": [{"type": "text", "text": "hello"}],
+        "cwd": "/tmp/project",
+    }
+
+    backend._start_turn_blocking(runtime, context, "hello")
+
+    assert runtime.thread_state_cache is not None
+    assert runtime.thread_state_cache["turns"][-1]["id"] == "turn-live"
+    assert runtime.thread_state_cache["turns"][-1]["status"] == "inProgress"
+
+
+def test_codex_backend_handle_turn_completed_updates_cached_thread_turn_status() -> None:
+    chat_service = SimpleNamespace(update_session_backend_state=lambda session_id, state: None)
+    backend = CodexAppServerBackend(chat_service)
+    context = ChatSessionContext(
+        session_id="session-1",
+        source="chat",
+        backend_id="codex",
+        project_path=Path("/tmp/project"),
+        channel_meta=None,
+    )
+    runtime = CodexSessionRuntime(
+        session_id="session-1",
+        thread_id="thread-1",
+        thread_state_cache={
+            "id": "thread-1",
+            "turns": [
+                {
+                    "id": "turn-live",
+                    "status": "inProgress",
+                    "items": [],
+                }
+            ],
+        },
+    )
+    backend._emit_from_thread = lambda runtime, event, data: None  # type: ignore[method-assign]
+
+    backend._handle_turn_completed(
+        runtime,
+        context,
+        SimpleNamespace(
+            payload=SimpleNamespace(
+                turn=SimpleNamespace(id="turn-live", status="completed", error=None),
+            )
+        ),
+    )
+
+    assert runtime.thread_state_cache is not None
+    assert runtime.thread_state_cache["turns"][-1]["status"] == "completed"
+
+
+def test_codex_backend_notification_belongs_to_turn_reads_turn_payload_id() -> None:
+    backend = CodexAppServerBackend(SimpleNamespace())
+
+    turn_started = SimpleNamespace(
+        method="turn/started",
+        payload=SimpleNamespace(thread_id="thread-1", turn=SimpleNamespace(id="turn-live")),
+    )
+    turn_completed = SimpleNamespace(
+        method="turn/completed",
+        payload=SimpleNamespace(thread_id="thread-1", turn=SimpleNamespace(id="turn-live")),
+    )
+
+    assert backend._notification_belongs_to_turn(turn_started, "turn-live") is True
+    assert backend._notification_belongs_to_turn(turn_completed, "turn-live") is True
+    assert backend._notification_belongs_to_turn(turn_completed, "turn-other") is False
+
+
 def test_codex_backend_pending_conversation_requests_returns_raw_request_shape() -> None:
     backend = CodexAppServerBackend(SimpleNamespace())
     context = ChatSessionContext(

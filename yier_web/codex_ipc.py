@@ -23,8 +23,6 @@ IPC_RECONNECT_DELAY_SECONDS = 1.0
 IPC_DEBUG_ENV = "YIER_CODEX_IPC_DEBUG"
 IPC_DEBUG_FULL_ENV = "YIER_CODEX_IPC_DEBUG_FULL"
 IPC_DEBUG_TEXT_LIMIT = 300
-DONE_STATE_SETTLE_ATTEMPTS = 5
-DONE_STATE_SETTLE_DELAY_SECONDS = 0.05
 IPC_METHOD_VERSIONS = {
     "thread-stream-state-changed": 5,
     "thread-archived": 2,
@@ -58,6 +56,7 @@ class LiveTurnPatchState:
     assistant_item_emitted: bool = False
     final_assistant_started_emitted: bool = False
     assistant_message_finalized: bool = False
+    turn_completion_emitted: bool = False
 
 
 def _env_flag(name: str) -> bool:
@@ -583,12 +582,19 @@ class CodexThreadFollowerBridge:
         if not self._is_codex_session(session_id):
             return
 
+        if event == "run_started":
+            await self._broadcast_run_started_sequence(session_id, data)
+            return
+
+        if event == "done":
+            await self._broadcast_done_sequence(session_id, data)
+            return
+
         patches_emitted = await self.broadcast_stream_event_patches(
             session_id, event, data
         )
 
         live_patch_events = {
-            "run_started",
             "assistant_delta",
             "assistant_message",
             "token_usage_updated",
@@ -598,23 +604,11 @@ class CodexThreadFollowerBridge:
         }
         if event in live_patch_events:
             snapshot_compatibility_events = {
-                "run_started",
-                "assistant_message",
                 "turn_completed",
                 "turn_aborted",
-                "done",
             }
             if event in snapshot_compatibility_events:
-                conversation_state = None
-                if event == "done":
-                    conversation_state = await self._settle_done_conversation_state(
-                        session_id
-                    )
-                await self.broadcast_stream_state(
-                    session_id,
-                    trigger_event=event,
-                    conversation_state=conversation_state,
-                )
+                await self.broadcast_stream_state(session_id, trigger_event=event)
             elif not patches_emitted and event != "done":
                 await self.broadcast_stream_state(session_id, trigger_event=event)
             return
@@ -632,6 +626,62 @@ class CodexThreadFollowerBridge:
             "background_followup_finished",
         }:
             await self.broadcast_queued_followups(session_id)
+
+    async def _broadcast_done_sequence(
+        self,
+        session_id: str,
+        data: dict[str, Any],
+    ) -> None:
+        if not self.client.is_connected or not self._is_codex_session(session_id):
+            return
+
+        state = self._live_turn_patch_state(session_id)
+        finish_reason = data.get("finish_reason")
+        synthetic_completion_state: dict[str, Any] | None = None
+
+        if (
+            finish_reason == "stop"
+            and state.turn_index is not None
+            and not state.turn_completion_emitted
+            and (state.assistant_item_emitted or state.assistant_message_finalized)
+        ):
+            conversation_state = self.chat_service.build_codex_ipc_conversation_state(
+                session_id
+            )
+            synthetic_completion_state = self._synthetic_completed_conversation_state(
+                conversation_state,
+                turn_index=state.turn_index,
+            )
+            await self._send_stream_patch_batch(
+                session_id,
+                "turn_completed",
+                [
+                    {
+                        "op": "replace",
+                        "path": ["turns", state.turn_index, "status"],
+                        "value": "completed",
+                    }
+                ],
+            )
+            await self._send_stream_patch_batch(
+                session_id,
+                "turn_completed",
+                [
+                    {
+                        "op": "replace",
+                        "path": ["hasUnreadTurn"],
+                        "value": True,
+                    }
+                ],
+            )
+            await self.broadcast_stream_state(
+                session_id,
+                trigger_event="turn_completed",
+                conversation_state=synthetic_completion_state,
+            )
+            state.turn_completion_emitted = True
+
+        await self.broadcast_stream_event_patches(session_id, "done", data)
 
     async def broadcast_stream_event_patches(
         self,
@@ -654,24 +704,7 @@ class CodexThreadFollowerBridge:
         for patches in patch_batches:
             if not patches:
                 continue
-            payload = {
-                "conversationId": session_id,
-                "change": {
-                    "type": "patches",
-                    "patches": patches,
-                },
-                "version": _ipc_method_version("thread-stream-state-changed"),
-                "type": "thread-stream-state-changed",
-            }
-            _ipc_debug_log(
-                "broadcast stream patches",
-                session_id=session_id,
-                trigger_event=event,
-                patch_count=len(patches),
-                payload=payload if _ipc_debug_full_enabled() else None,
-            )
-            with contextlib.suppress(Exception):
-                await self.client.send_broadcast("thread-stream-state-changed", payload)
+            await self._send_stream_patch_batch(session_id, event, patches)
             sent = True
         return sent
 
@@ -713,48 +746,115 @@ class CodexThreadFollowerBridge:
         with contextlib.suppress(Exception):
             await self.client.send_broadcast("thread-stream-state-changed", payload)
 
-    async def _settle_done_conversation_state(
+    async def _broadcast_run_started_sequence(
         self,
         session_id: str,
-    ) -> dict[str, Any]:
+        data: dict[str, Any],
+    ) -> None:
+        if not self.client.is_connected or not self._is_codex_session(session_id):
+            return
         conversation_state = self.chat_service.build_codex_ipc_conversation_state(
             session_id
         )
-        if self._is_terminal_conversation_state(conversation_state):
-            return conversation_state
-
-        for _ in range(DONE_STATE_SETTLE_ATTEMPTS):
-            await asyncio.sleep(DONE_STATE_SETTLE_DELAY_SECONDS)
-            conversation_state = self.chat_service.build_codex_ipc_conversation_state(
-                session_id
-            )
-            if self._is_terminal_conversation_state(conversation_state):
-                return conversation_state
-
-        _ipc_debug_log(
-            "done state still non-terminal after settle wait",
-            session_id=session_id,
-            conversation_state=_conversation_state_summary(conversation_state),
+        patch_batches = self._patch_batches_for_stream_event(
+            session_id,
+            "run_started",
+            data,
+            conversation_state,
         )
-        return conversation_state
+        snapshot_sent = False
+        for patches in patch_batches:
+            if not patches:
+                continue
+            await self._send_stream_patch_batch(session_id, "run_started", patches)
+            if self._is_requests_only_patch_batch(patches):
+                await self.broadcast_stream_state(
+                    session_id,
+                    trigger_event="run_started",
+                    conversation_state=self._run_started_snapshot_conversation_state(
+                        conversation_state
+                    ),
+                )
+                snapshot_sent = True
 
-    def _is_terminal_conversation_state(
+        if not snapshot_sent:
+            await self.broadcast_stream_state(
+                session_id,
+                trigger_event="run_started",
+                conversation_state=self._run_started_snapshot_conversation_state(
+                    conversation_state
+                ),
+            )
+
+    async def _send_stream_patch_batch(
+        self,
+        session_id: str,
+        event: str,
+        patches: list[dict[str, Any]],
+    ) -> None:
+        payload = {
+            "conversationId": session_id,
+            "change": {
+                "type": "patches",
+                "patches": patches,
+            },
+            "version": _ipc_method_version("thread-stream-state-changed"),
+            "type": "thread-stream-state-changed",
+        }
+        _ipc_debug_log(
+            "broadcast stream patches",
+            session_id=session_id,
+            trigger_event=event,
+            patch_count=len(patches),
+            payload=payload if _ipc_debug_full_enabled() else None,
+        )
+        with contextlib.suppress(Exception):
+            await self.client.send_broadcast("thread-stream-state-changed", payload)
+
+    def _is_requests_only_patch_batch(self, patches: list[dict[str, Any]]) -> bool:
+        return len(patches) == 1 and patches[0].get("path") == ["requests"]
+
+    def _run_started_snapshot_conversation_state(
         self,
         conversation_state: dict[str, Any],
-    ) -> bool:
-        turns = conversation_state.get("turns")
-        if isinstance(turns, list):
-            for turn in turns:
-                if isinstance(turn, dict) and turn.get("status") == "inProgress":
-                    return False
+    ) -> dict[str, Any]:
+        snapshot_state = dict(conversation_state)
+        turns = snapshot_state.get("turns")
+        if not isinstance(turns, list):
+            return snapshot_state
+        cloned_turns = list(turns)
+        if cloned_turns and isinstance(cloned_turns[-1], dict):
+            latest_turn = dict(cloned_turns[-1])
+            latest_turn["items"] = []
+            latest_turn["finalAssistantStartedAtMs"] = None
+            cloned_turns[-1] = latest_turn
+        snapshot_state["turns"] = cloned_turns
+        return snapshot_state
 
-        thread_runtime_status = conversation_state.get("threadRuntimeStatus")
-        if isinstance(thread_runtime_status, dict):
-            status_type = thread_runtime_status.get("type")
-            if isinstance(status_type, str) and status_type == "active":
-                return False
+    def _synthetic_completed_conversation_state(
+        self,
+        conversation_state: dict[str, Any],
+        *,
+        turn_index: int,
+    ) -> dict[str, Any]:
+        snapshot_state = dict(conversation_state)
+        turns = snapshot_state.get("turns")
+        if not isinstance(turns, list):
+            return snapshot_state
 
-        return True
+        cloned_turns = list(turns)
+        if 0 <= turn_index < len(cloned_turns) and isinstance(cloned_turns[turn_index], dict):
+            completed_turn = dict(cloned_turns[turn_index])
+            completed_turn["status"] = "completed"
+            cloned_turns[turn_index] = completed_turn
+
+        snapshot_state["turns"] = cloned_turns
+        snapshot_state["hasUnreadTurn"] = True
+        snapshot_state["threadRuntimeStatus"] = {
+            "type": "idle",
+            "activeFlags": [],
+        }
+        return snapshot_state
 
     async def broadcast_queued_followups(self, session_id: str) -> None:
         if not self.client.is_connected or not self._is_codex_session(session_id):
@@ -1176,6 +1276,17 @@ class CodexThreadFollowerBridge:
         data: dict[str, Any],
         conversation_state: dict[str, Any],
     ) -> list[list[dict[str, Any]]]:
+        if event == "done":
+            return [
+                [
+                    {
+                        "op": "replace",
+                        "path": ["hasUnreadTurn"],
+                        "value": False,
+                    }
+                ]
+            ]
+
         turns = conversation_state.get("turns")
         if not isinstance(turns, list):
             turns = []
@@ -1221,6 +1332,16 @@ class CodexThreadFollowerBridge:
                 "diff": latest_turn.get("diff"),
                 "items": [],
             }
+            if "gitInfo" in conversation_state:
+                patch_batches.append(
+                    [
+                        {
+                            "op": "replace",
+                            "path": ["gitInfo"],
+                            "value": conversation_state.get("gitInfo"),
+                        }
+                    ]
+                )
             start_patches = [
                 {
                     "op": "add",
@@ -1426,6 +1547,7 @@ class CodexThreadFollowerBridge:
             return patch_batches
 
         if event in {"turn_completed", "turn_aborted"}:
+            state.turn_completion_emitted = True
             patch_batches.append(
                 [
                     {

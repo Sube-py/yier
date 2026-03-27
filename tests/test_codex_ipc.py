@@ -426,7 +426,11 @@ def test_codex_thread_follower_bridge_handles_start_turn_and_broadcast(tmp_path:
                 },
                 "hasUnreadTurn": False,
                 "rolloutPath": "",
-                "gitInfo": None,
+                "gitInfo": {
+                    "branch": "main",
+                    "sha": "abc123",
+                    "originUrl": "git@example.com:repo.git",
+                },
                 "resumeState": "resumed",
                 "latestTokenUsageInfo": None,
                 "cwd": "/tmp/project",
@@ -441,6 +445,25 @@ def test_codex_thread_follower_bridge_handles_start_turn_and_broadcast(tmp_path:
                 "run_started",
                 {"session_id": "thread-1", "turn_id": "turn-started-1"},
             )
+            git_info_broadcast = await _wait_for_message(
+                messages_from_client,
+                predicate=lambda message: message.get("type") == "broadcast"
+                and message.get("method") == "thread-stream-state-changed"
+                and message.get("params", {}).get("change", {}).get("patches")
+                == [
+                    {
+                        "op": "replace",
+                        "path": ["gitInfo"],
+                        "value": {
+                            "branch": "main",
+                            "sha": "abc123",
+                            "originUrl": "git@example.com:repo.git",
+                        },
+                    }
+                ],
+            )
+            assert git_info_broadcast["params"]["conversationId"] == "thread-1"
+
             start_turn_broadcast = await _wait_for_message(
                 messages_from_client,
                 predicate=lambda message: message.get("type") == "broadcast"
@@ -521,6 +544,18 @@ def test_codex_thread_follower_bridge_handles_start_turn_and_broadcast(tmp_path:
                 ],
             )
             assert requests_broadcast["params"]["conversationId"] == "thread-1"
+
+            snapshot_broadcast = await _wait_for_message(
+                messages_from_client,
+                predicate=lambda message: message.get("type") == "broadcast"
+                and message.get("method") == "thread-stream-state-changed"
+                and message.get("params", {}).get("change", {}).get("type") == "snapshot",
+            )
+            snapshot_state = snapshot_broadcast["params"]["change"]["conversationState"]
+            assert snapshot_state["_yier_trigger_event"] == "run_started"
+            assert snapshot_state["turns"][0]["status"] == "inProgress"
+            assert snapshot_state["turns"][0]["items"] == []
+            assert snapshot_state["turns"][0]["turnId"] == "turn-started-1"
 
             user_item_broadcast = await _wait_for_message(
                 messages_from_client,
@@ -1041,7 +1076,7 @@ def test_codex_thread_follower_bridge_emits_first_assistant_delta_like_codex_app
     asyncio.run(scenario())
 
 
-def test_codex_thread_follower_bridge_waits_for_terminal_done_snapshot() -> None:
+def test_codex_thread_follower_bridge_emits_completion_sequence_before_done_patch() -> None:
     async def scenario() -> None:
         socket_path = _test_socket_path()
         messages_from_client: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -1076,96 +1111,93 @@ def test_codex_thread_follower_bridge_waits_for_terminal_done_snapshot() -> None
 
         server = await asyncio.start_unix_server(handle_connection, path=socket_path)
         fake_chat_service = FakeChatService()
-        states = [
-            {
-                "id": "thread-1",
-                "hostId": "local",
-                "turns": [
-                    {
-                        "id": "turn-1",
-                        "turnId": "turn-1",
-                        "status": "inProgress",
-                        "items": [],
-                    }
-                ],
-                "pendingSteers": [],
-                "requests": [],
-                "createdAt": 1,
-                "updatedAt": 2,
-                "title": "Thread 1",
-                "source": "chat",
-                "latestModel": "gpt-test",
-                "latestReasoningEffort": None,
-                "previousTurnModel": None,
-                "latestCollaborationMode": {
-                    "mode": "default",
-                    "settings": {
-                        "model": "gpt-test",
-                        "reasoning_effort": None,
-                        "developer_instructions": None,
+        fake_chat_service.build_codex_ipc_conversation_state = lambda session_id: {  # type: ignore[method-assign]
+            "id": session_id,
+            "hostId": "local",
+            "turns": [
+                {
+                    "id": "turn-0",
+                    "turnId": "turn-0",
+                    "status": "completed",
+                    "items": [
+                        {
+                            "type": "userMessage",
+                            "id": "item-user-0",
+                            "content": [{"type": "text", "text": "old", "text_elements": []}],
+                        },
+                        {
+                            "type": "agentMessage",
+                            "id": "item-agent-0",
+                            "text": "done",
+                            "phase": "final_answer",
+                        },
+                    ],
+                    "error": None,
+                    "diff": None,
+                    "turnStartedAtMs": 1,
+                    "finalAssistantStartedAtMs": 2,
+                    "params": {
+                        "threadId": session_id,
+                        "input": [{"type": "text", "text": "old", "text_elements": []}],
                     },
                 },
-                "hasUnreadTurn": True,
-                "rolloutPath": "",
-                "gitInfo": None,
-                "resumeState": "resumed",
-                "latestTokenUsageInfo": None,
-                "cwd": "/tmp/project",
-                "threadId": "thread-1",
-                "threadRuntimeStatus": {
-                    "type": "active",
-                    "activeFlags": [],
-                },
-            },
-            {
-                "id": "thread-1",
-                "hostId": "local",
-                "turns": [
-                    {
-                        "id": "turn-1",
-                        "turnId": "turn-1",
-                        "status": "completed",
-                        "items": [],
-                    }
-                ],
-                "pendingSteers": [],
-                "requests": [],
-                "createdAt": 1,
-                "updatedAt": 3,
-                "title": "Thread 1",
-                "source": "chat",
-                "latestModel": "gpt-test",
-                "latestReasoningEffort": None,
-                "previousTurnModel": None,
-                "latestCollaborationMode": {
-                    "mode": "default",
-                    "settings": {
-                        "model": "gpt-test",
-                        "reasoning_effort": None,
-                        "developer_instructions": None,
+                {
+                    "id": "turn-1",
+                    "turnId": "turn-1",
+                    "status": "inProgress",
+                    "items": [
+                        {
+                            "type": "userMessage",
+                            "id": "item-user-1",
+                            "content": [{"type": "text", "text": "hello", "text_elements": []}],
+                        },
+                        {
+                            "type": "agentMessage",
+                            "id": "item-agent-1",
+                            "text": "world",
+                            "phase": "final_answer",
+                            "memoryCitation": None,
+                        },
+                    ],
+                    "error": None,
+                    "diff": None,
+                    "turnStartedAtMs": 100,
+                    "finalAssistantStartedAtMs": 120,
+                    "params": {
+                        "threadId": session_id,
+                        "input": [{"type": "text", "text": "hello", "text_elements": []}],
                     },
                 },
-                "hasUnreadTurn": False,
-                "rolloutPath": "",
-                "gitInfo": None,
-                "resumeState": "resumed",
-                "latestTokenUsageInfo": None,
-                "cwd": "/tmp/project",
-                "threadId": "thread-1",
-                "threadRuntimeStatus": {
-                    "type": "idle",
-                    "activeFlags": [],
+            ],
+            "pendingSteers": [],
+            "requests": [],
+            "createdAt": 1,
+            "updatedAt": 2,
+            "title": "Thread 1",
+            "source": "chat",
+            "latestModel": "gpt-test",
+            "latestReasoningEffort": None,
+            "previousTurnModel": None,
+            "latestCollaborationMode": {
+                "mode": "default",
+                "settings": {
+                    "model": "gpt-test",
+                    "reasoning_effort": None,
+                    "developer_instructions": None,
                 },
             },
-        ]
-
-        def build_state(session_id: str) -> dict[str, Any]:
-            assert session_id == "thread-1"
-            if len(states) > 1:
-                return states.pop(0)
-            return states[0]
-
-        fake_chat_service.build_codex_ipc_conversation_state = build_state  # type: ignore[method-assign]
+            "hasUnreadTurn": False,
+            "rolloutPath": "",
+            "gitInfo": None,
+            "resumeState": "resumed",
+            "latestTokenUsageInfo": {"total": {"totalTokens": 10}},
+            "cwd": "/tmp/project",
+            "threadId": session_id,
+            "threadRuntimeStatus": {
+                "type": "active",
+                "activeFlags": [],
+            },
+        }
         bridge = CodexThreadFollowerBridge(
             chat_service=fake_chat_service,  # type: ignore[arg-type]
             socket_path=socket_path,
@@ -1178,20 +1210,174 @@ def test_codex_thread_follower_bridge_waits_for_terminal_done_snapshot() -> None
             assert server_writer is not None
 
             await bridge.notify_stream_event(
+                "run_started",
+                {"session_id": "thread-1", "turn_id": "turn-1"},
+            )
+            await bridge.notify_stream_event(
+                "assistant_message",
+                {"session_id": "thread-1", "item_id": "item-agent-1", "content": "world"},
+            )
+            await bridge.notify_stream_event(
                 "done",
                 {"session_id": "thread-1", "finish_reason": "stop"},
             )
+
+            completed_broadcast = await _wait_for_message(
+                messages_from_client,
+                predicate=lambda message: message.get("type") == "broadcast"
+                and message.get("method") == "thread-stream-state-changed"
+                and message.get("params", {}).get("change", {}).get("patches")
+                == [
+                    {
+                        "op": "replace",
+                        "path": ["turns", 1, "status"],
+                        "value": "completed",
+                    }
+                ],
+            )
+            assert completed_broadcast["params"]["conversationId"] == "thread-1"
+
+            unread_true_broadcast = await _wait_for_message(
+                messages_from_client,
+                predicate=lambda message: message.get("type") == "broadcast"
+                and message.get("method") == "thread-stream-state-changed"
+                and message.get("params", {}).get("change", {}).get("patches")
+                == [
+                    {
+                        "op": "replace",
+                        "path": ["hasUnreadTurn"],
+                        "value": True,
+                    }
+                ],
+            )
+            assert unread_true_broadcast["params"]["conversationId"] == "thread-1"
 
             snapshot_broadcast = await _wait_for_message(
                 messages_from_client,
                 predicate=lambda message: message.get("type") == "broadcast"
                 and message.get("method") == "thread-stream-state-changed"
-                and message.get("params", {}).get("change", {}).get("type") == "snapshot",
+                and message.get("params", {}).get("change", {}).get("type") == "snapshot"
+                and message.get("params", {}).get("change", {}).get("conversationState", {}).get("_yier_trigger_event")
+                == "turn_completed",
             )
-            conversation_state = snapshot_broadcast["params"]["change"]["conversationState"]
-            assert conversation_state["turns"][0]["status"] == "completed"
-            assert conversation_state["threadRuntimeStatus"]["type"] == "idle"
-            assert conversation_state["_yier_trigger_event"] == "done"
+            snapshot_state = snapshot_broadcast["params"]["change"]["conversationState"]
+            assert snapshot_state["turns"][1]["status"] == "completed"
+            assert snapshot_state["hasUnreadTurn"] is True
+            assert snapshot_state["threadRuntimeStatus"] == {
+                "type": "idle",
+                "activeFlags": [],
+            }
+
+            done_broadcast = await _wait_for_message(
+                messages_from_client,
+                predicate=lambda message: message.get("type") == "broadcast"
+                and message.get("method") == "thread-stream-state-changed"
+                and message.get("params", {}).get("change", {}).get("patches")
+                == [
+                    {
+                        "op": "replace",
+                        "path": ["hasUnreadTurn"],
+                        "value": False,
+                    }
+                ],
+            )
+            assert done_broadcast["params"]["conversationId"] == "thread-1"
+        finally:
+            await bridge.stop()
+            if server_writer is not None:
+                server_writer.close()
+                await server_writer.wait_closed()
+            server.close()
+            socket_path.unlink(missing_ok=True)
+
+    asyncio.run(scenario())
+
+
+def test_codex_thread_follower_bridge_emits_latest_token_usage_patch() -> None:
+    async def scenario() -> None:
+        socket_path = _test_socket_path()
+        messages_from_client: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        client_ready = asyncio.Event()
+        server_writer: asyncio.StreamWriter | None = None
+
+        async def handle_connection(
+            reader: asyncio.StreamReader,
+            writer: asyncio.StreamWriter,
+        ) -> None:
+            nonlocal server_writer
+            initialize_request = await _read_frame(reader)
+            server_writer = writer
+            await _send_frame(
+                writer,
+                {
+                    "type": "response",
+                    "requestId": initialize_request["requestId"],
+                    "resultType": "success",
+                    "method": "initialize",
+                    "handledByClientId": "router-client",
+                    "result": {"clientId": "client-yier"},
+                },
+            )
+            client_ready.set()
+            while True:
+                try:
+                    message = await _read_frame(reader)
+                except asyncio.IncompleteReadError:
+                    break
+                await messages_from_client.put(message)
+
+        server = await asyncio.start_unix_server(handle_connection, path=socket_path)
+        fake_chat_service = FakeChatService()
+        fake_chat_service.build_codex_ipc_conversation_state = lambda session_id: {  # type: ignore[method-assign]
+            **FakeChatService().build_codex_ipc_conversation_state(session_id),
+            "latestTokenUsageInfo": {
+                "total": {
+                    "totalTokens": 42,
+                    "inputTokens": 40,
+                    "outputTokens": 2,
+                    "cachedInputTokens": 0,
+                    "reasoningOutputTokens": 0,
+                }
+            },
+        }
+        bridge = CodexThreadFollowerBridge(
+            chat_service=fake_chat_service,  # type: ignore[arg-type]
+            socket_path=socket_path,
+        )
+
+        try:
+            await bridge.start()
+            assert await bridge.client.wait_until_connected(timeout=2.0)
+            await asyncio.wait_for(client_ready.wait(), timeout=2.0)
+            assert server_writer is not None
+
+            await bridge.notify_stream_event(
+                "token_usage_updated",
+                {"session_id": "thread-1"},
+            )
+
+            token_broadcast = await _wait_for_message(
+                messages_from_client,
+                predicate=lambda message: message.get("type") == "broadcast"
+                and message.get("method") == "thread-stream-state-changed"
+                and message.get("params", {}).get("change", {}).get("patches")
+                == [
+                    {
+                        "op": "replace",
+                        "path": ["latestTokenUsageInfo"],
+                        "value": {
+                            "total": {
+                                "totalTokens": 42,
+                                "inputTokens": 40,
+                                "outputTokens": 2,
+                                "cachedInputTokens": 0,
+                                "reasoningOutputTokens": 0,
+                            }
+                        },
+                    }
+                ],
+            )
+            assert token_broadcast["params"]["conversationId"] == "thread-1"
         finally:
             await bridge.stop()
             if server_writer is not None:

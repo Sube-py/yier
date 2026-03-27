@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from dataclasses import dataclass, field
 import logging
 import os
@@ -134,6 +135,8 @@ class CodexSessionRuntime:
     detail: str | None = None
     loop: asyncio.AbstractEventLoop | None = None
     emit: StreamEmitter | None = None
+    streaming_turn_id: str | None = None
+    thread_state_cache: dict[str, Any] | None = None
 
 
 class ApprovalAwareAppServerClient(AppServerClient):
@@ -435,9 +438,14 @@ class CodexAppServerBackend(ChatBackend):
         runtime = self._ensure_runtime_blocking(context)
         assert runtime.client is not None
         assert runtime.thread_id is not None
+        if runtime.streaming_turn_id is not None:
+            cached_payload = self._cached_thread_state_payload(runtime)
+            if cached_payload is not None:
+                return cached_payload
         response = CodexThread(runtime.client, runtime.thread_id).read(include_turns=True)
         runtime.status = self._thread_status_value(response.thread.status)
         runtime.active_flags = self._thread_active_flags(response.thread.status)
+        self._cache_thread_state(runtime, response.thread)
         self.chat_service.update_session_backend_state(
             context.session_id,
             {
@@ -534,6 +542,7 @@ class CodexAppServerBackend(ChatBackend):
         response = CodexThread(runtime.client, runtime.thread_id).read(include_turns=True)
         runtime.status = self._thread_status_value(response.thread.status)
         runtime.active_flags = self._thread_active_flags(response.thread.status)
+        self._cache_thread_state(runtime, response.thread)
         self.chat_service.update_session_backend_state(
             context.session_id,
             {
@@ -547,9 +556,9 @@ class CodexAppServerBackend(ChatBackend):
 
     def should_use_local_session_view(self, context: ChatSessionContext) -> bool:
         runtime = self._runtimes.get(context.session_id)
-        if runtime is not None:
-            return runtime.status == "active"
-        return context.backend_state.get("status") == "active"
+        if runtime is None:
+            return False
+        return runtime.status == "active"
 
     async def _ensure_runtime(self, context: ChatSessionContext) -> CodexSessionRuntime:
         runtime = self._runtimes.get(context.session_id)
@@ -626,6 +635,7 @@ class CodexAppServerBackend(ChatBackend):
         runtime.thread_id = response.thread.id
         runtime.status = self._thread_status_value(response.thread.status)
         runtime.active_flags = self._thread_active_flags(response.thread.status)
+        self._cache_thread_state(runtime, response.thread)
         if persist and context.session_id:
             self.chat_service.update_session_backend_state(
                 context.session_id,
@@ -650,6 +660,7 @@ class CodexAppServerBackend(ChatBackend):
         runtime.thread_id = response.thread.id
         runtime.status = self._thread_status_value(response.thread.status)
         runtime.active_flags = self._thread_active_flags(response.thread.status)
+        self._cache_thread_state(runtime, response.thread)
         self.chat_service.update_session_backend_state(
             context.session_id,
             {
@@ -729,6 +740,7 @@ class CodexAppServerBackend(ChatBackend):
             turn_started_at_ms=int(time() * 1000),
             final_assistant_started_at_ms=None,
         )
+        self._upsert_cached_thread_turn(runtime, turn_id, status="inProgress")
         self.chat_service.update_session_backend_state(
             context.session_id,
             {
@@ -749,6 +761,7 @@ class CodexAppServerBackend(ChatBackend):
         assert runtime.client is not None
         assert runtime.thread_id is not None
         finish_reason = "stop"
+        runtime.streaming_turn_id = turn_id
         runtime.client.acquire_turn_consumer(turn_id)
         try:
             while True:
@@ -768,6 +781,7 @@ class CodexAppServerBackend(ChatBackend):
                 self._handle_turn_notification(runtime, context, notification)
         finally:
             runtime.client.release_turn_consumer(turn_id)
+            runtime.streaming_turn_id = None
 
         return finish_reason
 
@@ -802,6 +816,8 @@ class CodexAppServerBackend(ChatBackend):
             status = getattr(notification.payload, "status", None)
             runtime.status = self._thread_status_value(status)
             runtime.active_flags = self._thread_active_flags(status)
+            if runtime.thread_state_cache is not None:
+                runtime.thread_state_cache["status"] = self._safe_json_value(status)
         elif notification.method == "thread/tokenUsage/updated":
             token_usage = getattr(notification.payload, "token_usage", None)
             normalized_token_usage = self._safe_model_dump(token_usage)
@@ -825,6 +841,7 @@ class CodexAppServerBackend(ChatBackend):
                 runtime.thread_id = getattr(thread, "id", runtime.thread_id)
                 runtime.status = self._thread_status_value(getattr(thread, "status", None))
                 runtime.active_flags = self._thread_active_flags(getattr(thread, "status", None))
+                self._cache_thread_state(runtime, thread)
         self.chat_service.update_session_backend_state(
             context.session_id,
             {
@@ -855,6 +872,7 @@ class CodexAppServerBackend(ChatBackend):
                     runtime.turn_snapshots[turn_id] = snapshot
                 if snapshot.turn_started_at_ms is None:
                     snapshot.turn_started_at_ms = int(time() * 1000)
+                self._upsert_cached_thread_turn(runtime, turn_id, status="inProgress")
             self.chat_service.update_session_backend_state(
                 context.session_id,
                 {"status": runtime.status, "active_flags": runtime.active_flags},
@@ -1323,6 +1341,8 @@ class CodexAppServerBackend(ChatBackend):
         runtime.status = "idle" if status == "completed" else str(status or "idle")
         runtime.active_flags = []
         runtime.detail = None
+        if isinstance(turn_id, str) and turn_id:
+            self._upsert_cached_thread_turn(runtime, turn_id, status=str(status or "idle"))
         finish_reason = "stop"
         if status == "interrupted":
             finish_reason = "interrupted"
@@ -1659,6 +1679,68 @@ class CodexAppServerBackend(ChatBackend):
             "type": fallback_status,
             "activeFlags": list(fallback_active_flags),
         }
+
+    def _cache_thread_state(
+        self,
+        runtime: CodexSessionRuntime,
+        thread: Any,
+    ) -> None:
+        runtime.thread_state_cache = self._safe_model_dump(thread)
+
+    def _cached_thread_state_payload(
+        self,
+        runtime: CodexSessionRuntime,
+    ) -> dict[str, Any] | None:
+        if runtime.thread_state_cache is None:
+            return None
+        thread_payload = deepcopy(runtime.thread_state_cache)
+        return {
+            "thread": thread_payload,
+            "threadRuntimeStatus": self._thread_runtime_status_payload(
+                thread_payload.get("status"),
+                runtime.status,
+                runtime.active_flags,
+            ),
+            "detail": runtime.detail,
+        }
+
+    def _upsert_cached_thread_turn(
+        self,
+        runtime: CodexSessionRuntime,
+        turn_id: str,
+        *,
+        status: str,
+    ) -> None:
+        if runtime.thread_state_cache is None:
+            runtime.thread_state_cache = {
+                "id": runtime.thread_id,
+                "turns": [],
+            }
+        turns = runtime.thread_state_cache.get("turns")
+        if not isinstance(turns, list):
+            turns = []
+            runtime.thread_state_cache["turns"] = turns
+
+        cached_turn: dict[str, Any] | None = None
+        for turn in turns:
+            if isinstance(turn, dict) and turn.get("id") == turn_id:
+                cached_turn = turn
+                break
+        if cached_turn is None:
+            cached_turn = {
+                "id": turn_id,
+                "turnId": turn_id,
+                "status": status,
+                "items": [],
+                "error": None,
+            }
+            turns.append(cached_turn)
+            return
+
+        cached_turn["turnId"] = turn_id
+        cached_turn["status"] = status
+        cached_turn.setdefault("items", [])
+        cached_turn.setdefault("error", None)
 
     def _can_merge_snapshot_into_last_turn(
         self,
@@ -2159,6 +2241,9 @@ class CodexAppServerBackend(ChatBackend):
 
     def _notification_belongs_to_turn(self, notification: Notification, turn_id: str) -> bool:
         notification_turn_id = self._notification_value(notification, "turn_id")
+        if notification_turn_id is None:
+            turn = getattr(notification.payload, "turn", None)
+            notification_turn_id = getattr(turn, "id", None)
         if notification_turn_id is None:
             return notification.method.startswith("thread/") or notification.method == "serverRequest/resolved"
         return notification_turn_id == turn_id

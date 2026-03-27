@@ -16,7 +16,7 @@ from yier_agents import (
     ToolContext,
 )
 from yier_agents.src.skill import SkillCatalog
-from yier_web.agent_backends.codex_backend import CodexAppServerBackend
+from yier_web.agent_backends.codex_backend import CodexAppServerBackend, CodexSessionRuntime
 from yier_web.app import AppServices, create_app
 from yier_web.chat import ChatService
 from yier_web.config import AppConfigService, MCPValidationError
@@ -939,10 +939,29 @@ def test_chat_service_build_codex_ipc_conversation_state_keeps_active_status_for
         {"status": "active", "active_flags": []},
     )
 
-    def fail_load_thread_state(context: Any) -> dict[str, Any]:
-        raise AssertionError("load_thread_state should not run for active Codex turns")
-
-    monkeypatch.setattr(codex_backend, "load_thread_state", fail_load_thread_state)
+    monkeypatch.setattr(
+        codex_backend,
+        "load_thread_state",
+        lambda context: {
+            "thread": {
+                "id": "thread-native-11",
+                "name": "Native title",
+                "source": "appServer",
+                "cwd": str(project_root),
+                "createdAt": 10,
+                "updatedAt": 12,
+                "status": {
+                    "type": "active",
+                    "activeFlags": [],
+                },
+                "turns": [{"id": "turn-live", "status": "inProgress", "items": []}],
+            },
+            "threadRuntimeStatus": {
+                "type": "active",
+                "activeFlags": [],
+            },
+        },
+    )
     monkeypatch.setattr(
         codex_backend,
         "build_ipc_turns",
@@ -966,6 +985,81 @@ def test_chat_service_build_codex_ipc_conversation_state_keeps_active_status_for
         "type": "active",
         "activeFlags": [],
     }
+
+
+def test_chat_service_build_codex_ipc_conversation_state_uses_native_turn_count_while_active(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog())
+
+    project_root = tmp_path / "project"
+    project_root.mkdir(parents=True)
+    service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
+    chat_service = ChatService(
+        project_root=project_root,
+        config_service=service,
+        mcp_manager=FakeMCPManager(),  # type: ignore[arg-type]
+    )
+    codex_backend = chat_service.backends["codex"]
+    assert isinstance(codex_backend, CodexAppServerBackend)
+
+    monkeypatch.setattr(
+        codex_backend,
+        "bootstrap_session",
+        lambda project_path, source="chat", channel_meta=None: {
+            "thread_id": "thread-native-12",
+            "status": "idle",
+            "active_flags": [],
+            "detail": None,
+        },
+    )
+    session_id = chat_service.create_session(backend_id="codex")
+    chat_service.update_session_backend_state(
+        session_id,
+        {"status": "active", "active_flags": []},
+    )
+    chat_service._append_transcript_message(session_id, Message(role="user", content="one"))
+    chat_service._append_transcript_message(session_id, Message(role="assistant", content="two"))
+    chat_service._append_transcript_message(session_id, Message(role="user", content="three"))
+
+    monkeypatch.setattr(
+        codex_backend,
+        "load_thread_state",
+        lambda context: {
+            "thread": {
+                "id": "thread-native-12",
+                "name": "Native title",
+                "source": "appServer",
+                "cwd": str(project_root),
+                "createdAt": 10,
+                "updatedAt": 12,
+                "status": {
+                    "type": "active",
+                    "activeFlags": [],
+                },
+                "turns": [
+                    {"id": "turn-1", "status": "completed", "items": []},
+                    {"id": "turn-2", "status": "completed", "items": []},
+                    {"id": "turn-3", "status": "completed", "items": []},
+                    {"id": "turn-4", "status": "completed", "items": []},
+                    {"id": "turn-5", "status": "inProgress", "items": []},
+                ],
+            },
+            "threadRuntimeStatus": {
+                "type": "active",
+                "activeFlags": [],
+            },
+        },
+    )
+    monkeypatch.setattr(codex_backend, "build_ipc_turns", lambda context, turns: turns)
+    monkeypatch.setattr(codex_backend, "pending_conversation_requests", lambda context: [])
+
+    payload = chat_service.build_codex_ipc_conversation_state(session_id)
+
+    assert len(payload["turns"]) == 5
+    assert payload["turns"][-1]["id"] == "turn-5"
+    assert payload["turns"][-1]["status"] == "inProgress"
 
 
 def test_chat_service_background_codex_turn_replays_events_to_ipc_and_broker(
@@ -1133,6 +1227,11 @@ def test_chat_service_load_session_view_uses_local_snapshot_for_active_codex_ses
             "iteration": 0,
         },
     )
+    codex_backend._runtimes[session_id] = CodexSessionRuntime(
+        session_id=session_id,
+        thread_id="thread-native-22",
+        status="active",
+    )
 
     def fail_load_thread_view(context: Any) -> dict[str, Any]:
         raise AssertionError("load_thread_view should not run for active Codex sessions")
@@ -1168,6 +1267,75 @@ def test_chat_service_load_session_view_uses_local_snapshot_for_active_codex_ses
                 "content": "Inspecting runtime state.",
                 "iteration": 0,
             },
+        }
+    ]
+
+
+def test_chat_service_load_session_view_prefers_native_thread_view_without_local_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog())
+
+    project_root = tmp_path / "project"
+    project_root.mkdir(parents=True)
+    service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
+    chat_service = ChatService(
+        project_root=project_root,
+        config_service=service,
+        mcp_manager=FakeMCPManager(),  # type: ignore[arg-type]
+    )
+    codex_backend = chat_service.backends["codex"]
+    assert isinstance(codex_backend, CodexAppServerBackend)
+
+    monkeypatch.setattr(
+        codex_backend,
+        "bootstrap_session",
+        lambda project_path, source="chat", channel_meta=None: {
+            "thread_id": "thread-native-31",
+            "status": "idle",
+            "active_flags": [],
+            "detail": None,
+        },
+    )
+    session_id = chat_service.create_session(backend_id="codex")
+    chat_service.update_session_backend_state(session_id, {"status": "active"})
+    chat_service._append_transcript_message(session_id, Message(role="user", content="local-user"))
+    chat_service._append_transcript_message(
+        session_id,
+        Message(role="assistant", content="local-assistant"),
+    )
+
+    monkeypatch.setattr(
+        codex_backend,
+        "load_thread_view",
+        lambda context: {
+            "title": "Native Thread",
+            "preview": "remote-preview",
+            "updated_at": 1234,
+            "messages": [
+                Message(role="user", content="remote-user"),
+                Message(role="assistant", content="remote-assistant"),
+            ],
+            "activity_events": [
+                {
+                    "event": "reasoning",
+                    "data": {"session_id": session_id, "content": "remote"},
+                }
+            ],
+        },
+    )
+
+    messages, activity_events = chat_service.load_session_view(session_id)
+
+    assert [(message.role, message.content) for message in messages] == [
+        ("user", "remote-user"),
+        ("assistant", "remote-assistant"),
+    ]
+    assert activity_events == [
+        {
+            "event": "reasoning",
+            "data": {"session_id": session_id, "content": "remote"},
         }
     ]
 

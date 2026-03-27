@@ -1093,8 +1093,6 @@ class ChatService:
         backend = self.backends.get(context.backend_id)
         if not isinstance(backend, CodexAppServerBackend):
             return None
-        if backend.should_use_local_session_view(context):
-            return None
         thread_id = context.backend_state.get("thread_id")
         if not isinstance(thread_id, str) or not thread_id:
             return None

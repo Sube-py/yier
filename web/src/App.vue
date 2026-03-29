@@ -270,7 +270,6 @@ const sessionHistoryCount = computed(() => sessionHistory.value.length)
 const isCodexWorkspace = computed(() => isChatRoute.value && activeBackendId.value === 'codex')
 const activeCodexProjects = computed(() => codexWorkspace.value?.projects ?? [])
 const activeCodexPairedEditors = computed(() => codexWorkspace.value?.paired_editors ?? [])
-const pendingCodexApprovals = computed(() => activeSessionRuntime.value?.pending_approval_count ?? 0)
 const assistantLabel = computed(() => (activeBackendId.value === 'codex' ? 'Codex' : 'Yier'))
 const showCodexMobileChrome = computed(
   () => isCodexWorkspace.value && isCodexCompactLayout.value,
@@ -287,26 +286,6 @@ const showSidebarDrawer = computed(
 const showRuntimeSheet = computed(
   () => showCodexMobileChrome.value && isRuntimeSheetOpen.value,
 )
-const codexRuntimeButtonSummary = computed(() => {
-  if (pendingCodexApprovals.value > 0) {
-    return `${pendingCodexApprovals.value} pending approvals`
-  }
-
-  const status = (activeSessionRuntime.value?.status ?? '').trim()
-  if (status === 'active') {
-    return 'Working now'
-  }
-  if (status === 'error' || status === 'failed') {
-    return 'Needs attention'
-  }
-  if (status === 'interrupted') {
-    return 'Last turn interrupted'
-  }
-  if (activeSessionRuntime.value?.thread_id) {
-    return 'Session connected'
-  }
-  return 'Ready for the next turn'
-})
 const activeWorkspaceSurface = computed<WorkspaceSurface>(() => {
   if (activeSession.value?.backend_id === 'codex') {
     return 'codex'
@@ -379,11 +358,6 @@ function closeCodexSheets() {
 function openSidebarDrawer() {
   isRuntimeSheetOpen.value = false
   isSidebarDrawerOpen.value = true
-}
-
-function openRuntimeSheet() {
-  isSidebarDrawerOpen.value = false
-  isRuntimeSheetOpen.value = true
 }
 
 function closeSidebarDrawer() {
@@ -3406,7 +3380,44 @@ function toErrorMessage(error: unknown) {
           : 'max-[1023px]:min-h-auto max-[1023px]:gap-3 max-[1023px]:overflow-visible max-[1023px]:rounded-[1.45rem] max-[1023px]:p-4 max-sm:p-3'
       "
     >
-      <header class="flex items-start justify-between gap-4 max-[1023px]:flex-col max-[1023px]:items-stretch">
+      <header
+        v-if="isMobileChatPage"
+        class="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2.5 rounded-[1.15rem] border border-[rgba(34,66,72,0.08)] bg-[rgba(255,252,245,0.72)] px-2.5 py-2 shadow-[0_14px_28px_rgba(31,54,58,0.08)] backdrop-blur-[14px]"
+      >
+        <button
+          v-if="showCodexMobileChrome"
+          type="button"
+          class="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[0.95rem] border border-[rgba(34,66,72,0.08)] bg-[rgba(255,255,255,0.72)] text-[color:var(--app-text)] shadow-[inset_0_1px_0_rgba(255,255,255,0.48)] transition hover:bg-white"
+          aria-label="Open project menu"
+          @click="openSidebarDrawer"
+        >
+          <i class="pi pi-bars text-[0.98rem]"></i>
+        </button>
+        <div class="min-w-0 text-center">
+          <p class="m-0 text-[0.68rem] font-bold uppercase tracking-[0.18em] text-[color:var(--app-text-soft)]">
+            Workspace
+          </p>
+          <div class="mt-1 inline-flex max-w-full items-center gap-2 rounded-full bg-[rgba(21,94,99,0.08)] px-3 py-1.25 text-[color:var(--app-accent-deep)] shadow-[inset_0_1px_0_rgba(255,255,255,0.38)]">
+            <span class="h-2 w-2 shrink-0 rounded-full bg-[color:var(--app-accent)]"></span>
+            <span class="truncate font-['Iowan_Old_Style','Palatino_Linotype',Palatino,serif] text-[1.05rem] font-semibold leading-none">
+              Codex
+            </span>
+          </div>
+        </div>
+        <button
+          type="button"
+          class="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[0.95rem] border border-[rgba(34,66,72,0.08)] bg-[rgba(255,255,255,0.72)] text-[color:var(--app-text)] shadow-[inset_0_1px_0_rgba(255,255,255,0.48)] transition hover:bg-white"
+          aria-label="Open settings"
+          @click="openSettings"
+        >
+          <i class="pi pi-cog text-[0.98rem]"></i>
+        </button>
+      </header>
+
+      <header
+        v-else
+        class="flex items-start justify-between gap-4 max-[1023px]:flex-col max-[1023px]:items-stretch"
+      >
         <div>
           <p class="eyebrow">{{ workspaceEyebrow }}</p>
           <h2 class="m-0 font-['Iowan_Old_Style','Palatino_Linotype',Palatino,serif] text-[clamp(1.6rem,2vw,2.4rem)] leading-[1.1] font-semibold">
@@ -3446,6 +3457,7 @@ function toErrorMessage(error: unknown) {
             :icon="isChatRoute ? 'pi pi-sliders-h' : 'pi pi-comments'"
             severity="secondary"
             text
+            :aria-label="isChatRoute ? 'Open settings' : 'Back to chat'"
             @click="isChatRoute ? openSettings() : openChat()"
           />
         </div>
@@ -3457,40 +3469,6 @@ function toErrorMessage(error: unknown) {
       <Message v-else-if="successMessage" severity="success" class="m-0">
         {{ successMessage }}
       </Message>
-
-      <div
-        v-if="showCodexMobileChrome && !isBooting"
-        class="grid grid-cols-2 gap-3 max-sm:grid-cols-1"
-      >
-        <button
-          type="button"
-          class="rounded-[1.15rem] border border-[color:var(--app-border)] bg-white/72 px-4 py-3 text-left transition hover:bg-white"
-          @click="openSidebarDrawer"
-        >
-          <span class="block text-sm font-semibold text-[color:var(--app-text)]">Menu</span>
-          <span class="mt-1 block text-[0.82rem] leading-[1.45] text-[color:var(--app-text-soft)]">
-            Open the Codex sidebar and recent projects
-          </span>
-        </button>
-        <button
-          type="button"
-          class="rounded-[1.15rem] border border-[color:var(--app-border)] bg-white/72 px-4 py-3 text-left transition hover:bg-white"
-          @click="openRuntimeSheet"
-        >
-          <span class="flex items-center justify-between gap-2 text-sm font-semibold text-[color:var(--app-text)]">
-            <span>Runtime</span>
-            <span
-              v-if="pendingCodexApprovals"
-              class="inline-flex min-w-6 items-center justify-center rounded-full bg-[color:var(--app-accent)] px-2 py-0.5 text-[0.72rem] font-bold text-white"
-            >
-              {{ pendingCodexApprovals }}
-            </span>
-          </span>
-          <span class="mt-1 block text-[0.82rem] leading-[1.45] text-[color:var(--app-text-soft)]">
-            {{ codexRuntimeButtonSummary }}
-          </span>
-        </button>
-      </div>
 
       <section
         v-if="isBooting"
@@ -3544,12 +3522,13 @@ function toErrorMessage(error: unknown) {
                   :activities="activities"
                   :is-sending="isSending"
                   :session-label="sessionLabel"
-                  :session-runtime="activeSessionRuntime"
-                  :project-path="activeProjectPath"
-                  :assistant-label="assistantLabel"
-                  :bottom-inset="chatDockHeight"
-                  @approval-action="submitApprovalDecision"
-                />
+                :session-runtime="activeSessionRuntime"
+                :project-path="activeProjectPath"
+                :assistant-label="assistantLabel"
+                :bottom-inset="chatDockHeight"
+                :compact-header="isMobileChatPage"
+                @approval-action="submitApprovalDecision"
+              />
               </div>
               <div
                 ref="chatDockRef"

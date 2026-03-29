@@ -114,6 +114,7 @@ const props = defineProps<{
   projectPath: string
   assistantLabel?: string
   bottomInset?: number
+  compactHeader?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -617,7 +618,28 @@ watch(
   <section
     class="flex h-full min-h-0 flex-1 flex-col gap-4 overflow-hidden rounded-3xl border border-[color:var(--app-border)] bg-[color:var(--app-panel)] p-[1.1rem] shadow-[var(--app-shadow)] backdrop-blur-[14px] max-[1023px]:rounded-[1.35rem] max-[1023px]:p-4 max-sm:gap-3 max-sm:p-3"
   >
-    <div class="flex items-start justify-between gap-3 max-[1023px]:flex-col max-[1023px]:items-stretch">
+    <div
+      v-if="compactHeader"
+      class="flex items-center justify-between gap-3 rounded-[1rem] border border-[rgba(34,66,72,0.08)] bg-[rgba(255,250,242,0.7)] px-3 py-2.5"
+    >
+      <div class="min-w-0">
+        <p class="eyebrow">Working Directory</p>
+        <p
+          class="m-0 truncate font-mono text-[0.8rem] text-[color:var(--app-text-soft)]"
+          :title="projectPath"
+        >
+          {{ projectPath || 'No project path' }}
+        </p>
+      </div>
+      <div
+        v-if="isSending"
+        class="inline-flex shrink-0 items-center gap-2 text-[0.82rem] text-[color:var(--app-text-soft)]"
+      >
+        <ProgressSpinner stroke-width="4" class="h-[1rem] w-[1rem]" />
+        <span>Working</span>
+      </div>
+    </div>
+    <div v-else class="flex items-start justify-between gap-3 max-[1023px]:flex-col max-[1023px]:items-stretch">
       <div>
         <p class="eyebrow">Current session</p>
         <div class="flex items-center justify-start gap-3 max-sm:flex-wrap">

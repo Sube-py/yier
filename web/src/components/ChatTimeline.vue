@@ -113,6 +113,7 @@ const props = defineProps<{
   sessionRuntime: BackendRuntime | null
   projectPath: string
   assistantLabel?: string
+  bottomInset?: number
 }>()
 
 const emit = defineEmits<{
@@ -139,18 +140,21 @@ const shouldStickToBottom = ref(true)
 const copiedActivityId = ref('')
 let copiedResetTimer: number | null = null
 const bottomThreshold = 72
-const timelineScrollPt = {
+const timelineScrollPt = computed(() => ({
   contentContainer: {
     class: 'h-full w-full',
   },
   content: {
     class: 'flex min-h-0 flex-col gap-4 pr-[0.35rem]',
+    style: {
+      paddingBottom: `${Math.max(props.bottomInset ?? 0, 0)}px`,
+    },
     ref: (element: HTMLElement | null) => {
       timelineBody.value = element
     },
     onScroll: onTimelineScroll,
   },
-}
+}))
 
 function runtimeStatusLabel(status: string | null | undefined) {
   const normalized = (status ?? '').trim()
@@ -599,11 +603,19 @@ watch(
   },
   { flush: 'post' },
 )
+
+watch(
+  () => props.bottomInset,
+  async () => {
+    await scrollToBottomIfNeeded()
+  },
+  { flush: 'post' },
+)
 </script>
 
 <template>
   <section
-    class="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden rounded-3xl border border-[color:var(--app-border)] bg-[color:var(--app-panel)] p-[1.1rem] shadow-[var(--app-shadow)] backdrop-blur-[14px] max-[1023px]:rounded-[1.35rem] max-[1023px]:p-4 max-sm:gap-3 max-sm:p-3"
+    class="flex h-full min-h-0 flex-1 flex-col gap-4 overflow-hidden rounded-3xl border border-[color:var(--app-border)] bg-[color:var(--app-panel)] p-[1.1rem] shadow-[var(--app-shadow)] backdrop-blur-[14px] max-[1023px]:rounded-[1.35rem] max-[1023px]:p-4 max-sm:gap-3 max-sm:p-3"
   >
     <div class="flex items-start justify-between gap-3 max-[1023px]:flex-col max-[1023px]:items-stretch">
       <div>

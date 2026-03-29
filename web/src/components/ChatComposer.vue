@@ -139,7 +139,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="sticky bottom-0 shrink-0">
+  <div class="shrink-0">
     <div
       class="rounded-[1.4rem] border border-[color:var(--app-border)] bg-[color:var(--app-panel)] p-4 shadow-[var(--app-shadow)] backdrop-blur-[14px] max-sm:rounded-[1.15rem] max-sm:p-3"
     >
@@ -164,9 +164,9 @@ onMounted(async () => {
           to send.
         </p>
         <Button
-          label="Send"
           icon="pi pi-arrow-up"
-          class="max-sm:w-full"
+          aria-label="Send message"
+          class="max-sm:w-full sm:!w-11 sm:!h-11 sm:!px-0"
           :disabled="disabled || !model.trim()"
           :loading="isSending"
           @click="emit('submit')"

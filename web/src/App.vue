@@ -92,6 +92,13 @@ const LLM_PROVIDER_DEFAULTS: Record<
 }
 const route = useRoute()
 const router = useRouter()
+const chatDockRef = ref<HTMLElement | null>(null)
+const chatDockHeight = ref(0)
+let chatDockResizeObserver: ResizeObserver | null = null
+
+function updateChatDockHeight() {
+  chatDockHeight.value = chatDockRef.value?.offsetHeight ?? 0
+}
 
 function normalizeWorkspaceSurface(value: string | null | undefined): WorkspaceSurface {
   if (value === 'codex' || value === 'yier' || value === 'claude') {
@@ -270,6 +277,9 @@ const showCodexMobileChrome = computed(
 )
 const isMobileChatPage = computed(
   () => isChatRoute.value && isCodexCompactLayout.value,
+)
+const useFloatingChatDock = computed(
+  () => isChatRoute.value,
 )
 const showSidebarDrawer = computed(
   () => showCodexMobileChrome.value && isSidebarDrawerOpen.value,
@@ -456,6 +466,30 @@ watch(
   { immediate: true },
 )
 
+watch(
+  chatDockRef,
+  (element, previousElement) => {
+    if (previousElement && chatDockResizeObserver) {
+      chatDockResizeObserver.unobserve(previousElement)
+    }
+
+    if (!element) {
+      chatDockHeight.value = 0
+      return
+    }
+
+    if (!chatDockResizeObserver) {
+      chatDockResizeObserver = new ResizeObserver(() => {
+        updateChatDockHeight()
+      })
+    }
+
+    chatDockResizeObserver.observe(element)
+    updateChatDockHeight()
+  },
+  { flush: 'post' },
+)
+
 onMounted(async () => {
   setupCodexCompactLayoutWatcher()
   window.addEventListener('keydown', handleGlobalKeydown)
@@ -465,6 +499,8 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   syncSheetScrollLock(false)
+  chatDockResizeObserver?.disconnect()
+  chatDockResizeObserver = null
   window.removeEventListener('keydown', handleGlobalKeydown)
   teardownCodexCompactLayoutWatcher()
   closePersistentEventStream?.()
@@ -3144,10 +3180,12 @@ function toErrorMessage(error: unknown) {
 
 <template>
   <div
-    class="grid h-screen grid-cols-[minmax(17rem,20rem)_minmax(0,1fr)] gap-6 overflow-hidden p-6 max-[1023px]:h-auto max-[1023px]:grid-cols-1 max-[1023px]:gap-4 max-[1023px]:overflow-visible max-[1023px]:p-4 max-sm:gap-3 max-sm:p-3"
-    :class="{
-      'max-[1023px]:gap-0 max-[1023px]:p-0': isMobileChatPage,
-    }"
+    class="grid h-screen grid-cols-[minmax(17rem,20rem)_minmax(0,1fr)] gap-6 overflow-hidden p-6"
+    :class="
+      isMobileChatPage
+        ? 'max-[1023px]:h-[100dvh] max-[1023px]:grid-cols-1 max-[1023px]:gap-0 max-[1023px]:overflow-hidden max-[1023px]:p-0'
+        : 'max-[1023px]:h-auto max-[1023px]:grid-cols-1 max-[1023px]:gap-4 max-[1023px]:overflow-visible max-[1023px]:p-4 max-sm:gap-3 max-sm:p-3'
+    "
   >
     <aside
       v-if="!showCodexMobileChrome"
@@ -3361,11 +3399,12 @@ function toErrorMessage(error: unknown) {
     </aside>
 
     <main
-      class="flex min-h-0 flex-col gap-4 overflow-hidden rounded-[1.8rem] border border-[color:var(--app-border)] bg-[color:var(--app-panel)] p-[1.15rem] shadow-[var(--app-shadow)] backdrop-blur-[14px] max-[1023px]:min-h-auto max-[1023px]:gap-3 max-[1023px]:overflow-visible max-[1023px]:rounded-[1.45rem] max-[1023px]:p-4 max-sm:p-3"
-      :class="{
-        'max-[1023px]:rounded-none max-[1023px]:border-0 max-[1023px]:bg-transparent max-[1023px]:p-0 max-[1023px]:shadow-none max-[1023px]:backdrop-blur-none':
-          isMobileChatPage,
-      }"
+      class="flex min-h-0 flex-col gap-4 overflow-hidden rounded-[1.8rem] border border-[color:var(--app-border)] bg-[color:var(--app-panel)] p-[1.15rem] shadow-[var(--app-shadow)] backdrop-blur-[14px]"
+      :class="
+        isMobileChatPage
+          ? 'max-[1023px]:h-full max-[1023px]:min-h-0 max-[1023px]:gap-3 max-[1023px]:overflow-hidden max-[1023px]:rounded-none max-[1023px]:border-0 max-[1023px]:bg-transparent max-[1023px]:p-0 max-[1023px]:shadow-none max-[1023px]:backdrop-blur-none'
+          : 'max-[1023px]:min-h-auto max-[1023px]:gap-3 max-[1023px]:overflow-visible max-[1023px]:rounded-[1.45rem] max-[1023px]:p-4 max-sm:p-3'
+      "
     >
       <header class="flex items-start justify-between gap-4 max-[1023px]:flex-col max-[1023px]:items-stretch">
         <div>
@@ -3486,43 +3525,60 @@ function toErrorMessage(error: unknown) {
 
         <section
           v-else
-          class="flex min-h-0 flex-1 flex-col overflow-hidden max-[1023px]:overflow-visible"
+          class="flex min-h-0 flex-1 flex-col overflow-hidden"
           :class="{
             'grid grid-cols-[minmax(0,1fr)_20rem] gap-4 items-stretch':
               isCodexWorkspace && !isCodexCompactLayout,
+            'max-[1023px]:min-h-0 max-[1023px]:overflow-hidden': isMobileChatPage,
+            'max-[1023px]:overflow-visible': !isMobileChatPage,
           }"
         >
           <template v-if="isChatRoute">
-            <div class="flex min-h-0 flex-col gap-4">
-              <ChatTimeline
-                :messages="chatMessages"
-                :activities="activities"
-                :is-sending="isSending"
-                :session-label="sessionLabel"
-                :session-runtime="activeSessionRuntime"
-                :project-path="activeProjectPath"
-                :assistant-label="assistantLabel"
-                @approval-action="submitApprovalDecision"
-              />
-              <Message
-                v-if="activeSession?.source === 'channel'"
-                severity="info"
-                class="m-0"
+            <div
+              v-if="useFloatingChatDock"
+              class="relative min-h-0 flex-1"
+            >
+              <div class="absolute inset-0 min-h-0">
+                <ChatTimeline
+                  :messages="chatMessages"
+                  :activities="activities"
+                  :is-sending="isSending"
+                  :session-label="sessionLabel"
+                  :session-runtime="activeSessionRuntime"
+                  :project-path="activeProjectPath"
+                  :assistant-label="assistantLabel"
+                  :bottom-inset="chatDockHeight"
+                  @approval-action="submitApprovalDecision"
+                />
+              </div>
+              <div
+                ref="chatDockRef"
+                data-chat-dock
+                class="pointer-events-none absolute inset-x-0 bottom-0 z-10 p-4 max-sm:p-3"
               >
-                This session comes from {{ activeSession.channel_meta?.platform ?? 'channel' }} and
-                is read-only in the chat workspace.
-              </Message>
-              <ChatComposer
-                v-model="composerText"
-                :disabled="!canSendToSession"
-                :is-sending="isSending"
-                :placeholder="composerPlaceholder"
-                :selection-start="composerSelectionStart"
-                :selection-end="composerSelectionEnd"
-                :selection-version="composerSelectionVersion"
-                @selection-change="handleComposerSelectionChange"
-                @submit="submitMessage"
-              />
+                <div class="pointer-events-auto flex flex-col gap-3">
+                  <Message
+                    v-if="activeSession?.source === 'channel'"
+                    severity="info"
+                    class="m-0"
+                  >
+                    This session comes from
+                    {{ activeSession.channel_meta?.platform ?? 'channel' }} and is read-only in
+                    the chat workspace.
+                  </Message>
+                  <ChatComposer
+                    v-model="composerText"
+                    :disabled="!canSendToSession"
+                    :is-sending="isSending"
+                    :placeholder="composerPlaceholder"
+                    :selection-start="composerSelectionStart"
+                    :selection-end="composerSelectionEnd"
+                    :selection-version="composerSelectionVersion"
+                    @selection-change="handleComposerSelectionChange"
+                    @submit="submitMessage"
+                  />
+                </div>
+              </div>
             </div>
             <CodexWorkbar
               v-if="isCodexWorkspace && !isCodexCompactLayout"

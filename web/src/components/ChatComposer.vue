@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, ref, watch } from 'vue'
+import { nextTick, onMounted, ref, watch } from 'vue'
 
 import Button from 'primevue/button'
 import Textarea from 'primevue/textarea'
@@ -21,6 +21,21 @@ const emit = defineEmits<{
 }>()
 
 const textareaRef = ref<unknown>(null)
+const composerMinRows = 1
+const composerMaxRows = 12
+const composerTextareaPt = {
+  root: {
+    style: {
+      border: '0',
+      background: 'transparent',
+      boxShadow: 'none',
+      padding: '0',
+      resize: 'none',
+      overflowX: 'hidden',
+      lineHeight: '1.6',
+    },
+  },
+}
 
 function onKeydown(event: KeyboardEvent) {
   if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
@@ -60,6 +75,31 @@ function emitSelectionChange() {
   })
 }
 
+function onInput() {
+  emitSelectionChange()
+  resizeComposerTextarea()
+}
+
+function resizeComposerTextarea() {
+  const textarea = resolveNativeTextarea()
+  if (!textarea) {
+    return
+  }
+
+  const computedStyle = window.getComputedStyle(textarea)
+  const fontSize = Number.parseFloat(computedStyle.fontSize) || 16
+  const lineHeight = Number.parseFloat(computedStyle.lineHeight) || fontSize * 1.5
+  const paddingTop = Number.parseFloat(computedStyle.paddingTop) || 0
+  const paddingBottom = Number.parseFloat(computedStyle.paddingBottom) || 0
+  const minHeight = lineHeight * composerMinRows + paddingTop + paddingBottom
+  const maxHeight = lineHeight * composerMaxRows + paddingTop + paddingBottom
+
+  textarea.style.height = 'auto'
+  const nextHeight = Math.min(Math.max(textarea.scrollHeight, minHeight), maxHeight)
+  textarea.style.height = `${nextHeight}px`
+  textarea.style.overflowY = textarea.scrollHeight > maxHeight ? 'auto' : 'hidden'
+}
+
 watch(
   () => props.selectionVersion,
   async () => {
@@ -74,6 +114,28 @@ watch(
     emitSelectionChange()
   },
 )
+
+watch(
+  model,
+  async () => {
+    await nextTick()
+    resizeComposerTextarea()
+  },
+  { flush: 'post' },
+)
+
+watch(
+  () => props.disabled,
+  async () => {
+    await nextTick()
+    resizeComposerTextarea()
+  },
+)
+
+onMounted(async () => {
+  await nextTick()
+  resizeComposerTextarea()
+})
 </script>
 
 <template>
@@ -84,13 +146,14 @@ watch(
       <Textarea
         ref="textareaRef"
         v-model="model"
-        auto-resize
+        class="composer-textarea"
         fluid
-        rows="3"
+        rows="1"
+        :pt="composerTextareaPt"
         :placeholder="placeholder ?? 'Ask yier to inspect code, read files, or operate inside the allowed roots…'"
         :disabled="disabled"
         @keydown="onKeydown"
-        @input="emitSelectionChange"
+        @input="onInput"
         @select="emitSelectionChange"
         @click="emitSelectionChange"
         @keyup="emitSelectionChange"

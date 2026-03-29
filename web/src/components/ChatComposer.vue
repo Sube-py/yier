@@ -158,15 +158,35 @@ onMounted(async () => {
         @click="emitSelectionChange"
         @keyup="emitSelectionChange"
       />
-      <div class="mt-3 flex items-center justify-between gap-3 max-sm:flex-col max-sm:items-stretch">
-        <p class="m-0 text-sm text-[color:var(--app-text-soft)] max-sm:text-center">
-          Press <span class="font-bold text-[color:var(--app-accent-deep)]">Ctrl/Cmd + Enter</span>
-          to send.
-        </p>
+      <div class="mt-3 flex items-center justify-between gap-3">
+        <div class="min-w-0 overflow-x-auto">
+          <div class="flex min-w-max items-center gap-3">
+          <button
+            type="button"
+            class="inline-flex items-center gap-1.5 border-0 bg-transparent px-0 py-0 text-left transition hover:text-[color:var(--app-accent-deep)]"
+            aria-label="Choose model"
+          >
+            <span class="truncate text-[0.84rem] font-semibold text-[color:var(--app-text-soft)]">
+              Default
+            </span>
+            <i class="pi pi-chevron-down text-[0.68rem] text-[color:var(--app-text-soft)]"></i>
+          </button>
+          <button
+            type="button"
+            class="inline-flex items-center gap-1.5 border-0 bg-transparent px-0 py-0 text-left transition hover:text-[color:var(--app-accent-deep)]"
+            aria-label="Choose reasoning effort"
+          >
+            <span class="truncate text-[0.84rem] font-semibold text-[color:var(--app-text-soft)]">
+              Medium
+            </span>
+            <i class="pi pi-chevron-down text-[0.68rem] text-[color:var(--app-text-soft)]"></i>
+          </button>
+          </div>
+        </div>
         <Button
           icon="pi pi-arrow-up"
           aria-label="Send message"
-          class="max-sm:w-full sm:!w-11 sm:!h-11 sm:!px-0"
+          class="shrink-0 sm:!w-11 sm:!h-11 sm:!px-0"
           :disabled="disabled || !model.trim()"
           :loading="isSending"
           @click="emit('submit')"

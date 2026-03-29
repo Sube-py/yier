@@ -315,9 +315,9 @@ const workspaceSurfaceModel = computed<WorkspaceSurface>({
 const composerPlaceholder = computed(() =>
   activeBackendId.value === 'codex'
     ? activeCodexWorkMode.value === 'plan'
-      ? 'Ask Codex to analyze the task and produce a concrete implementation plan…'
-      : 'Ask Codex to inspect, edit, or operate in the current workspace…'
-    : 'Ask yier to inspect code, read files, or operate inside the allowed roots…',
+      ? 'Ask Codex anything'
+      : 'Ask for follow-up changes'
+    : 'Ask yier to inspect code, read files, or operate...',
 )
 
 function updateCodexCompactLayout(matches: boolean) {

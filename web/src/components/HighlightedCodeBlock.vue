@@ -39,17 +39,50 @@ function escapeHtml(value: string) {
     .replace(/'/g, '&#39;')
 }
 
+function parseDiffHunkHeader(line: string) {
+  const match = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/)
+  if (!match) {
+    return null
+  }
+  return {
+    oldLine: Number.parseInt(match[1] ?? '0', 10),
+    newLine: Number.parseInt(match[2] ?? '0', 10),
+  }
+}
+
 function renderDiffContent(content: string) {
+  let oldLineNumber: number | null = null
+  let newLineNumber: number | null = null
+
   return content.split('\n').map((line) => {
-    const escapedLine = escapeHtml(line) || ' '
+    let marker = ' '
+    let body = line
     let lineClass = 'diff-code-line'
+    let oldLineLabel = ''
+    let newLineLabel = ''
 
     if (line.startsWith('@@')) {
       lineClass += ' diff-code-line-hunk'
+      marker = '@'
+      const hunkHeader = parseDiffHunkHeader(line)
+      oldLineNumber = hunkHeader?.oldLine ?? null
+      newLineNumber = hunkHeader?.newLine ?? null
     } else if (line.startsWith('+') && !line.startsWith('+++')) {
       lineClass += ' diff-code-line-added'
+      marker = '+'
+      body = line.slice(1)
+      newLineLabel = newLineNumber === null ? '' : String(newLineNumber)
+      if (newLineNumber !== null) {
+        newLineNumber += 1
+      }
     } else if (line.startsWith('-') && !line.startsWith('---')) {
       lineClass += ' diff-code-line-removed'
+      marker = '-'
+      body = line.slice(1)
+      oldLineLabel = oldLineNumber === null ? '' : String(oldLineNumber)
+      if (oldLineNumber !== null) {
+        oldLineNumber += 1
+      }
     } else if (
       line.startsWith('diff ') ||
       line.startsWith('index ') ||
@@ -57,11 +90,24 @@ function renderDiffContent(content: string) {
       line.startsWith('---')
     ) {
       lineClass += ' diff-code-line-meta'
+      marker = '·'
     } else {
       lineClass += ' diff-code-line-context'
+      oldLineLabel = oldLineNumber === null ? '' : String(oldLineNumber)
+      newLineLabel = newLineNumber === null ? '' : String(newLineNumber)
+      if (oldLineNumber !== null) {
+        oldLineNumber += 1
+      }
+      if (newLineNumber !== null) {
+        newLineNumber += 1
+      }
     }
 
-    return `<span class="${lineClass}">${escapedLine}</span>`
+    const escapedMarker = escapeHtml(marker)
+    const escapedBody = escapeHtml(body) || ' '
+    const escapedOldLine = escapeHtml(oldLineLabel)
+    const escapedNewLine = escapeHtml(newLineLabel)
+    return `<span class="${lineClass}"><span class="diff-code-line-number diff-code-line-number-old">${escapedOldLine}</span><span class="diff-code-line-number diff-code-line-number-new">${escapedNewLine}</span><span class="diff-code-gutter">${escapedMarker}</span><span class="diff-code-content">${escapedBody}</span></span>`
   }).join('')
 }
 

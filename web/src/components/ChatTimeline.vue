@@ -346,7 +346,7 @@ function fileChangeKindLabel(change: FileChangeRecord) {
 
 function fileChangeMetaLabel(change: FileChangeRecord) {
   if (change.kind.type === 'move' && change.kind.move_path) {
-    return `to ${change.kind.move_path}`
+    return change.kind.move_path
   }
   return ''
 }
@@ -1089,17 +1089,21 @@ watch(
                 >
                   <div class="flex items-start justify-between gap-3 max-[1023px]:flex-col max-[1023px]:items-stretch">
                     <div class="min-w-0">
-                      <p class="m-0 text-[0.78rem] font-bold uppercase tracking-[0.08em] text-[color:var(--app-text-soft)]">
-                        {{ fileChangeKindLabel(change) }}
-                      </p>
+                      <div class="flex flex-wrap items-center gap-2">
+                        <p class="m-0 text-[0.78rem] font-bold uppercase tracking-[0.08em] text-[color:var(--app-text-soft)]">
+                          {{ fileChangeKindLabel(change) }}
+                        </p>
+                        <span
+                          v-if="fileChangeMetaLabel(change)"
+                          class="inline-flex max-w-full items-center rounded-full border border-[rgba(34,66,72,0.1)] bg-[rgba(21,94,99,0.08)] px-2.5 py-1 text-[0.74rem] font-medium text-[color:var(--app-accent-deep)]"
+                        >
+                          <span class="truncate">
+                            {{ fileChangeMetaLabel(change) }}
+                          </span>
+                        </span>
+                      </div>
                       <p class="mt-1 mb-0 break-all font-mono text-[0.84rem] text-[color:var(--app-text)]">
                         {{ change.path }}
-                      </p>
-                      <p
-                        v-if="fileChangeMetaLabel(change)"
-                        class="mt-1 mb-0 break-all text-[0.8rem] text-[color:var(--app-text-soft)]"
-                      >
-                        {{ fileChangeMetaLabel(change) }}
                       </p>
                     </div>
                   </div>

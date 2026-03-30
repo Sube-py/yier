@@ -474,10 +474,37 @@
   }
 
   .code-surface-scroll .diff-code-line {
-    display: block;
+    display: grid;
+    grid-template-columns: 3.2rem 3.2rem 1.65rem minmax(0, 1fr);
+    align-items: stretch;
     min-width: 100%;
-    padding: 0 0.78rem;
     color: #d8e2e7;
+  }
+
+  .code-surface-scroll .diff-code-line-number {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding: 0 0.55rem;
+    border-right: 1px solid rgba(255, 255, 255, 0.05);
+    color: rgba(216, 226, 231, 0.46);
+    font-variant-numeric: tabular-nums;
+    user-select: none;
+  }
+
+  .code-surface-scroll .diff-code-gutter {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-right: 1px solid rgba(255, 255, 255, 0.06);
+    color: rgba(216, 226, 231, 0.72);
+    user-select: none;
+  }
+
+  .code-surface-scroll .diff-code-content {
+    display: block;
+    padding: 0 0.78rem;
+    white-space: pre;
   }
 
   .code-surface-scroll .diff-code-line-context {
@@ -502,6 +529,52 @@
   .code-surface-scroll .diff-code-line-meta {
     background: rgba(110, 118, 129, 0.12);
     color: #c3d1d6;
+  }
+
+  .code-surface-scroll .diff-code-line-added .diff-code-gutter {
+    border-right-color: rgba(35, 134, 54, 0.22);
+    color: #aff5b4;
+    background: rgba(35, 134, 54, 0.14);
+  }
+
+  .code-surface-scroll .diff-code-line-added .diff-code-line-number-new {
+    color: rgba(175, 245, 180, 0.82);
+    background: rgba(35, 134, 54, 0.08);
+    border-right-color: rgba(35, 134, 54, 0.14);
+  }
+
+  .code-surface-scroll .diff-code-line-removed .diff-code-gutter {
+    border-right-color: rgba(218, 54, 51, 0.22);
+    color: #ffd8d3;
+    background: rgba(218, 54, 51, 0.14);
+  }
+
+  .code-surface-scroll .diff-code-line-removed .diff-code-line-number-old {
+    color: rgba(255, 216, 211, 0.82);
+    background: rgba(218, 54, 51, 0.08);
+    border-right-color: rgba(218, 54, 51, 0.14);
+  }
+
+  .code-surface-scroll .diff-code-line-hunk .diff-code-gutter {
+    border-right-color: rgba(56, 139, 253, 0.22);
+    color: #9ecbff;
+    background: rgba(56, 139, 253, 0.1);
+  }
+
+  .code-surface-scroll .diff-code-line-hunk .diff-code-line-number {
+    background: rgba(56, 139, 253, 0.05);
+    border-right-color: rgba(56, 139, 253, 0.12);
+  }
+
+  .code-surface-scroll .diff-code-line-meta .diff-code-gutter {
+    border-right-color: rgba(110, 118, 129, 0.18);
+    color: #c3d1d6;
+    background: rgba(110, 118, 129, 0.08);
+  }
+
+  .code-surface-scroll .diff-code-line-meta .diff-code-line-number {
+    background: rgba(110, 118, 129, 0.04);
+    border-right-color: rgba(110, 118, 129, 0.1);
   }
 
   .code-surface-scroll .token.property,
@@ -666,7 +739,16 @@
     }
 
     .code-surface-scroll .diff-code-line {
+      grid-template-columns: 2.8rem 2.8rem 1.45rem minmax(0, 1fr);
+    }
+
+    .code-surface-scroll .diff-code-content {
       padding: 0 0.66rem;
+    }
+
+    .code-surface-scroll .diff-code-line-number {
+      padding: 0 0.42rem;
+      font-size: 0.78rem;
     }
   }
 

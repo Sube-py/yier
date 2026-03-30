@@ -47,6 +47,7 @@ const props = defineProps<{
     codexApprovalsReviewer: 'user' | 'guardian_subagent'
     codexPersonality: 'none' | 'friendly' | 'pragmatic'
     codexReasoningEffort: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+    codexShowReasoningCards: boolean
     codexServiceTier: '' | 'fast' | 'flex'
   }
   rootsDraft: EditableAllowedRoot[]
@@ -327,6 +328,11 @@ const emit = defineEmits<{
                   option-value="value"
                   fluid
                 />
+
+                <label class="inline-flex items-center gap-1.5 text-[0.92rem] text-[color:var(--app-text-soft)]">
+                  <input v-model="appForm.codexShowReasoningCards" type="checkbox" />
+                  Show reasoning activity cards in chat
+                </label>
 
                 <Button
                   label="Save Backend Settings"

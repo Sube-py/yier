@@ -397,6 +397,16 @@ def test_llm_preset_settings_allow_blank_base_url(tmp_path: Path) -> None:
     assert public.llm.has_api_key is True
 
 
+def test_codex_reasoning_cards_default_to_hidden(tmp_path: Path) -> None:
+    service = AppConfigService(project_root=tmp_path / "project", home_dir=tmp_path / "home")
+
+    stored = service.load_web_settings()
+    public = service.build_public_config({})
+
+    assert stored.codex.show_reasoning_cards is False
+    assert public.codex.show_reasoning_cards is False
+
+
 def test_llm_settings_infer_legacy_zai_provider_without_rewriting_file(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir(parents=True)
@@ -551,12 +561,14 @@ def test_api_endpoints_cover_config_session_and_stream(tmp_path: Path) -> None:
                     "approvals_reviewer": "user",
                     "personality": "friendly",
                     "reasoning_effort": "medium",
+                    "show_reasoning_cards": True,
                     "service_tier": "",
                 },
             },
         )
         assert app_config_response.status_code == 200
         assert app_config_response.json()["session_defaults"]["workspace_surface"] == "codex"
+        assert app_config_response.json()["codex"]["show_reasoning_cards"] is True
 
         session_response = client.post("/api/chat/sessions")
         assert session_response.status_code == 201

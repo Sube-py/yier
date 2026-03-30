@@ -115,6 +115,7 @@ const props = defineProps<{
   assistantLabel?: string
   bottomInset?: number
   compactHeader?: boolean
+  showReasoningCards?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -323,6 +324,10 @@ function activityUsesMarkdown(activity: ChatActivity) {
 function isHiddenActivity(activity: ChatActivity) {
   if (activity.kind === 'approval') {
     return false
+  }
+
+  if (activity.kind === 'reasoning' && !props.showReasoningCards) {
+    return true
   }
 
   if (activity.kind === 'status' && activity.title === 'Thinking') {

@@ -201,6 +201,7 @@ class AppConfigService:
                 approvals_reviewer=settings.codex.approvals_reviewer,
                 personality=settings.codex.personality,
                 reasoning_effort=settings.codex.reasoning_effort,
+                show_reasoning_cards=settings.codex.show_reasoning_cards,
                 service_tier=settings.codex.service_tier,
             ),
             allowed_roots=settings.allowed_roots,

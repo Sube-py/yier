@@ -62,6 +62,7 @@ export interface ConfigResponse {
     approvals_reviewer: 'user' | 'guardian_subagent'
     personality: 'none' | 'friendly' | 'pragmatic'
     reasoning_effort: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+    show_reasoning_cards: boolean
     service_tier: '' | 'fast' | 'flex'
   }
   allowed_roots: string[]

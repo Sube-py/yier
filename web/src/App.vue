@@ -165,6 +165,7 @@ const appForm = reactive({
   codexApprovalsReviewer: 'user' as 'user' | 'guardian_subagent',
   codexPersonality: 'friendly' as 'none' | 'friendly' | 'pragmatic',
   codexReasoningEffort: 'medium' as 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh',
+  codexShowReasoningCards: false,
   codexServiceTier: '' as '' | 'fast' | 'flex',
 })
 const newSessionDraft = reactive({
@@ -635,13 +636,20 @@ function buildDefaultCodexConfig() {
     approvals_reviewer: 'user' as const,
     personality: 'friendly' as const,
     reasoning_effort: 'medium' as const,
+    show_reasoning_cards: false,
     service_tier: '' as const,
   }
 }
 
 async function persistWorkspaceSurfacePreference(surface: WorkspaceSurface) {
-  const persistedSessionDefaults = config.value?.session_defaults ?? buildDefaultSessionDefaults()
-  const persistedCodex = config.value?.codex ?? buildDefaultCodexConfig()
+  const persistedSessionDefaults = {
+    ...buildDefaultSessionDefaults(),
+    ...(config.value?.session_defaults ?? {}),
+  }
+  const persistedCodex = {
+    ...buildDefaultCodexConfig(),
+    ...(config.value?.codex ?? {}),
+  }
 
   config.value = await apiPut<ConfigResponse>('/api/config/app', {
     session_defaults: {
@@ -2132,8 +2140,14 @@ function hydrateLlmForm(configPayload: ConfigResponse['llm']) {
 }
 
 function hydrateAppForm(configPayload: ConfigResponse) {
-  const sessionDefaults = configPayload.session_defaults ?? buildDefaultSessionDefaults()
-  const codex = configPayload.codex ?? buildDefaultCodexConfig()
+  const sessionDefaults = {
+    ...buildDefaultSessionDefaults(),
+    ...(configPayload.session_defaults ?? {}),
+  }
+  const codex = {
+    ...buildDefaultCodexConfig(),
+    ...(configPayload.codex ?? {}),
+  }
   const workspaceSurface = normalizeWorkspaceSurface(
     sessionDefaults.workspace_surface ?? readCachedWorkspaceSurface(),
   )
@@ -2151,6 +2165,7 @@ function hydrateAppForm(configPayload: ConfigResponse) {
   appForm.codexApprovalsReviewer = codex.approvals_reviewer
   appForm.codexPersonality = codex.personality
   appForm.codexReasoningEffort = codex.reasoning_effort
+  appForm.codexShowReasoningCards = codex.show_reasoning_cards
   appForm.codexServiceTier = codex.service_tier
 }
 
@@ -2216,6 +2231,7 @@ function buildAppSettingsPayload() {
       approvals_reviewer: appForm.codexApprovalsReviewer,
       personality: appForm.codexPersonality,
       reasoning_effort: appForm.codexReasoningEffort,
+      show_reasoning_cards: appForm.codexShowReasoningCards,
       service_tier: appForm.codexServiceTier,
     },
   } satisfies SaveAppSettingsRequest
@@ -3524,10 +3540,11 @@ function toErrorMessage(error: unknown) {
                   :session-label="sessionLabel"
                 :session-runtime="activeSessionRuntime"
                 :project-path="activeProjectPath"
-                :assistant-label="assistantLabel"
-                :bottom-inset="chatDockHeight"
-                :compact-header="isMobileChatPage"
-                @approval-action="submitApprovalDecision"
+                  :assistant-label="assistantLabel"
+                  :bottom-inset="chatDockHeight"
+                  :compact-header="isMobileChatPage"
+                  :show-reasoning-cards="appForm.codexShowReasoningCards"
+                  @approval-action="submitApprovalDecision"
               />
               </div>
               <div

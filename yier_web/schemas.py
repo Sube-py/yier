@@ -70,6 +70,7 @@ class StoredCodexSettings(BaseModel):
     approvals_reviewer: CodexApprovalsReviewer = "user"
     personality: CodexPersonality = "friendly"
     reasoning_effort: CodexReasoningEffort = "medium"
+    show_reasoning_cards: bool = False
     service_tier: CodexServiceTier = ""
 
     @field_validator("launcher_command", "model")
@@ -96,6 +97,7 @@ class CodexConfigPayload(BaseModel):
     approvals_reviewer: CodexApprovalsReviewer = "user"
     personality: CodexPersonality = "friendly"
     reasoning_effort: CodexReasoningEffort = "medium"
+    show_reasoning_cards: bool = False
     service_tier: CodexServiceTier = ""
 
 

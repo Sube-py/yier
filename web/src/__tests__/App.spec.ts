@@ -2019,6 +2019,7 @@ describe('App', () => {
         if (path.endsWith('/api/config')) {
           return jsonResponse({
             llm: { base_url: 'https://example.test', model: 'demo', has_api_key: true },
+            codex: { show_reasoning_cards: true },
             allowed_roots: ['/tmp/project'],
             mcp_runtime: {},
           })
@@ -2062,14 +2063,78 @@ describe('App', () => {
 
     const textarea = wrapper.get('textarea')
     await textarea.setValue('Inspect the repo')
-    const sendButton = wrapper.findAll('button').find((item) => item.text().includes('Send'))
-    expect(sendButton).toBeTruthy()
-    await sendButton!.trigger('click')
+    const sendButton = wrapper.find('[aria-label="Send message"]')
+    expect(sendButton.exists()).toBe(true)
+    await sendButton.trigger('click')
     await flushPromises()
 
-    expect(wrapper.findAll('.activity-item')).toHaveLength(1)
     expect(wrapper.html()).toContain('<strong>repo</strong>')
     expect(wrapper.html()).toContain('<li>list files</li>')
+  })
+
+  it('hides reasoning activity cards by default', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const path = input.toString()
+        if (path.endsWith('/api/health')) {
+          return jsonResponse({
+            frontend: { ready: true, mode: 'static' },
+            llm: { ready: true },
+            mcp: { ready: true, runtime: {} },
+            allowed_roots: ['/tmp/project'],
+          })
+        }
+        if (path.endsWith('/api/config')) {
+          return jsonResponse({
+            llm: { base_url: 'https://example.test', model: 'demo', has_api_key: true },
+            allowed_roots: ['/tmp/project'],
+            mcp_runtime: {},
+          })
+        }
+        if (path.endsWith('/api/config/mcp')) {
+          return jsonResponse({ mcp_servers: {}, runtime: {} })
+        }
+        if (isSessionListRequest(path, init)) {
+          return jsonResponse({ sessions: [] })
+        }
+        if (isSessionCreateRequest(path, init)) {
+          return jsonResponse({ session_id: 'session-1' }, 201)
+        }
+        if (path.includes('/api/chat/sessions/')) {
+          return jsonResponse({ session_id: 'session-1', messages: [] })
+        }
+        if (path.endsWith('/api/chat/stream') && init?.method === 'POST') {
+          return sseResponse(
+            [
+              'event: run_started',
+              'data: {"session_id":"session-1"}',
+              '',
+              'event: reasoning',
+              'data: {"session_id":"session-1","item_id":"reasoning-1","content":"Inspect **repo**","iteration":0}',
+              '',
+              'event: done',
+              'data: {"session_id":"session-1","finish_reason":"stop"}',
+              '',
+            ].join('\r\n'),
+          )
+        }
+        throw new Error(`Unexpected request: ${path}`)
+      }),
+    )
+
+    const wrapper = await mountApp()
+    await flushPromises()
+
+    const textarea = wrapper.get('textarea')
+    await textarea.setValue('Inspect the repo')
+    const sendButton = wrapper.find('[aria-label="Send message"]')
+    expect(sendButton.exists()).toBe(true)
+    await sendButton.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.html()).not.toContain('<strong>repo</strong>')
+    expect(wrapper.text()).not.toContain('Run activity')
   })
 
   it('replaces a streamed assistant draft when the final message arrives without item_id', async () => {

@@ -3549,10 +3549,16 @@ function toErrorMessage(error: unknown) {
                     v-model="composerText"
                     :disabled="!canSendToSession"
                     :is-sending="isSending"
+                    :model-label="isCodexWorkspace ? appForm.codexModel : ''"
+                    :reasoning-label="isCodexWorkspace ? appForm.codexReasoningEffort : ''"
                     :placeholder="composerPlaceholder"
+                    :sandbox="isCodexWorkspace ? appForm.codexSandbox : null"
+                    :saving-sandbox="savingState.codexSandbox"
                     :selection-start="composerSelectionStart"
                     :selection-end="composerSelectionEnd"
                     :selection-version="composerSelectionVersion"
+                    @update-sandbox="appForm.codexSandbox = $event"
+                    @save-sandbox="saveCodexSandboxMode"
                     @selection-change="handleComposerSelectionChange"
                     @submit="submitMessage"
                   />
@@ -3564,10 +3570,6 @@ function toErrorMessage(error: unknown) {
               :runtime="activeSessionRuntime"
               :project-path="activeProjectPath"
               :paired-editors="activeCodexPairedEditors"
-              :sandbox="appForm.codexSandbox"
-              :saving="savingState.codexSandbox"
-              @update-sandbox="appForm.codexSandbox = $event"
-              @save-sandbox="saveCodexSandboxMode"
             />
           </template>
           <ChannelWorkspacePanel
@@ -3696,11 +3698,7 @@ function toErrorMessage(error: unknown) {
           :runtime="activeSessionRuntime"
           :project-path="activeProjectPath"
           :paired-editors="activeCodexPairedEditors"
-          :sandbox="appForm.codexSandbox"
-          :saving="savingState.codexSandbox"
           @close="closeRuntimeSheet"
-          @update-sandbox="appForm.codexSandbox = $event"
-          @save-sandbox="saveCodexSandboxMode"
         />
       </section>
     </Transition>

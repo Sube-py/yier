@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 
 import Button from 'primevue/button'
+import Select from 'primevue/select'
 import Textarea from 'primevue/textarea'
 
 const model = defineModel<string>({ required: true })
@@ -9,6 +10,10 @@ const model = defineModel<string>({ required: true })
 const props = defineProps<{
   disabled: boolean
   isSending: boolean
+  modelLabel?: string
+  reasoningLabel?: string
+  sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access' | null
+  savingSandbox?: boolean
   placeholder?: string
   selectionStart?: number
   selectionEnd?: number
@@ -17,7 +22,9 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   submit: []
+  saveSandbox: []
   selectionChange: [payload: { start: number; end: number }]
+  updateSandbox: [value: 'read-only' | 'workspace-write' | 'danger-full-access']
 }>()
 
 const textareaRef = ref<unknown>(null)
@@ -36,6 +43,46 @@ const composerTextareaPt = {
     },
   },
 }
+const sandboxOptions = [
+  { label: 'Read only', value: 'read-only' },
+  { label: 'Workspace write', value: 'workspace-write' },
+  { label: 'Danger full access', value: 'danger-full-access' },
+]
+
+const sandboxLabel = computed(() => {
+  if (props.sandbox === 'danger-full-access') {
+    return 'Full danger'
+  }
+  if (props.sandbox === 'workspace-write') {
+    return 'Workspace write'
+  }
+  if (props.sandbox === 'read-only') {
+    return 'Read only'
+  }
+  return 'Permission'
+})
+
+const reasoningEffortLabel = computed(() => {
+  const value = (props.reasoningLabel ?? '').trim()
+  if (!value) {
+    return 'Medium'
+  }
+  if (value === 'xhigh') {
+    return 'XHigh'
+  }
+  return value
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join(' ')
+})
+
+const modelDisplayLabel = computed(() => {
+  const value = (props.modelLabel ?? '').trim()
+  return value || 'Default'
+})
+
+const isDangerSandbox = computed(() => props.sandbox === 'danger-full-access')
 
 function onKeydown(event: KeyboardEvent) {
   if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
@@ -78,6 +125,14 @@ function emitSelectionChange() {
 function onInput() {
   emitSelectionChange()
   resizeComposerTextarea()
+}
+
+function onSandboxChange(value: 'read-only' | 'workspace-write' | 'danger-full-access') {
+  if (!value || value === props.sandbox) {
+    return
+  }
+  emit('updateSandbox', value)
+  emit('saveSandbox')
 }
 
 function resizeComposerTextarea() {
@@ -160,28 +215,43 @@ onMounted(async () => {
       />
       <div class="mt-3 flex items-center justify-between gap-3">
         <div class="min-w-0 overflow-x-auto">
-          <div class="flex min-w-max items-center gap-2.5">
-          <button
-            type="button"
-            class="inline-flex items-center gap-1 rounded-full border-0 bg-transparent px-1 py-0.5 text-left transition hover:bg-white/36"
-            aria-label="Choose model"
-          >
-            <span class="truncate text-[0.78rem] font-medium tracking-[0.01em] text-[color:var(--app-text-soft)]">
-              Default
-            </span>
-            <i class="pi pi-chevron-down text-[0.6rem] text-[color:var(--app-text-soft)]"></i>
-          </button>
-          <span class="h-3.5 w-px bg-[rgba(34,66,72,0.1)]"></span>
-          <button
-            type="button"
-            class="inline-flex items-center gap-1 rounded-full border-0 bg-transparent px-1 py-0.5 text-left transition hover:bg-white/36"
-            aria-label="Choose reasoning effort"
-          >
-            <span class="truncate text-[0.78rem] font-medium tracking-[0.01em] text-[color:var(--app-text-soft)]">
-              Medium
-            </span>
-            <i class="pi pi-chevron-down text-[0.6rem] text-[color:var(--app-text-soft)]"></i>
-          </button>
+          <div class="flex min-w-max items-center gap-2">
+            <button
+              type="button"
+              class="inline-flex items-center gap-1 rounded-full border-0 bg-transparent px-1 py-0.5 text-left transition hover:bg-white/36"
+              aria-label="Choose model"
+            >
+              <span class="truncate text-[0.78rem] font-medium tracking-[0.01em] text-[color:var(--app-text-soft)]">
+                {{ modelDisplayLabel }}
+              </span>
+              <i class="pi pi-chevron-down text-[0.6rem] text-[color:var(--app-text-soft)]"></i>
+            </button>
+            <span class="h-3.5 w-px bg-[rgba(34,66,72,0.1)]"></span>
+            <button
+              type="button"
+              class="inline-flex items-center gap-1 rounded-full border-0 bg-transparent px-1 py-0.5 text-left transition hover:bg-white/36"
+              aria-label="Choose reasoning effort"
+            >
+              <span class="truncate text-[0.78rem] font-medium tracking-[0.01em] text-[color:var(--app-text-soft)]">
+                {{ reasoningEffortLabel }}
+              </span>
+              <i class="pi pi-chevron-down text-[0.6rem] text-[color:var(--app-text-soft)]"></i>
+            </button>
+            <template v-if="sandbox">
+              <span class="h-3.5 w-px bg-[rgba(34,66,72,0.1)]"></span>
+              <Select
+                :model-value="sandbox"
+                :options="sandboxOptions"
+                option-label="label"
+                option-value="value"
+                size="small"
+                class="composer-inline-select"
+                :class="{ 'composer-inline-select-danger': isDangerSandbox }"
+                :disabled="savingSandbox"
+                aria-label="Choose permission mode"
+                @update:model-value="onSandboxChange"
+              />
+            </template>
           </div>
         </div>
         <Button

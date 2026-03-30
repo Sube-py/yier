@@ -2,7 +2,6 @@
 import { computed } from 'vue'
 
 import Button from 'primevue/button'
-import Select from 'primevue/select'
 import Tag from 'primevue/tag'
 
 import type { BackendRuntime, CodexPairingExtensionSummary } from '../types/api'
@@ -12,8 +11,6 @@ const props = withDefaults(
     runtime: BackendRuntime | null
     projectPath: string
     pairedEditors: CodexPairingExtensionSummary[]
-    sandbox: 'read-only' | 'workspace-write' | 'danger-full-access'
-    saving: boolean
     surface?: 'sidebar' | 'sheet'
     closeable?: boolean
   }>(),
@@ -24,18 +21,10 @@ const props = withDefaults(
 )
 
 const emit = defineEmits<{
-  updateSandbox: [value: 'read-only' | 'workspace-write' | 'danger-full-access']
-  saveSandbox: []
   close: []
 }>()
 
 const isSheet = computed(() => props.surface === 'sheet')
-
-const sandboxOptions = [
-  { label: 'Read only', value: 'read-only' },
-  { label: 'Workspace write', value: 'workspace-write' },
-  { label: 'Danger full access', value: 'danger-full-access' },
-]
 
 function runtimeStatusLabel(status: string | null | undefined) {
   const normalized = (status ?? '').trim()
@@ -160,39 +149,6 @@ function pairingCapabilitySummary(capabilityNames: string[]) {
     <section
       class="grid gap-4 rounded-[1.2rem] border border-[color:var(--app-border)] bg-[color:var(--app-panel)] p-4 shadow-[var(--app-shadow)] backdrop-blur-[14px]"
       :class="{ 'order-2': isSheet }"
-    >
-      <div class="flex items-start justify-between gap-3">
-        <div>
-          <p class="eyebrow">Permission mode</p>
-          <h4>Global sandbox default</h4>
-        </div>
-      </div>
-
-      <div class="grid gap-3.5">
-        <Select
-          :model-value="sandbox"
-          :options="sandboxOptions"
-          option-label="label"
-          option-value="value"
-          fluid
-          @update:model-value="emit('updateSandbox', $event)"
-        />
-        <p class="m-0 text-sm leading-[1.55] text-[color:var(--app-text-soft)]">
-          This updates the default Codex sandbox for all sessions and applies on the next turn.
-        </p>
-        <Button
-          label="Save Permission Mode"
-          icon="pi pi-shield"
-          class="w-full"
-          :loading="saving"
-          @click="emit('saveSandbox')"
-        />
-      </div>
-    </section>
-
-    <section
-      class="grid gap-4 rounded-[1.2rem] border border-[color:var(--app-border)] bg-[color:var(--app-panel)] p-4 shadow-[var(--app-shadow)] backdrop-blur-[14px]"
-      :class="{ 'order-3': isSheet }"
     >
       <div class="flex items-start justify-between gap-3">
         <div>

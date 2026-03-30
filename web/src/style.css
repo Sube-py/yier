@@ -435,6 +435,44 @@
   .composer-textarea.p-textarea::-webkit-scrollbar-track {
     background: transparent;
   }
+
+  .composer-inline-select.p-select {
+    min-width: 0;
+    border: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+  }
+
+  .composer-inline-select.p-select .p-select-label {
+    padding: 0;
+    color: var(--app-text-soft);
+    font-size: 0.78rem;
+    font-weight: 500;
+    line-height: 1.2;
+  }
+
+  .composer-inline-select.p-select .p-select-dropdown {
+    width: 0.85rem;
+    background: transparent;
+    border: 0;
+    color: var(--app-text-soft);
+  }
+
+  .composer-inline-select.p-select .p-select-dropdown-icon {
+    font-size: 0.6rem;
+  }
+
+  .composer-inline-select.p-select.p-focus,
+  .composer-inline-select.p-select:not(.p-disabled):hover {
+    border: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+  }
+
+  .composer-inline-select-danger.p-select .p-select-label,
+  .composer-inline-select-danger.p-select .p-select-dropdown {
+    color: rgb(146, 64, 14);
+  }
 }
 
 @layer utilities {

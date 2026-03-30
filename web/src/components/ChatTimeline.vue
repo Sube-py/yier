@@ -9,6 +9,9 @@ import Tag from 'primevue/tag'
 import Textarea from 'primevue/textarea'
 import Timeline from 'primevue/timeline'
 
+import HighlightedCodeBlock from './HighlightedCodeBlock.vue'
+import { resolveHighlightLanguage } from '../lib/codeHighlight'
+
 import type {
   ApprovalDecision,
   ApprovalFormFieldState,
@@ -35,30 +38,20 @@ const markdownCopyButtonLabel = 'Copy code block'
 const markdownCopiedButtonLabel = 'Copied'
 const markdownCopyButtonIcon = '<i class="pi pi-copy" aria-hidden="true"></i>'
 const markdownCopiedButtonIcon = '<i class="pi pi-check" aria-hidden="true"></i>'
-const markdownLanguageAliases: Record<string, string> = {
-  jsonc: 'json',
-  shell: 'bash',
-  text: 'plaintext',
-  txt: 'plaintext',
-  vue: 'xml',
-  yml: 'yaml',
-  zsh: 'bash',
-}
 
 function highlightMarkdownCode(content: string, language = '') {
-  const normalizedLanguage = language.trim().toLowerCase()
-  const highlightLanguage = markdownLanguageAliases[normalizedLanguage] ?? normalizedLanguage
+  const { requestedLanguage, highlightLanguage } = resolveHighlightLanguage(language)
   const escapedContent = markdown.utils.escapeHtml(content)
 
   if (!highlightLanguage || !hljs.getLanguage(highlightLanguage)) {
     return {
-      classNames: normalizedLanguage ? ['hljs', `language-${normalizedLanguage}`] : [],
+      classNames: requestedLanguage ? ['hljs', `language-${requestedLanguage}`] : [],
       content: escapedContent,
     }
   }
 
   return {
-    classNames: ['hljs', `language-${normalizedLanguage}`],
+    classNames: ['hljs', `language-${requestedLanguage || highlightLanguage}`],
     content: hljs.highlight(content, { language: highlightLanguage, ignoreIllegals: true }).value,
   }
 }
@@ -146,8 +139,6 @@ const HIDDEN_TOOL_TITLES = new Set([
 
 const timelineBody = ref<HTMLElement | null>(null)
 const shouldStickToBottom = ref(true)
-const copiedActivityId = ref('')
-let copiedResetTimer: number | null = null
 const bottomThreshold = 72
 const timelineScrollPt = computed(() => ({
   contentContainer: {
@@ -247,29 +238,6 @@ function shellRuntime(activity: ChatActivity) {
     return ''
   }
   return `${activity.shell.process.runtime_seconds}s`
-}
-
-function isCopied(activityId: string) {
-  return copiedActivityId.value === activityId
-}
-
-async function copyShellCommand(activity: ChatActivity) {
-  const command = shellCommand(activity).trim()
-  if (!command) {
-    return
-  }
-
-  await navigator.clipboard.writeText(command)
-  copiedActivityId.value = activity.id
-  if (copiedResetTimer !== null) {
-    window.clearTimeout(copiedResetTimer)
-  }
-  copiedResetTimer = window.setTimeout(() => {
-    if (copiedActivityId.value === activity.id) {
-      copiedActivityId.value = ''
-    }
-    copiedResetTimer = null
-  }, 1600)
 }
 
 async function onMarkdownClick(event: MouseEvent) {
@@ -680,15 +648,6 @@ onMounted(async () => {
 })
 
 watch(
-  () => props.activities.map((activity) => activity.id),
-  (ids) => {
-    if (copiedActivityId.value && !ids.includes(copiedActivityId.value)) {
-      copiedActivityId.value = ''
-    }
-  },
-)
-
-watch(
   () => props.activities,
   async () => {
     await scrollToBottomIfNeeded()
@@ -870,63 +829,41 @@ watch(
                 v-if="isShellActivity(slotProps.item)"
                 class="grid gap-[0.7rem] border-t border-[rgba(34,66,72,0.08)] px-[0.9rem] pb-[0.9rem] pl-[2.35rem] max-[1023px]:pl-4 max-sm:px-3 max-sm:pb-3"
               >
-                <p
+                <HighlightedCodeBlock
                   v-if="shellCommand(slotProps.item)"
-                  class="m-0 flex items-center justify-between gap-3 rounded-t-[0.85rem] bg-[linear-gradient(180deg,rgba(16,33,37,0.98),rgba(21,43,48,0.98))] px-4 py-[0.85rem] font-mono text-[0.9rem] text-[#f7fffc] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.04)] max-[1023px]:flex-col max-[1023px]:items-stretch max-sm:px-3"
-                >
-                  <span class="min-w-0 flex-1 break-words whitespace-pre-wrap">
-                    $ {{ shellCommand(slotProps.item) }}
-                  </span>
-                  <button
-                    type="button"
-                    class="shrink-0 rounded-full border-0 bg-white/12 px-[0.7rem] py-[0.28rem] text-[0.76rem] font-bold text-[#f7fffc] transition hover:bg-white/18 active:translate-y-px max-[1023px]:self-start"
-                    :aria-label="`Copy command ${shellCommand(slotProps.item)}`"
-                    @click="copyShellCommand(slotProps.item)"
-                  >
-                    {{ isCopied(slotProps.item.id) ? 'Copied' : 'Copy' }}
-                  </button>
-                </p>
+                  :content="shellCommand(slotProps.item)"
+                  label="Command"
+                  language="bash"
+                  max-height="compact"
+                  :copy-aria-label="`Copy command ${shellCommand(slotProps.item)}`"
+                />
 
-                <div
+                <HighlightedCodeBlock
                   v-if="hasShellTranscript(slotProps.item)"
-                  class="relative grid gap-0"
-                >
-                  <ScrollPanel class="max-h-72 w-full">
-                    <pre class="min-h-16 rounded-b-[0.85rem] bg-[rgba(17,38,42,0.94)] px-[0.9rem] pt-[0.3rem] pb-[1.7rem] font-mono text-[0.86rem] leading-[1.55] break-words whitespace-pre-wrap text-[#f2f5f6]">{{
-                      shellOutputTranscript(slotProps.item)
-                    }}</pre>
-                  </ScrollPanel>
-                  <span
-                    v-if="shellRuntime(slotProps.item)"
-                    class="absolute right-[0.85rem] bottom-[0.7rem] font-mono text-[0.74rem] leading-none text-[rgba(242,245,246,0.72)]"
-                  >
-                    {{ shellRuntime(slotProps.item) }}
-                  </span>
-                </div>
+                  :content="shellOutputTranscript(slotProps.item)"
+                  label="Output"
+                  :meta-label="shellRuntime(slotProps.item)"
+                  auto-detect
+                  :copy-aria-label="`Copy output from ${shellCommand(slotProps.item) || slotProps.item.title}`"
+                />
 
-                <div
+                <HighlightedCodeBlock
                   v-if="!hasShellTranscript(slotProps.item) && slotProps.item.stdout"
-                  class="relative grid gap-0"
-                >
-                  <ScrollPanel class="max-h-72 w-full">
-                    <pre class="min-h-16 rounded-b-[0.85rem] bg-[rgba(17,38,42,0.94)] px-[0.9rem] pt-[0.3rem] pb-[1.7rem] font-mono text-[0.86rem] leading-[1.55] break-words whitespace-pre-wrap text-[#f2f5f6]">{{ slotProps.item.stdout }}</pre>
-                  </ScrollPanel>
-                  <span
-                    v-if="shellRuntime(slotProps.item)"
-                    class="absolute right-[0.85rem] bottom-[0.7rem] font-mono text-[0.74rem] leading-none text-[rgba(242,245,246,0.72)]"
-                  >
-                    {{ shellRuntime(slotProps.item) }}
-                  </span>
-                </div>
+                  :content="slotProps.item.stdout"
+                  label="Stdout"
+                  :meta-label="shellRuntime(slotProps.item)"
+                  auto-detect
+                  :copy-aria-label="`Copy stdout from ${shellCommand(slotProps.item) || slotProps.item.title}`"
+                />
 
-                <div
+                <HighlightedCodeBlock
                   v-if="!hasShellTranscript(slotProps.item) && slotProps.item.stderr"
-                  class="grid gap-0"
-                >
-                  <ScrollPanel class="max-h-72 w-full">
-                    <pre class="min-h-16 rounded-b-[0.85rem] bg-[rgba(78,31,24,0.92)] px-[0.9rem] pt-[0.3rem] pb-[1.7rem] font-mono text-[0.86rem] leading-[1.55] break-words whitespace-pre-wrap text-[#f2f5f6]">{{ slotProps.item.stderr }}</pre>
-                  </ScrollPanel>
-                </div>
+                  :content="slotProps.item.stderr"
+                  label="Stderr"
+                  tone="danger"
+                  auto-detect
+                  :copy-aria-label="`Copy stderr from ${shellCommand(slotProps.item) || slotProps.item.title}`"
+                />
 
                 <p
                   v-for="note in slotProps.item.meta"
@@ -937,7 +874,10 @@ watch(
                 </p>
               </div>
 
-              <div class="grid gap-[0.55rem] border-t border-[rgba(34,66,72,0.08)] px-[0.9rem] pb-[0.9rem] pl-[2.35rem] max-[1023px]:pl-4 max-sm:px-3 max-sm:pb-3">
+              <div
+                v-if="activityUsesMarkdown(slotProps.item) || isApprovalActivity(slotProps.item)"
+                class="grid gap-[0.55rem] border-t border-[rgba(34,66,72,0.08)] px-[0.9rem] pb-[0.9rem] pl-[2.35rem] max-[1023px]:pl-4 max-sm:px-3 max-sm:pb-3"
+              >
                 <div
                   v-if="activityUsesMarkdown(slotProps.item) && slotProps.item.detail"
                   class="markdown-prose"
@@ -1080,7 +1020,19 @@ watch(
                     />
                   </div>
                 </div>
+              </div>
 
+              <div
+                v-if="
+                  !isShellActivity(slotProps.item) &&
+                  (Boolean(slotProps.item.command) ||
+                    Boolean(slotProps.item.cwd) ||
+                    Boolean(slotProps.item.stdout) ||
+                    Boolean(slotProps.item.stderr) ||
+                    slotProps.item.meta.length > 0)
+                "
+                class="grid gap-[0.55rem] border-t border-[rgba(34,66,72,0.08)] px-[0.9rem] pb-[0.9rem] pl-[2.35rem] max-[1023px]:pl-4 max-sm:px-3 max-sm:pb-3"
+              >
                 <p
                   v-if="slotProps.item.command"
                   class="m-0 break-words whitespace-pre-wrap font-mono text-[0.9rem] text-[color:var(--app-accent-deep)]"

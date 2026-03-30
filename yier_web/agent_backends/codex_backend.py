@@ -1154,7 +1154,9 @@ class CodexAppServerBackend(ChatBackend):
                     "tool_name": f"collab:{getattr(item, 'tool', 'tool')}",
                     "tool_call_id": item.id,
                     "arguments": {
-                        "receiver_thread_ids": list(getattr(item, "receiver_thread_ids", [])),
+                        "receiver_thread_ids": list(
+                            self._thread_item_value(item, "receiverThreadIds", []) or []
+                        ),
                         "prompt": getattr(item, "prompt", None),
                     },
                     "iteration": 0,
@@ -1183,7 +1185,7 @@ class CodexAppServerBackend(ChatBackend):
     ) -> None:
         item_type = getattr(item, "type", "")
         if item_type == "commandExecution":
-            exit_code = getattr(item, "exit_code", 0)
+            exit_code = self._thread_item_value(item, "exitCode", 0)
             self._emit_from_thread(
                 runtime,
                 "command_end",
@@ -2103,7 +2105,7 @@ class CodexAppServerBackend(ChatBackend):
                 },
                 sequence_counter=sequence_counter,
             )
-            output = self._thread_item_value(item, "aggregated_output", None)
+            output = self._thread_item_value(item, "aggregatedOutput", None)
             if isinstance(output, str) and output:
                 self._append_activity_event(
                     activity_events,
@@ -2127,7 +2129,7 @@ class CodexAppServerBackend(ChatBackend):
                     "tool_name": "command_execution",
                     "command": self._thread_item_value(item, "command", ""),
                     "cwd": self._thread_item_value(item, "cwd", ""),
-                    "exit_code": int(self._thread_item_value(item, "exit_code", 0) or 0),
+                    "exit_code": int(self._thread_item_value(item, "exitCode", 0) or 0),
                     "timed_out": False,
                     "is_background": False,
                 },
@@ -2188,7 +2190,9 @@ class CodexAppServerBackend(ChatBackend):
                 tool_name=f"collab:{self._thread_item_value(item, 'tool', 'tool')}",
                 tool_call_id=self._thread_item_value(item, "id", ""),
                 arguments={
-                    "receiver_thread_ids": list(self._thread_item_value(item, "receiver_thread_ids", []) or []),
+                    "receiver_thread_ids": list(
+                        self._thread_item_value(item, "receiverThreadIds", []) or []
+                    ),
                     "prompt": self._thread_item_value(item, "prompt", None),
                 },
                 result=self._summarize_collab_result(item),
@@ -2479,6 +2483,6 @@ class CodexAppServerBackend(ChatBackend):
         return f"Finished with status {status}."
 
     def _summarize_collab_result(self, item: Any) -> str:
-        receivers = getattr(item, "receiver_thread_ids", []) or []
+        receivers = self._thread_item_value(item, "receiverThreadIds", []) or []
         status = getattr(item, "status", "completed")
         return f"{len(receivers)} agent target{'s' if len(receivers) != 1 else ''}, status {status}."

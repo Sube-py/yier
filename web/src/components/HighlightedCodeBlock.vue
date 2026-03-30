@@ -39,14 +39,50 @@ function escapeHtml(value: string) {
     .replace(/'/g, '&#39;')
 }
 
+function renderDiffContent(content: string) {
+  return content.split('\n').map((line) => {
+    const escapedLine = escapeHtml(line) || ' '
+    let lineClass = 'diff-code-line'
+
+    if (line.startsWith('@@')) {
+      lineClass += ' diff-code-line-hunk'
+    } else if (line.startsWith('+') && !line.startsWith('+++')) {
+      lineClass += ' diff-code-line-added'
+    } else if (line.startsWith('-') && !line.startsWith('---')) {
+      lineClass += ' diff-code-line-removed'
+    } else if (
+      line.startsWith('diff ') ||
+      line.startsWith('index ') ||
+      line.startsWith('+++') ||
+      line.startsWith('---')
+    ) {
+      lineClass += ' diff-code-line-meta'
+    } else {
+      lineClass += ' diff-code-line-context'
+    }
+
+    return `<span class="${lineClass}">${escapedLine}</span>`
+  }).join('')
+}
+
 function highlightContent(content: string, language: string, autoDetect: boolean) {
   const { requestedLanguage, highlightLanguage } = resolveHighlightLanguage(language)
+
+  if (highlightLanguage === 'diff') {
+    return {
+      classNames: ['hljs', 'language-diff', 'diff-code'],
+      content: renderDiffContent(content),
+      detectedLanguage: requestedLanguage || highlightLanguage,
+      isDiff: true,
+    }
+  }
 
   if (highlightLanguage && hljs.getLanguage(highlightLanguage)) {
     return {
       classNames: ['hljs', `language-${requestedLanguage || highlightLanguage}`],
       content: hljs.highlight(content, { language: highlightLanguage, ignoreIllegals: true }).value,
       detectedLanguage: requestedLanguage || highlightLanguage,
+      isDiff: false,
     }
   }
 
@@ -57,6 +93,7 @@ function highlightContent(content: string, language: string, autoDetect: boolean
       classNames: detectedLanguage ? ['hljs', `language-${detectedLanguage}`] : ['hljs'],
       content: autoDetected.value,
       detectedLanguage,
+      isDiff: false,
     }
   }
 
@@ -64,6 +101,7 @@ function highlightContent(content: string, language: string, autoDetect: boolean
     classNames: requestedLanguage ? ['hljs', `language-${requestedLanguage}`] : ['hljs'],
     content: escapeHtml(content),
     detectedLanguage: requestedLanguage,
+    isDiff: false,
   }
 }
 
@@ -118,7 +156,10 @@ async function copyContent() {
     </div>
     <div
       class="code-surface-scroll"
-      :class="maxHeight === 'compact' ? 'code-surface-scroll-compact' : ''"
+      :class="[
+        maxHeight === 'compact' ? 'code-surface-scroll-compact' : '',
+        highlighted.isDiff ? 'code-surface-scroll-diff' : '',
+      ]"
     >
       <pre><code :class="highlighted.classNames" v-html="highlighted.content"></code></pre>
     </div>

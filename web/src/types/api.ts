@@ -574,7 +574,19 @@ export type ToolRawPayload =
 
 export type ToolDigestRawPayload = Exclude<ToolRawPayload, ShellRawPayload>
 
+export interface FileChangeKind {
+  type: string
+  move_path: string | null
+}
+
+export interface FileChangeRecord {
+  path: string
+  kind: FileChangeKind
+  diff: string
+}
+
 export interface ToolActivityState {
+  tool_name: string
   raw: ToolDigestRawPayload | null
   metadata: Record<string, unknown>
   arguments: Record<string, unknown>

@@ -2422,6 +2422,7 @@ function makeToolDigestActivity(options: {
     meta: summarizeToolMeta(metadata, isError),
     shell: null,
     tool: makeToolActivityState({
+      toolName: options.toolName,
       raw,
       metadata,
       argumentsValue: options.argumentsValue,
@@ -2432,6 +2433,7 @@ function makeToolDigestActivity(options: {
 }
 
 function makeToolActivityState(options: {
+  toolName: string
   raw: ToolDigestRawPayload | null
   metadata: Record<string, unknown>
   argumentsValue: Record<string, unknown>
@@ -2439,6 +2441,7 @@ function makeToolActivityState(options: {
   isError: boolean
 }): ToolActivityState {
   return {
+    tool_name: options.toolName,
     raw: options.raw,
     metadata: options.metadata,
     arguments: options.argumentsValue,
@@ -2449,6 +2452,8 @@ function makeToolActivityState(options: {
 
 function toolDisplayTitle(toolName: string) {
   switch (toolName) {
+    case 'file_change':
+      return 'File changes'
     case 'skill_load':
       return 'Load skill'
     case 'read_file':
@@ -2558,6 +2563,17 @@ function summarizeToolDigestFallback(
   metadata: Record<string, unknown>,
   argumentsValue: Record<string, unknown>,
 ) {
+  if (toolName === 'file_change') {
+    const changes = fileChangeMetadataEntries(metadata)
+    const [firstChange] = changes
+    if (firstChange) {
+      const firstPath = displayNameForPath(firstChange.path)
+      return changes.length === 1
+        ? `${formatFileChangeKind(firstChange.kind)} ${firstPath}.`
+        : `${formatFileChangeKind(firstChange.kind)} ${firstPath} and ${changes.length - 1} more file${changes.length === 2 ? '' : 's'}.`
+    }
+  }
+
   if (toolName === 'skill_load') {
     const skillName =
       extractSkillLoadName(result) ??
@@ -2628,6 +2644,34 @@ function summarizeToolMeta(metadata: Record<string, unknown>, isError: boolean) 
     notes.push('Truncated')
   }
   return notes
+}
+
+function fileChangeMetadataEntries(metadata: Record<string, unknown>) {
+  const value = metadata.changes
+  if (!Array.isArray(value)) {
+    return []
+  }
+  return value.filter((item): item is { path: string; kind: { type: string; move_path: string | null } } => {
+    if (!isRecord(item) || typeof item.path !== 'string' || !isRecord(item.kind)) {
+      return false
+    }
+    return typeof item.kind.type === 'string'
+  })
+}
+
+function formatFileChangeKind(kind: { type: string; move_path: string | null }) {
+  switch (kind.type) {
+    case 'create':
+      return 'Created'
+    case 'delete':
+      return 'Deleted'
+    case 'move':
+      return 'Moved'
+    case 'update':
+      return 'Updated'
+    default:
+      return 'Changed'
+  }
 }
 
 function displayNameForPath(path: string) {

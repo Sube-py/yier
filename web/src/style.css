@@ -464,6 +464,46 @@
     background: transparent;
   }
 
+  .code-surface-scroll-diff pre {
+    padding: 0.18rem 0 0.72rem;
+  }
+
+  .code-surface-scroll .diff-code {
+    width: max-content;
+    min-width: 100%;
+  }
+
+  .code-surface-scroll .diff-code-line {
+    display: block;
+    min-width: 100%;
+    padding: 0 0.78rem;
+    color: #d8e2e7;
+  }
+
+  .code-surface-scroll .diff-code-line-context {
+    background: transparent;
+  }
+
+  .code-surface-scroll .diff-code-line-added {
+    background: rgba(35, 134, 54, 0.18);
+    color: #aff5b4;
+  }
+
+  .code-surface-scroll .diff-code-line-removed {
+    background: rgba(218, 54, 51, 0.18);
+    color: #ffd8d3;
+  }
+
+  .code-surface-scroll .diff-code-line-hunk {
+    background: rgba(56, 139, 253, 0.14);
+    color: #9ecbff;
+  }
+
+  .code-surface-scroll .diff-code-line-meta {
+    background: rgba(110, 118, 129, 0.12);
+    color: #c3d1d6;
+  }
+
   .code-surface-scroll .token.property,
   .code-surface-scroll .token.attr-name,
   .code-surface-scroll .token.tag,
@@ -619,6 +659,14 @@
 
     .code-surface-scroll pre {
       padding: 0.08rem 0.66rem 0.66rem;
+    }
+
+    .code-surface-scroll-diff pre {
+      padding: 0.14rem 0 0.62rem;
+    }
+
+    .code-surface-scroll .diff-code-line {
+      padding: 0 0.66rem;
     }
   }
 

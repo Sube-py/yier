@@ -17,6 +17,7 @@ import type {
   ApprovalFormFieldState,
   BackendRuntime,
   ChatActivity,
+  FileChangeRecord,
   UiChatMessage,
 } from '../types/api'
 
@@ -294,6 +295,60 @@ function activityMarkerClass(activity: ChatActivity) {
 
 function activityUsesMarkdown(activity: ChatActivity) {
   return activity.kind === 'reasoning' || activity.kind === 'plan'
+}
+
+function fileChangeRecords(activity: ChatActivity): FileChangeRecord[] {
+  const tool = activity.tool
+  if (!tool || tool.tool_name !== 'file_change') {
+    return []
+  }
+
+  const value = tool.metadata.changes
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  return value.filter(isFileChangeRecord)
+}
+
+function isFileChangeRecord(value: unknown): value is FileChangeRecord {
+  if (!isRecord(value) || typeof value.path !== 'string' || typeof value.diff !== 'string') {
+    return false
+  }
+  if (!isRecord(value.kind) || typeof value.kind.type !== 'string') {
+    return false
+  }
+  return value.kind.move_path === null || typeof value.kind.move_path === 'string'
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function hasFileChangeDiffs(activity: ChatActivity) {
+  return fileChangeRecords(activity).length > 0
+}
+
+function fileChangeKindLabel(change: FileChangeRecord) {
+  switch (change.kind.type) {
+    case 'create':
+      return 'Created'
+    case 'delete':
+      return 'Deleted'
+    case 'move':
+      return 'Moved'
+    case 'update':
+      return 'Updated'
+    default:
+      return 'Changed'
+  }
+}
+
+function fileChangeMetaLabel(change: FileChangeRecord) {
+  if (change.kind.type === 'move' && change.kind.move_path) {
+    return `to ${change.kind.move_path}`
+  }
+  return ''
 }
 
 function isHiddenActivity(activity: ChatActivity) {
@@ -800,7 +855,8 @@ watch(
               :open="
                 slotProps.item.state === 'running' ||
                 Boolean(slotProps.item.stdout || slotProps.item.stderr) ||
-                activityUsesMarkdown(slotProps.item)
+                activityUsesMarkdown(slotProps.item) ||
+                hasFileChangeDiffs(slotProps.item)
               "
             >
               <summary class="grid cursor-pointer list-none grid-cols-[minmax(0,1fr)_auto] items-start gap-[0.7rem] px-[0.9rem] py-[0.8rem] max-[1023px]:grid-cols-1 max-sm:px-3 max-sm:py-3">
@@ -1020,6 +1076,41 @@ watch(
                     />
                   </div>
                 </div>
+              </div>
+
+              <div
+                v-if="hasFileChangeDiffs(slotProps.item)"
+                class="grid gap-[0.7rem] border-t border-[rgba(34,66,72,0.08)] px-[0.9rem] pb-[0.9rem] pl-[2.35rem] max-[1023px]:pl-4 max-sm:px-3 max-sm:pb-3"
+              >
+                <article
+                  v-for="change in fileChangeRecords(slotProps.item)"
+                  :key="`${slotProps.item.id}-${change.path}-${change.kind.type}-${change.kind.move_path ?? ''}`"
+                  class="grid gap-[0.45rem] rounded-[1rem] border border-[rgba(34,66,72,0.08)] bg-[rgba(255,255,255,0.38)] p-3"
+                >
+                  <div class="flex items-start justify-between gap-3 max-[1023px]:flex-col max-[1023px]:items-stretch">
+                    <div class="min-w-0">
+                      <p class="m-0 text-[0.78rem] font-bold uppercase tracking-[0.08em] text-[color:var(--app-text-soft)]">
+                        {{ fileChangeKindLabel(change) }}
+                      </p>
+                      <p class="mt-1 mb-0 break-all font-mono text-[0.84rem] text-[color:var(--app-text)]">
+                        {{ change.path }}
+                      </p>
+                      <p
+                        v-if="fileChangeMetaLabel(change)"
+                        class="mt-1 mb-0 break-all text-[0.8rem] text-[color:var(--app-text-soft)]"
+                      >
+                        {{ fileChangeMetaLabel(change) }}
+                      </p>
+                    </div>
+                  </div>
+                  <HighlightedCodeBlock
+                    v-if="change.diff"
+                    :content="change.diff"
+                    label="Diff"
+                    language="diff"
+                    :copy-aria-label="`Copy diff for ${change.path}`"
+                  />
+                </article>
               </div>
 
               <div

@@ -1192,6 +1192,7 @@ def test_chat_service_background_codex_turn_replays_events_to_ipc_and_broker(
             "content": "good night",
             "reasoning_content": None,
             "tool_call_id": None,
+            "sequence": None,
             "source": "chat",
             "channel_meta": None,
         }
@@ -1258,6 +1259,7 @@ def test_chat_service_load_session_view_uses_local_snapshot_for_active_codex_ses
             "content": "hello",
             "reasoning_content": None,
             "tool_call_id": None,
+            "sequence": None,
             "source": "chat",
             "channel_meta": None,
         },
@@ -1266,6 +1268,7 @@ def test_chat_service_load_session_view_uses_local_snapshot_for_active_codex_ses
             "content": "hi",
             "reasoning_content": None,
             "tool_call_id": None,
+            "sequence": None,
             "source": "chat",
             "channel_meta": None,
         },

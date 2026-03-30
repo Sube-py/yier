@@ -96,6 +96,7 @@ export interface StoredMessage {
   content: string | null
   reasoning_content?: string | null
   tool_call_id?: string | null
+  sequence?: number | null
   source: 'chat' | 'channel'
   channel_meta?: ChannelMeta | null
 }
@@ -927,6 +928,7 @@ export interface UiChatMessage {
   id: string
   role: 'user' | 'assistant'
   content: string
+  sequence: number
   source: 'chat' | 'channel'
   channelMeta?: ChannelMeta | null
   draftId?: string | null
@@ -947,6 +949,7 @@ export interface ApprovalActivityState {
 
 export interface ChatActivity {
   id: string
+  sequence?: number
   kind: 'status' | 'reasoning' | 'plan' | 'tool' | 'command' | 'background' | 'approval'
   title: string
   detail: string

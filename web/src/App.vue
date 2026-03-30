@@ -205,6 +205,8 @@ let codexSessionSyncTimer: number | null = null
 let codexCompactMediaQuery: MediaQueryList | null = null
 let latestSessionLoadRequestId = 0
 let lastPairedEditorSyncSignature = ''
+let nextTimelineSequence = 0
+let currentStreamSequenceHint: number | null = null
 const backgroundActivityIdsByToolCallId = new Map<string, string>()
 let hydratingLlmForm = false
 
@@ -578,6 +580,7 @@ async function createSession(
   activeSessionId.value = payload.session_id
   chatMessages.value = []
   activities.value = []
+  resetTimelineSequence()
   activeSessionRuntime.value = null
   activeCodexWorkMode.value = 'build'
   backgroundActivityIdsByToolCallId.clear()
@@ -756,6 +759,7 @@ async function loadSessionTranscript(sessionId: string) {
   if (requestId !== latestSessionLoadRequestId || sessionId !== activeSessionId.value) {
     return
   }
+  resetTimelineSequence()
   chatMessages.value = toUiMessages(transcript.messages)
   activities.value = []
   activeSessionRuntime.value = transcript.backend_runtime ?? null
@@ -779,6 +783,7 @@ async function openSessionFromHistory(sessionId: string) {
   activeSessionId.value = sessionId
   chatMessages.value = []
   activities.value = []
+  resetTimelineSequence()
   activeSessionRuntime.value = null
   backgroundActivityIdsByToolCallId.clear()
   await ensureSession()
@@ -941,6 +946,11 @@ function isRelevantPersistentEvent(event: ChatStreamEvent) {
 }
 
 function handleStreamEvent(event: ChatStreamEvent) {
+  const previousTimelineSequenceHint = currentStreamSequenceHint
+  currentStreamSequenceHint = normalizeTimelineSequence(
+    isRecord(event.data) && 'sequence' in event.data ? event.data.sequence : null,
+  )
+  try {
   if (event.event === 'codex_pairings_updated') {
     codexWorkspace.value = {
       projects: codexWorkspace.value?.projects ?? [],
@@ -1457,6 +1467,9 @@ function handleStreamEvent(event: ChatStreamEvent) {
   if (doneEvent.data.finish_reason === 'stop') {
     successMessage.value = 'Response ready.'
   }
+  } finally {
+    currentStreamSequenceHint = previousTimelineSequenceHint
+  }
 }
 
 async function saveLlmSettings() {
@@ -1671,6 +1684,9 @@ function toUiMessages(messages: StoredMessage[]): UiChatMessage[] {
         message.content ?? '',
         message.source,
         message.channel_meta ?? null,
+        {
+          sequence: message.sequence,
+        },
       ),
     )
 }
@@ -1680,12 +1696,13 @@ function makeUiMessage(
   content: string,
   source: 'chat' | 'channel' = 'chat',
   channelMeta: UiChatMessage['channelMeta'] = null,
-  options: { draftId?: string | null } = {},
+  options: { draftId?: string | null; sequence?: number | null } = {},
 ): UiChatMessage {
   return {
     id: crypto.randomUUID(),
     role,
     content,
+    sequence: reserveTimelineSequence(options.sequence),
     source,
     channelMeta,
     draftId: options.draftId ?? null,
@@ -1717,7 +1734,10 @@ function finalizeAssistantMessage(event: {
   content: string
   item_id?: string
 }) {
+  let preservedSequence: number | null = null
   if (event.item_id) {
+    const matchedDraft = chatMessages.value.find((message) => message.draftId === event.item_id)
+    preservedSequence = matchedDraft?.sequence ?? null
     chatMessages.value = chatMessages.value.filter((message) => message.draftId !== event.item_id)
   } else {
     const trailingDraftIndex = [...chatMessages.value]
@@ -1728,6 +1748,7 @@ function finalizeAssistantMessage(event: {
       )
     if (trailingDraftIndex >= 0) {
       const messageIndex = chatMessages.value.length - 1 - trailingDraftIndex
+      preservedSequence = chatMessages.value[messageIndex]?.sequence ?? null
       chatMessages.value.splice(messageIndex, 1)
     }
   }
@@ -1737,8 +1758,34 @@ function finalizeAssistantMessage(event: {
       event.content,
       activeSession.value?.source ?? 'chat',
       activeSession.value?.channel_meta ?? null,
+      {
+        sequence: preservedSequence,
+      },
     ),
   )
+}
+
+function normalizeTimelineSequence(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    return null
+  }
+  return Math.trunc(value)
+}
+
+function reserveTimelineSequence(explicit?: unknown): number {
+  const sequence = normalizeTimelineSequence(explicit ?? currentStreamSequenceHint)
+  if (sequence !== null) {
+    nextTimelineSequence = Math.max(nextTimelineSequence, sequence + 1)
+    return sequence
+  }
+  const nextSequence = nextTimelineSequence
+  nextTimelineSequence += 1
+  return nextSequence
+}
+
+function resetTimelineSequence() {
+  nextTimelineSequence = 0
+  currentStreamSequenceHint = null
 }
 
 function defaultApprovalResponseDraft(approval: PendingApproval) {
@@ -2242,6 +2289,7 @@ function makeActivity(
 ): ChatActivity {
   return {
     id: overrides.id ?? crypto.randomUUID(),
+    sequence: reserveTimelineSequence(overrides.sequence),
     kind: overrides.kind,
     title: overrides.title,
     detail: overrides.detail,
@@ -2351,6 +2399,7 @@ function makeToolDigestActivity(options: {
   isError?: boolean
   metadata?: Record<string, unknown>
   raw?: ToolDigestRawPayload | null
+  sequence?: number | null
 }): ChatActivity {
   const metadata = options.metadata ?? {}
   const result = options.result ?? ''
@@ -2359,6 +2408,7 @@ function makeToolDigestActivity(options: {
 
   return {
     id: options.toolCallId,
+    sequence: reserveTimelineSequence(options.sequence),
     kind: 'tool',
     title: toolDisplayTitle(options.toolName),
     detail: isError
@@ -2733,7 +2783,10 @@ function mergeShellState(
 function upsertActivity(activityId: string, nextValue: ChatActivity) {
   const target = activities.value.find((item) => item.id === activityId)
   if (!target) {
-    activities.value.push(nextValue)
+    activities.value.push({
+      ...nextValue,
+      sequence: reserveTimelineSequence(nextValue.sequence),
+    })
     return
   }
 
@@ -2756,7 +2809,10 @@ function upsertActivity(activityId: string, nextValue: ChatActivity) {
 function upsertShellActivity(activityId: string, nextValue: ChatActivity) {
   const target = activities.value.find((item) => item.id === activityId)
   if (!target) {
-    activities.value.push(nextValue)
+    activities.value.push({
+      ...nextValue,
+      sequence: reserveTimelineSequence(nextValue.sequence),
+    })
     return
   }
 

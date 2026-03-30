@@ -2137,6 +2137,77 @@ describe('App', () => {
     expect(wrapper.text()).not.toContain('Run activity')
   })
 
+  it('keeps the final assistant message in sequence when later activity cards arrive', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const path = input.toString()
+        if (path.endsWith('/api/health')) {
+          return jsonResponse({
+            frontend: { ready: true, mode: 'static' },
+            llm: { ready: true },
+            mcp: { ready: true, runtime: {} },
+            allowed_roots: ['/tmp/project'],
+          })
+        }
+        if (path.endsWith('/api/config')) {
+          return jsonResponse({
+            llm: { base_url: 'https://example.test', model: 'demo', has_api_key: true },
+            codex: { show_reasoning_cards: true },
+            allowed_roots: ['/tmp/project'],
+            mcp_runtime: {},
+          })
+        }
+        if (path.endsWith('/api/config/mcp')) {
+          return jsonResponse({ mcp_servers: {}, runtime: {} })
+        }
+        if (isSessionListRequest(path, init)) {
+          return jsonResponse({ sessions: [] })
+        }
+        if (isSessionCreateRequest(path, init)) {
+          return jsonResponse({ session_id: 'session-1' }, 201)
+        }
+        if (path.includes('/api/chat/sessions/')) {
+          return jsonResponse({ session_id: 'session-1', messages: [] })
+        }
+        if (path.endsWith('/api/chat/stream') && init?.method === 'POST') {
+          return sseResponse(
+            [
+              'event: assistant_delta',
+              'data: {"session_id":"session-1","item_id":"assistant-1","delta":"Final answer"}',
+              '',
+              'event: reasoning',
+              'data: {"session_id":"session-1","item_id":"reasoning-1","content":"Second step","iteration":0}',
+              '',
+              'event: assistant_message',
+              'data: {"session_id":"session-1","item_id":"assistant-1","content":"Final answer","iteration":0}',
+              '',
+              'event: done',
+              'data: {"session_id":"session-1","finish_reason":"stop"}',
+              '',
+            ].join('\r\n'),
+          )
+        }
+        throw new Error(`Unexpected request: ${path}`)
+      }),
+    )
+
+    const wrapper = await mountApp()
+    await flushPromises()
+
+    const textarea = wrapper.get('textarea')
+    await textarea.setValue('Give me the result')
+    const sendButton = wrapper.find('[aria-label="Send message"]')
+    expect(sendButton.exists()).toBe(true)
+    await sendButton.trigger('click')
+    await flushPromises()
+
+    const html = wrapper.html()
+    expect(html.indexOf('Final answer')).toBeGreaterThan(-1)
+    expect(html.indexOf('Second step')).toBeGreaterThan(-1)
+    expect(html.indexOf('Final answer')).toBeLessThan(html.indexOf('Second step'))
+  })
+
   it('replaces a streamed assistant draft when the final message arrives without item_id', async () => {
     vi.stubGlobal(
       'fetch',

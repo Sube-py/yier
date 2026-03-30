@@ -17,6 +17,13 @@ import type {
   UiChatMessage,
 } from '../types/api'
 
+interface TimelineSegment {
+  kind: 'messages' | 'activities'
+  key: string
+  messages: UiChatMessage[]
+  activities: ChatActivity[]
+}
+
 const markdown = new MarkdownIt({
   html: false,
   breaks: true,
@@ -542,24 +549,111 @@ const visibleActivities = computed(() =>
   props.activities.filter((activity) => !isHiddenActivity(activity)),
 )
 
-const trailingAssistantMessage = computed(() => {
-  if (!visibleActivities.value.length) {
-    return null
+const timelineSegments = computed<TimelineSegment[]>(() => {
+  const explicitSequences = [...props.messages, ...visibleActivities.value]
+    .map((item) => item.sequence)
+    .filter((value): value is number => typeof value === 'number' && Number.isFinite(value))
+
+  if (!explicitSequences.length) {
+    const segments: TimelineSegment[] = []
+    const lastMessage = props.messages[props.messages.length - 1]
+    const trailingAssistantMessage =
+      visibleActivities.value.length && lastMessage?.role === 'assistant' ? lastMessage : null
+    const leadingMessages = trailingAssistantMessage
+      ? props.messages.slice(0, -1)
+      : props.messages
+
+    if (leadingMessages.length) {
+      segments.push({
+        kind: 'messages',
+        key: `legacy-messages:${leadingMessages[0]?.id ?? 'empty'}`,
+        messages: leadingMessages,
+        activities: [],
+      })
+    }
+
+    if (visibleActivities.value.length) {
+      segments.push({
+        kind: 'activities',
+        key: `legacy-activities:${visibleActivities.value[0]?.id ?? 'empty'}`,
+        messages: [],
+        activities: visibleActivities.value,
+      })
+    }
+
+    if (trailingAssistantMessage) {
+      segments.push({
+        kind: 'messages',
+        key: `legacy-trailing:${trailingAssistantMessage.id}`,
+        messages: [trailingAssistantMessage],
+        activities: [],
+      })
+    }
+
+    return segments
   }
 
-  const lastMessage = props.messages[props.messages.length - 1]
-  if (!lastMessage || lastMessage.role !== 'assistant') {
-    return null
+  let fallbackSequence = explicitSequences.length ? Math.max(...explicitSequences) + 1 : 0
+
+  const entries = [
+    ...props.messages.map((message) => ({
+      kind: 'message' as const,
+      key: `message:${message.id}`,
+      sequence:
+        typeof message.sequence === 'number' && Number.isFinite(message.sequence)
+          ? message.sequence
+          : fallbackSequence++,
+      message,
+    })),
+    ...visibleActivities.value.map((activity) => ({
+      kind: 'activity' as const,
+      key: `activity:${activity.id}`,
+      sequence:
+        typeof activity.sequence === 'number' && Number.isFinite(activity.sequence)
+          ? activity.sequence
+          : fallbackSequence++,
+      activity,
+    })),
+  ].sort((left, right) => {
+    if (left.sequence !== right.sequence) {
+      return left.sequence - right.sequence
+    }
+    if (left.kind === right.kind) {
+      return 0
+    }
+    return left.kind === 'message' ? -1 : 1
+  })
+
+  const segments: TimelineSegment[] = []
+  for (const entry of entries) {
+    const previousSegment = segments[segments.length - 1]
+    if (entry.kind === 'message') {
+      if (previousSegment && previousSegment.kind === 'messages') {
+        previousSegment.messages.push(entry.message)
+        continue
+      }
+      segments.push({
+        kind: 'messages',
+        key: entry.key,
+        messages: [entry.message],
+        activities: [],
+      })
+      continue
+    }
+
+    if (previousSegment && previousSegment.kind === 'activities') {
+      previousSegment.activities.push(entry.activity)
+      continue
+    }
+    segments.push({
+      kind: 'activities',
+      key: entry.key,
+      messages: [],
+      activities: [entry.activity],
+    })
   }
 
-  return lastMessage
-})
-
-const leadingMessages = computed(() => {
-  if (!trailingAssistantMessage.value) {
-    return props.messages
-  }
-  return props.messages.slice(0, -1)
+  return segments
 })
 
 function isNearBottom(element: HTMLElement) {
@@ -677,10 +771,7 @@ watch(
       </div>
     </div>
 
-    <div
-      v-if="!messages.length && !visibleActivities.length"
-      class="grid place-items-center gap-2 p-10 text-center"
-    >
+    <div v-if="!timelineSegments.length" class="grid place-items-center gap-2 p-10 text-center">
       <p class="eyebrow">Ready</p>
       <h4 class="m-0 font-['Iowan_Old_Style','Palatino_Linotype',Palatino,serif] text-xl font-semibold">
         Start with a local task.
@@ -692,41 +783,41 @@ watch(
     </div>
 
     <ScrollPanel v-else class="min-h-0 flex-1" :pt="timelineScrollPt">
-      <div class="grid min-w-0 grid-cols-1 gap-4">
-        <article
-          v-for="message in leadingMessages"
-          :key="message.id"
-          class="min-w-0 max-w-[min(48rem,85%)] overflow-hidden rounded-[1.3rem] border p-4 max-[1023px]:w-full max-[1023px]:max-w-full max-sm:rounded-[1.1rem] max-sm:p-3"
-          :class="
-            message.role === 'user'
-              ? 'ml-auto border-[rgba(21,94,99,0.16)] bg-[linear-gradient(135deg,rgba(21,94,99,0.13),rgba(69,141,145,0.08))]'
-              : 'border-[rgba(153,125,93,0.15)] bg-[color:var(--app-panel-strong)]'
-          "
-        >
-          <p class="mb-[0.35rem] mt-0 text-[0.82rem] font-bold uppercase tracking-[0.08em] text-[color:var(--app-text-soft)]">
-            {{ message.role === 'user' ? 'You' : assistantLabel ?? 'Yier' }}
-          </p>
-          <p v-if="message.role === 'user'" class="m-0 whitespace-pre-wrap leading-[1.65]">
-            {{ message.content }}
-          </p>
-          <div
-            v-else
-            class="markdown-prose"
-            @click="onMarkdownClick"
-            v-html="renderAssistantMessage(message.content)"
-          ></div>
-        </article>
-      </div>
-
       <div
-        v-if="visibleActivities.length"
-        class="border-t border-[color:var(--app-border)] pt-[0.4rem]"
+        v-for="segment in timelineSegments"
+        :key="segment.key"
+        class="grid min-w-0 grid-cols-1 gap-4"
       >
-        <p class="eyebrow">Run activity</p>
+        <template v-if="segment.kind === 'messages'">
+          <article
+            v-for="message in segment.messages"
+            :key="message.id"
+            class="min-w-0 max-w-[min(48rem,85%)] overflow-hidden rounded-[1.3rem] border p-4 max-[1023px]:w-full max-[1023px]:max-w-full max-sm:rounded-[1.1rem] max-sm:p-3"
+            :class="
+              message.role === 'user'
+                ? 'ml-auto border-[rgba(21,94,99,0.16)] bg-[linear-gradient(135deg,rgba(21,94,99,0.13),rgba(69,141,145,0.08))]'
+                : 'border-[rgba(153,125,93,0.15)] bg-[color:var(--app-panel-strong)]'
+            "
+          >
+            <p class="mb-[0.35rem] mt-0 text-[0.82rem] font-bold uppercase tracking-[0.08em] text-[color:var(--app-text-soft)]">
+              {{ message.role === 'user' ? 'You' : assistantLabel ?? 'Yier' }}
+            </p>
+            <p v-if="message.role === 'user'" class="m-0 whitespace-pre-wrap leading-[1.65]">
+              {{ message.content }}
+            </p>
+            <div
+              v-else
+              class="markdown-prose"
+              @click="onMarkdownClick"
+              v-html="renderAssistantMessage(message.content)"
+            ></div>
+          </article>
+        </template>
+
         <Timeline
-          :value="visibleActivities"
+          v-else
+          :value="segment.activities"
           align="left"
-          class="mt-[0.85rem]"
           :pt="{
             root: {
               class:
@@ -1027,22 +1118,6 @@ watch(
             </details>
           </template>
         </Timeline>
-      </div>
-
-      <div v-if="trailingAssistantMessage" class="grid min-w-0 grid-cols-1 gap-4">
-        <article
-          :key="trailingAssistantMessage.id"
-          class="min-w-0 max-w-[min(48rem,85%)] overflow-hidden rounded-[1.3rem] border border-[rgba(153,125,93,0.15)] bg-[color:var(--app-panel-strong)] p-4 max-[1023px]:w-full max-[1023px]:max-w-full max-sm:rounded-[1.1rem] max-sm:p-3"
-        >
-          <p class="mb-[0.35rem] mt-0 text-[0.82rem] font-bold uppercase tracking-[0.08em] text-[color:var(--app-text-soft)]">
-            {{ assistantLabel ?? 'Yier' }}
-          </p>
-          <div
-            class="markdown-prose"
-            @click="onMarkdownClick"
-            v-html="renderAssistantMessage(trailingAssistantMessage.content)"
-          ></div>
-        </article>
       </div>
     </ScrollPanel>
   </section>

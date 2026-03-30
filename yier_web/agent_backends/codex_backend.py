@@ -1948,6 +1948,7 @@ class CodexAppServerBackend(ChatBackend):
     ) -> dict[str, Any]:
         messages: list[StoredSessionMessage] = []
         activity_events: list[dict[str, Any]] = []
+        sequence_counter = [0]
 
         turns = getattr(thread, "turns", []) or []
         for turn in turns:
@@ -1955,7 +1956,13 @@ class CodexAppServerBackend(ChatBackend):
                 item = self._unwrap_thread_item(raw_item)
                 if item is None:
                     continue
-                self._append_thread_item_view(context, item, messages, activity_events)
+                self._append_thread_item_view(
+                    context,
+                    item,
+                    messages,
+                    activity_events,
+                    sequence_counter,
+                )
 
         title = getattr(thread, "name", None) or getattr(thread, "preview", None) or getattr(thread, "id", "Codex session")
         preview = getattr(thread, "preview", None) or title
@@ -1975,6 +1982,7 @@ class CodexAppServerBackend(ChatBackend):
     ) -> dict[str, Any]:
         messages: list[StoredSessionMessage] = []
         activity_events: list[dict[str, Any]] = []
+        sequence_counter = [0]
 
         turns = conversation_state.get("turns")
         if isinstance(turns, list):
@@ -1988,7 +1996,13 @@ class CodexAppServerBackend(ChatBackend):
                     item = self._unwrap_thread_item(raw_item)
                     if item is None:
                         continue
-                    self._append_thread_item_view(context, item, messages, activity_events)
+                    self._append_thread_item_view(
+                        context,
+                        item,
+                        messages,
+                        activity_events,
+                        sequence_counter,
+                    )
 
         title = conversation_state.get("title") or conversation_state.get("preview") or context.session_id
         preview = conversation_state.get("preview") or title
@@ -2008,6 +2022,7 @@ class CodexAppServerBackend(ChatBackend):
         item: Any,
         messages: list[StoredSessionMessage],
         activity_events: list[dict[str, Any]],
+        sequence_counter: list[int],
     ) -> None:
         item_type = self._thread_item_value(item, "type", "")
         if item_type == "userMessage":
@@ -2019,6 +2034,7 @@ class CodexAppServerBackend(ChatBackend):
                     StoredSessionMessage(
                         role="user",
                         content=content,
+                        sequence=self._next_thread_view_sequence(sequence_counter),
                         source=context.source,
                         channel_meta=context.channel_meta,
                     )
@@ -2032,6 +2048,7 @@ class CodexAppServerBackend(ChatBackend):
                     StoredSessionMessage(
                         role="assistant",
                         content=content,
+                        sequence=self._next_thread_view_sequence(sequence_counter),
                         source=context.source,
                         channel_meta=context.channel_meta,
                     )
@@ -2048,6 +2065,7 @@ class CodexAppServerBackend(ChatBackend):
                     "content": self._thread_item_value(item, "text", ""),
                     "iteration": 0,
                 },
+                sequence_counter=sequence_counter,
             )
             return
 
@@ -2067,6 +2085,7 @@ class CodexAppServerBackend(ChatBackend):
                         "content": content,
                         "iteration": 0,
                     },
+                    sequence_counter=sequence_counter,
                 )
             return
 
@@ -2082,6 +2101,7 @@ class CodexAppServerBackend(ChatBackend):
                     "cwd": self._thread_item_value(item, "cwd", ""),
                     "is_background": False,
                 },
+                sequence_counter=sequence_counter,
             )
             output = self._thread_item_value(item, "aggregated_output", None)
             if isinstance(output, str) and output:
@@ -2096,6 +2116,7 @@ class CodexAppServerBackend(ChatBackend):
                         "content": output,
                         "is_background": False,
                     },
+                    sequence_counter=sequence_counter,
                 )
             self._append_activity_event(
                 activity_events,
@@ -2110,6 +2131,7 @@ class CodexAppServerBackend(ChatBackend):
                     "timed_out": False,
                     "is_background": False,
                 },
+                sequence_counter=sequence_counter,
             )
             return
 
@@ -2117,6 +2139,7 @@ class CodexAppServerBackend(ChatBackend):
             self._append_tool_activity_events(
                 context.session_id,
                 activity_events,
+                sequence_counter=sequence_counter,
                 tool_name="file_change",
                 tool_call_id=self._thread_item_value(item, "id", ""),
                 arguments={"change_count": len(self._thread_item_value(item, "changes", []) or [])},
@@ -2133,6 +2156,7 @@ class CodexAppServerBackend(ChatBackend):
             self._append_tool_activity_events(
                 context.session_id,
                 activity_events,
+                sequence_counter=sequence_counter,
                 tool_name=f"mcp:{self._thread_item_value(item, 'server', 'unknown')}/{self._thread_item_value(item, 'tool', 'tool')}",
                 tool_call_id=self._thread_item_value(item, "id", ""),
                 arguments=self._safe_model_dump(self._thread_item_value(item, "arguments", {})),
@@ -2146,6 +2170,7 @@ class CodexAppServerBackend(ChatBackend):
             self._append_tool_activity_events(
                 context.session_id,
                 activity_events,
+                sequence_counter=sequence_counter,
                 tool_name=f"dynamic:{self._thread_item_value(item, 'tool', 'tool')}",
                 tool_call_id=self._thread_item_value(item, "id", ""),
                 arguments=self._safe_model_dump(self._thread_item_value(item, "arguments", {})),
@@ -2159,6 +2184,7 @@ class CodexAppServerBackend(ChatBackend):
             self._append_tool_activity_events(
                 context.session_id,
                 activity_events,
+                sequence_counter=sequence_counter,
                 tool_name=f"collab:{self._thread_item_value(item, 'tool', 'tool')}",
                 tool_call_id=self._thread_item_value(item, "id", ""),
                 arguments={
@@ -2175,6 +2201,7 @@ class CodexAppServerBackend(ChatBackend):
             self._append_tool_activity_events(
                 context.session_id,
                 activity_events,
+                sequence_counter=sequence_counter,
                 tool_name="web_search",
                 tool_call_id=self._thread_item_value(item, "id", ""),
                 arguments={"query": self._thread_item_value(item, "query", "")},
@@ -2188,6 +2215,7 @@ class CodexAppServerBackend(ChatBackend):
         session_id: str,
         activity_events: list[dict[str, Any]],
         *,
+        sequence_counter: list[int],
         tool_name: str,
         tool_call_id: str,
         arguments: dict[str, Any],
@@ -2205,6 +2233,7 @@ class CodexAppServerBackend(ChatBackend):
                 "arguments": arguments,
                 "iteration": 0,
             },
+            sequence_counter=sequence_counter,
         )
         self._append_activity_event(
             activity_events,
@@ -2219,6 +2248,7 @@ class CodexAppServerBackend(ChatBackend):
                 "raw": None,
                 "iteration": 0,
             },
+            sequence_counter=sequence_counter,
         )
 
     def _append_activity_event(
@@ -2226,8 +2256,20 @@ class CodexAppServerBackend(ChatBackend):
         activity_events: list[dict[str, Any]],
         event: str,
         data: dict[str, Any],
+        *,
+        sequence_counter: list[int] | None = None,
     ) -> None:
+        if sequence_counter is not None and "sequence" not in data:
+            data = {
+                **data,
+                "sequence": self._next_thread_view_sequence(sequence_counter),
+            }
         activity_events.append({"event": event, "data": data})
+
+    def _next_thread_view_sequence(self, sequence_counter: list[int]) -> int:
+        sequence = sequence_counter[0]
+        sequence_counter[0] += 1
+        return sequence
 
     def _accumulate_reasoning_delta(
         self,

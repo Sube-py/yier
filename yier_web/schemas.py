@@ -273,6 +273,7 @@ class StoredSessionMessage(BaseModel):
     content: str | None = None
     reasoning_content: str | None = None
     tool_call_id: str | None = None
+    sequence: int | None = None
     source: SessionSource = "chat"
     channel_meta: ChannelMetaPayload | None = None
 

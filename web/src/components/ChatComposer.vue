@@ -160,26 +160,27 @@ onMounted(async () => {
       />
       <div class="mt-3 flex items-center justify-between gap-3">
         <div class="min-w-0 overflow-x-auto">
-          <div class="flex min-w-max items-center gap-3">
+          <div class="flex min-w-max items-center gap-2.5">
           <button
             type="button"
-            class="inline-flex items-center gap-1.5 border-0 bg-transparent px-0 py-0 text-left transition hover:text-[color:var(--app-accent-deep)]"
+            class="inline-flex items-center gap-1 rounded-full border-0 bg-transparent px-1 py-0.5 text-left transition hover:bg-white/36"
             aria-label="Choose model"
           >
-            <span class="truncate text-[0.84rem] font-semibold text-[color:var(--app-text-soft)]">
+            <span class="truncate text-[0.78rem] font-medium tracking-[0.01em] text-[color:var(--app-text-soft)]">
               Default
             </span>
-            <i class="pi pi-chevron-down text-[0.68rem] text-[color:var(--app-text-soft)]"></i>
+            <i class="pi pi-chevron-down text-[0.6rem] text-[color:var(--app-text-soft)]"></i>
           </button>
+          <span class="h-3.5 w-px bg-[rgba(34,66,72,0.1)]"></span>
           <button
             type="button"
-            class="inline-flex items-center gap-1.5 border-0 bg-transparent px-0 py-0 text-left transition hover:text-[color:var(--app-accent-deep)]"
+            class="inline-flex items-center gap-1 rounded-full border-0 bg-transparent px-1 py-0.5 text-left transition hover:bg-white/36"
             aria-label="Choose reasoning effort"
           >
-            <span class="truncate text-[0.84rem] font-semibold text-[color:var(--app-text-soft)]">
+            <span class="truncate text-[0.78rem] font-medium tracking-[0.01em] text-[color:var(--app-text-soft)]">
               Medium
             </span>
-            <i class="pi pi-chevron-down text-[0.68rem] text-[color:var(--app-text-soft)]"></i>
+            <i class="pi pi-chevron-down text-[0.6rem] text-[color:var(--app-text-soft)]"></i>
           </button>
           </div>
         </div>

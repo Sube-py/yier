@@ -2150,6 +2150,7 @@ class CodexAppServerBackend(ChatBackend):
                 metadata={
                     "status": self._thread_item_value(item, "status", ""),
                     "change_count": len(self._thread_item_value(item, "changes", []) or []),
+                    "changes": self._thread_item_value(item, "changes", []),
                 },
             )
             return
@@ -2470,19 +2471,19 @@ class CodexAppServerBackend(ChatBackend):
         return value
 
     def _summarize_file_change(self, item: Any) -> str:
-        changes = getattr(item, "changes", []) or []
+        changes = item.get("changes") or []
         count = len(changes)
-        status = getattr(item, "status", "completed")
+        status = item.get("status", "completed")
         return f"{count} file change{'s' if count != 1 else ''} with status {status}."
 
     def _summarize_tool_result(self, item: Any) -> str:
-        status = getattr(item, "status", "completed")
-        error = getattr(item, "error", None)
+        status = item.get("status", "completed")
+        error = item.get("error", None)
         if error is not None:
             return getattr(error, "message", f"Finished with status {status}.")
         return f"Finished with status {status}."
 
     def _summarize_collab_result(self, item: Any) -> str:
         receivers = self._thread_item_value(item, "receiverThreadIds", []) or []
-        status = getattr(item, "status", "completed")
+        status = item.get("status", "completed")
         return f"{len(receivers)} agent target{'s' if len(receivers) != 1 else ''}, status {status}."

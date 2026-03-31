@@ -42,6 +42,13 @@ interface ActivityFeedItem {
   display: ActivityDisplayItem
 }
 
+interface TurnGroupEntry {
+  type: 'turn-group'
+  key: string
+  sortOrder: number
+  items: Array<ActivityFeedItem | MessageFeedItem>
+}
+
 interface ActivitySummaryParts {
   verb: string
   text: string
@@ -49,6 +56,7 @@ interface ActivitySummaryParts {
 }
 
 type FeedEntry = MessageFeedItem | ActivityFeedItem
+type RenderEntry = FeedEntry | TurnGroupEntry
 
 const markdown = new MarkdownIt({
   html: false,
@@ -761,6 +769,7 @@ const visibleActivities = computed(() =>
 )
 
 const activityOpenOverrides = ref<Record<string, boolean>>({})
+const turnGroupOpenOverrides = ref<Record<string, boolean>>({})
 
 const feedEntries = computed<FeedEntry[]>(() => {
   const explicitSequences = [...props.messages, ...visibleActivities.value]
@@ -913,6 +922,94 @@ const latestAssistantSortOrder = computed(() => {
   return assistantOrders.length ? Math.max(...assistantOrders) : Number.NEGATIVE_INFINITY
 })
 
+const latestCurrentTurnActivityKey = computed(() => {
+  const activityEntries = feedEntries.value.filter(
+    (entry): entry is ActivityFeedItem =>
+      entry.type === 'activity' &&
+      isCurrentTurnActivity(entry.display) &&
+      hasActivityDetails(entry.display),
+  )
+
+  return activityEntries.length ? activityEntries[activityEntries.length - 1]?.display.key ?? null : null
+})
+
+const renderEntries = computed<RenderEntry[]>(() => {
+  const entries: RenderEntry[] = []
+  let activeUserMessage: MessageFeedItem | null = null
+  let pendingTurnItems: Array<ActivityFeedItem | MessageFeedItem> = []
+
+  function flushTurn() {
+    if (!activeUserMessage) {
+      if (pendingTurnItems.length) {
+        entries.push(...pendingTurnItems)
+      }
+
+      pendingTurnItems = []
+      return
+    }
+
+    entries.push(activeUserMessage)
+
+    const assistantIndexes = pendingTurnItems.flatMap((entry, index) =>
+      entry.type === 'message' && entry.message.role === 'assistant' ? [index] : [],
+    )
+
+    if (!assistantIndexes.length) {
+      entries.push(...pendingTurnItems)
+      activeUserMessage = null
+      pendingTurnItems = []
+      return
+    }
+
+    const finalAssistantIndex = assistantIndexes[assistantIndexes.length - 1] ?? -1
+    const groupedItems = pendingTurnItems.slice(0, finalAssistantIndex)
+    const finalAssistant = pendingTurnItems[finalAssistantIndex]
+    const trailingItems = pendingTurnItems.slice(finalAssistantIndex + 1)
+
+    if (groupedItems.length) {
+      const firstSortOrder = groupedItems[0]?.sortOrder ?? 0
+      const lastSortOrder = groupedItems[groupedItems.length - 1]?.sortOrder ?? firstSortOrder
+      entries.push({
+        type: 'turn-group',
+        key: `turn-group:${firstSortOrder}:${lastSortOrder}`,
+        sortOrder: firstSortOrder,
+        items: groupedItems,
+      })
+    }
+
+    if (finalAssistant) {
+      entries.push(finalAssistant)
+    }
+    if (trailingItems.length) {
+      entries.push(...trailingItems)
+    }
+
+    activeUserMessage = null
+    pendingTurnItems = []
+  }
+
+  for (const entry of feedEntries.value) {
+    if (entry.type === 'message' && entry.message.role === 'user') {
+      flushTurn()
+      activeUserMessage = entry
+      continue
+    }
+
+    if (!activeUserMessage) {
+      entries.push(entry)
+      continue
+    }
+
+    pendingTurnItems.push(entry)
+  }
+
+  if (activeUserMessage) {
+    flushTurn()
+  }
+
+  return entries
+})
+
 function isCurrentTurnActivity(display: ActivityDisplayItem) {
   if (!Number.isFinite(latestAssistantSortOrder.value)) {
     return true
@@ -922,10 +1019,13 @@ function isCurrentTurnActivity(display: ActivityDisplayItem) {
 
 function shouldDefaultOpenActivity(display: ActivityDisplayItem) {
   if (isApprovalActivity(display.activity)) {
-    return display.activity.state === 'queued' || display.activity.state === 'running'
+    return latestCurrentTurnActivityKey.value === display.key &&
+      (display.activity.state === 'queued' || display.activity.state === 'running')
   }
 
-  return props.isSending && isCurrentTurnActivity(display)
+  return props.isSending &&
+    isCurrentTurnActivity(display) &&
+    latestCurrentTurnActivityKey.value === display.key
 }
 
 function isActivityOpen(display: ActivityDisplayItem) {
@@ -946,6 +1046,29 @@ function onActivityToggle(display: ActivityDisplayItem, event: Event) {
     ...activityOpenOverrides.value,
     [display.key]: target.open,
   }
+}
+
+function isTurnGroupOpen(group: TurnGroupEntry) {
+  const override = turnGroupOpenOverrides.value[group.key]
+  return typeof override === 'boolean' ? override : false
+}
+
+function onTurnGroupToggle(group: TurnGroupEntry, event: Event) {
+  const target = event.target
+  if (!(target instanceof HTMLDetailsElement)) {
+    return
+  }
+
+  turnGroupOpenOverrides.value = {
+    ...turnGroupOpenOverrides.value,
+    [group.key]: target.open,
+  }
+}
+
+function turnGroupSummary(group: TurnGroupEntry) {
+  const count = group.items.length
+  const noun = count === 1 ? 'update' : 'updates'
+  return `${count} ${noun}`
 }
 
 function hasActivityDetails(display: ActivityDisplayItem) {
@@ -992,6 +1115,16 @@ watch(
   latestAssistantSortOrder,
   (nextValue, previousValue) => {
     if (Number.isFinite(previousValue) && nextValue > previousValue) {
+      activityOpenOverrides.value = {}
+    }
+  },
+  { flush: 'post' },
+)
+
+watch(
+  latestCurrentTurnActivityKey,
+  (nextValue, previousValue) => {
+    if (previousValue && nextValue && previousValue !== nextValue) {
       activityOpenOverrides.value = {}
     }
   },
@@ -1104,7 +1237,7 @@ watch(
       </div>
     </div>
 
-    <div v-if="!feedEntries.length" class="grid place-items-center gap-2 p-10 text-center">
+    <div v-if="!renderEntries.length" class="grid place-items-center gap-2 p-10 text-center">
       <p class="eyebrow">Ready</p>
       <h4 class="m-0 font-['Iowan_Old_Style','Palatino_Linotype',Palatino,serif] text-xl font-semibold">
         Start with a local task.
@@ -1117,7 +1250,7 @@ watch(
 
     <ScrollPanel v-else class="min-h-0 flex-1" :pt="timelineScrollPt">
       <div class="grid min-w-0 grid-cols-1 gap-3">
-        <template v-for="entry in feedEntries" :key="entry.key">
+        <template v-for="entry in renderEntries" :key="entry.key">
           <div
             v-if="entry.type === 'message'"
             class="flex min-w-0"
@@ -1139,6 +1272,370 @@ watch(
               ></div>
             </div>
           </div>
+
+          <details
+            v-else-if="entry.type === 'turn-group'"
+            class="overflow-hidden rounded-[1rem] border border-[rgba(34,66,72,0.08)] bg-[rgba(255,250,242,0.56)] shadow-[0_10px_24px_rgba(24,44,48,0.04)]"
+            :open="isTurnGroupOpen(entry)"
+            @toggle="onTurnGroupToggle(entry, $event)"
+          >
+            <summary class="grid cursor-pointer list-none grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-4 py-3 max-sm:px-3 max-sm:py-2.5">
+              <div class="min-w-0">
+                <p class="m-0 text-[0.8rem] font-semibold uppercase tracking-[0.08em] text-[color:var(--app-text-soft)]">
+                  Process
+                </p>
+                <p class="mt-1 mb-0 text-[0.92rem] text-[color:var(--app-text)] max-sm:text-[0.88rem]">
+                  {{ turnGroupSummary(entry) }}
+                </p>
+              </div>
+              <i
+                class="pi pi-angle-down text-[0.82rem] text-[color:var(--app-text-soft)] transition-transform duration-150"
+                :class="isTurnGroupOpen(entry) ? 'rotate-180' : ''"
+              ></i>
+            </summary>
+
+            <div class="grid gap-2 border-t border-[rgba(34,66,72,0.08)] px-4 pb-4 pt-3 max-sm:px-3 max-sm:pb-3">
+              <template v-for="groupItem in entry.items" :key="groupItem.key">
+                <div
+                  v-if="groupItem.type === 'message'"
+                  class="rounded-[0.9rem] border border-[rgba(34,66,72,0.08)] bg-[rgba(255,255,255,0.55)] px-3 py-2.5"
+                >
+                  <div
+                    class="markdown-prose"
+                    @click="onMarkdownClick"
+                    v-html="renderAssistantMessage(groupItem.message.content)"
+                  ></div>
+                </div>
+                <details
+                  v-else-if="hasActivityDetails(groupItem.display)"
+                  class="overflow-hidden rounded-[0.9rem] border border-[rgba(34,66,72,0.08)] bg-[rgba(255,255,255,0.55)]"
+                >
+                  <summary class="grid cursor-pointer list-none grid-cols-[minmax(0,1fr)_auto] items-start gap-3 px-3 py-2.5">
+                    <div
+                      class="min-w-0"
+                      :class="isShellActivity(groupItem.display.activity) ? 'overflow-x-auto overscroll-x-contain [-ms-overflow-style:none] [scrollbar-width:none]' : ''"
+                    >
+                      <p
+                        class="m-0 inline-flex min-w-0 max-w-full items-baseline gap-2 text-[0.9rem] font-medium max-sm:text-[0.86rem]"
+                        :class="isShellActivity(groupItem.display.activity) ? 'min-w-full whitespace-nowrap font-mono' : 'flex-wrap'"
+                      >
+                        <span class="shrink-0" :class="activitySummaryParts(groupItem.display).verbClass">
+                          {{ activitySummaryParts(groupItem.display).verb }}
+                        </span>
+                        <span class="min-w-0 break-words text-[color:var(--app-text)]">
+                          {{ activitySummaryParts(groupItem.display).text }}
+                        </span>
+                      </p>
+                    </div>
+                    <i class="pi pi-angle-down text-[0.8rem] text-[color:var(--app-text-soft)]"></i>
+                  </summary>
+
+                  <div
+                    v-if="isShellActivity(groupItem.display.activity)"
+                    class="grid gap-[0.7rem] border-t border-[rgba(34,66,72,0.08)] px-3 pb-3 pt-2.5"
+                  >
+                    <HighlightedCodeBlock
+                      v-if="shellCommand(groupItem.display.activity)"
+                      :content="shellCommand(groupItem.display.activity)"
+                      label="Command"
+                      language="bash"
+                      max-height="compact"
+                      :copy-aria-label="`Copy command ${shellCommand(groupItem.display.activity)}`"
+                    />
+
+                    <HighlightedCodeBlock
+                      v-if="hasShellTranscript(groupItem.display.activity)"
+                      :content="shellOutputTranscript(groupItem.display.activity)"
+                      label="Output"
+                      :meta-label="shellRuntime(groupItem.display.activity)"
+                      auto-detect
+                      :copy-aria-label="`Copy output from ${shellCommand(groupItem.display.activity) || groupItem.display.activity.title}`"
+                    />
+
+                    <HighlightedCodeBlock
+                      v-if="!hasShellTranscript(groupItem.display.activity) && groupItem.display.activity.stdout"
+                      :content="groupItem.display.activity.stdout"
+                      label="Stdout"
+                      :meta-label="shellRuntime(groupItem.display.activity)"
+                      auto-detect
+                      :copy-aria-label="`Copy stdout from ${shellCommand(groupItem.display.activity) || groupItem.display.activity.title}`"
+                    />
+
+                    <HighlightedCodeBlock
+                      v-if="!hasShellTranscript(groupItem.display.activity) && groupItem.display.activity.stderr"
+                      :content="groupItem.display.activity.stderr"
+                      label="Stderr"
+                      tone="danger"
+                      auto-detect
+                      :copy-aria-label="`Copy stderr from ${shellCommand(groupItem.display.activity) || groupItem.display.activity.title}`"
+                    />
+
+                    <p
+                      v-for="note in groupItem.display.activity.meta"
+                      :key="`${groupItem.display.activity.id}-${note}`"
+                      class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]"
+                    >
+                      {{ note }}
+                    </p>
+                  </div>
+
+                  <div
+                    v-if="activityUsesMarkdown(groupItem.display.activity) || isApprovalActivity(groupItem.display.activity)"
+                    class="grid gap-[0.55rem] border-t border-[rgba(34,66,72,0.08)] px-3 pb-3 pt-2.5"
+                  >
+                    <div
+                      v-if="activityUsesMarkdown(groupItem.display.activity) && groupItem.display.activity.detail"
+                      class="markdown-prose"
+                      @click="onMarkdownClick"
+                      v-html="renderActivityMarkdown(groupItem.display.activity.detail)"
+                    ></div>
+                    <div v-if="isApprovalActivity(groupItem.display.activity)" class="grid gap-[0.7rem]">
+                      <p
+                        v-if="approvalMessage(groupItem.display.activity)"
+                        class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]"
+                      >
+                        {{ approvalMessage(groupItem.display.activity) }}
+                      </p>
+                      <p
+                        v-if="approvalHasUrl(groupItem.display.activity)"
+                        class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]"
+                      >
+                        Open
+                        <a
+                          :href="approvalUrl(groupItem.display.activity)"
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          {{ approvalUrl(groupItem.display.activity) }}
+                        </a>
+                      </p>
+                      <div v-if="approvalSchemaPreview(groupItem.display.activity)" class="grid gap-[0.3rem]">
+                        <p class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]">Requested schema</p>
+                        <ScrollPanel class="w-full">
+                          <pre class="rounded-[0.85rem] bg-[rgba(17,38,42,0.94)] px-[0.9rem] py-[0.8rem] font-mono text-[0.86rem] leading-[1.55] break-words whitespace-pre-wrap text-[#f2f5f6]">{{
+                            approvalSchemaPreview(groupItem.display.activity)
+                          }}</pre>
+                        </ScrollPanel>
+                      </div>
+                      <div
+                        v-if="approvalUsesStructuredForm(groupItem.display.activity) && groupItem.display.activity.approval"
+                        class="grid gap-[0.7rem]"
+                      >
+                        <label
+                          v-for="field in groupItem.display.activity.approval.formFields"
+                          :key="`${groupItem.display.activity.id}-${field.id}`"
+                          class="grid gap-1"
+                        >
+                          <span class="text-[0.92rem] font-bold text-[color:var(--app-text)]">
+                            {{ field.label }}
+                            <span v-if="field.required" class="text-[#bc5f38]">*</span>
+                          </span>
+                          <span
+                            v-if="approvalFieldPrompt(field)"
+                            class="text-[0.82rem] leading-[1.5] text-[color:var(--app-text-soft)]"
+                          >
+                            {{ approvalFieldPrompt(field) }}
+                          </span>
+                          <input
+                            v-if="field.kind === 'text'"
+                            class="w-full rounded-[0.85rem] border border-[rgba(34,66,72,0.12)] bg-[rgba(255,252,247,0.9)] px-[0.8rem] py-[0.7rem] text-[color:var(--app-text)] outline-none focus:border-[rgba(21,94,99,0.35)] focus:shadow-[0_0_0_3px_rgba(21,94,99,0.08)]"
+                            type="text"
+                            :value="approvalFieldValue(field)"
+                            @input="onApprovalInput(field, $event, groupItem.display.activity)"
+                          />
+                          <input
+                            v-else-if="field.kind === 'number'"
+                            class="w-full rounded-[0.85rem] border border-[rgba(34,66,72,0.12)] bg-[rgba(255,252,247,0.9)] px-[0.8rem] py-[0.7rem] text-[color:var(--app-text)] outline-none focus:border-[rgba(21,94,99,0.35)] focus:shadow-[0_0_0_3px_rgba(21,94,99,0.08)]"
+                            :step="field.integer ? 1 : 'any'"
+                            :min="field.min ?? undefined"
+                            :max="field.max ?? undefined"
+                            type="number"
+                            :value="approvalFieldValue(field)"
+                            @input="onApprovalInput(field, $event, groupItem.display.activity)"
+                          />
+                          <select
+                            v-else-if="field.kind === 'boolean' || field.kind === 'select'"
+                            class="w-full rounded-[0.85rem] border border-[rgba(34,66,72,0.12)] bg-[rgba(255,252,247,0.9)] px-[0.8rem] py-[0.7rem] text-[color:var(--app-text)] outline-none focus:border-[rgba(21,94,99,0.35)] focus:shadow-[0_0_0_3px_rgba(21,94,99,0.08)]"
+                            :value="approvalFieldValue(field)"
+                            @change="onApprovalSelect(field, $event, groupItem.display.activity)"
+                          >
+                            <option value="">{{ field.required ? 'Select an option' : 'No selection' }}</option>
+                            <template v-if="field.kind === 'boolean'">
+                              <option value="true">True</option>
+                              <option value="false">False</option>
+                            </template>
+                            <template v-else>
+                              <option
+                                v-for="option in field.options ?? []"
+                                :key="`${field.id}-${option.value}`"
+                                :value="option.value"
+                              >
+                                {{ option.label }}
+                              </option>
+                            </template>
+                          </select>
+                          <select
+                            v-else-if="field.kind === 'multiselect'"
+                            class="min-h-28 w-full rounded-[0.85rem] border border-[rgba(34,66,72,0.12)] bg-[rgba(255,252,247,0.9)] px-[0.8rem] py-[0.7rem] text-[color:var(--app-text)] outline-none focus:border-[rgba(21,94,99,0.35)] focus:shadow-[0_0_0_3px_rgba(21,94,99,0.08)]"
+                            multiple
+                            :value="approvalFieldValue(field)"
+                            @change="onApprovalMultiSelect(field, $event, groupItem.display.activity)"
+                          >
+                            <option
+                              v-for="option in field.options ?? []"
+                              :key="`${field.id}-${option.value}`"
+                              :value="option.value"
+                            >
+                              {{ option.label }}
+                            </option>
+                          </select>
+                        </label>
+                      </div>
+                      <p
+                        v-if="approvalUsesJsonFallback(groupItem.display.activity)"
+                        class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]"
+                      >
+                        JSON response
+                      </p>
+                      <Textarea
+                        v-if="approvalUsesJsonFallback(groupItem.display.activity) && groupItem.display.activity.approval"
+                        v-model="groupItem.display.activity.approval.responseDraft"
+                        auto-resize
+                        fluid
+                        rows="5"
+                      />
+                      <p
+                        v-if="groupItem.display.activity.approval?.validationError"
+                        class="m-0 text-[0.84rem] leading-[1.45] text-[#bc5f38]"
+                      >
+                        {{ groupItem.display.activity.approval.validationError }}
+                      </p>
+                      <div v-if="groupItem.display.activity.approval" class="flex flex-wrap gap-2">
+                        <Button
+                          v-for="option in groupItem.display.activity.approval.options"
+                          :key="`${groupItem.display.activity.id}-${option.value}`"
+                          :label="option.label"
+                          size="small"
+                          :severity="option.value === 'decline' || option.value === 'cancel' ? 'secondary' : undefined"
+                          :outlined="option.value === 'decline' || option.value === 'cancel'"
+                          @click="submitApproval(groupItem.display.activity, option.value)"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div
+                    v-if="groupItem.display.change"
+                    class="grid gap-[0.7rem] border-t border-[rgba(34,66,72,0.08)] px-3 pb-3 pt-2.5"
+                  >
+                    <div class="min-w-0">
+                      <div class="flex flex-wrap items-center gap-2">
+                        <p class="m-0 text-[0.78rem] font-bold uppercase tracking-[0.08em] text-[color:var(--app-text-soft)]">
+                          {{ fileChangeKindLabel(groupItem.display.change) }}
+                        </p>
+                        <span
+                          v-if="fileChangeMetaLabel(groupItem.display.change)"
+                          class="inline-flex max-w-full items-center rounded-full border border-[rgba(34,66,72,0.1)] bg-[rgba(21,94,99,0.08)] px-2.5 py-1 text-[0.74rem] font-medium text-[color:var(--app-accent-deep)]"
+                        >
+                          <span class="truncate">
+                            {{ fileChangeMetaLabel(groupItem.display.change) }}
+                          </span>
+                        </span>
+                      </div>
+                      <p class="mt-1 mb-0 break-all font-mono text-[0.84rem] text-[color:var(--app-text)]">
+                        {{ groupItem.display.change.path }}
+                      </p>
+                    </div>
+                    <HighlightedCodeBlock
+                      v-if="groupItem.display.change.diff"
+                      :content="groupItem.display.change.diff"
+                      label="Diff"
+                      language="diff"
+                      :copy-aria-label="`Copy diff for ${groupItem.display.change.path}`"
+                    />
+                  </div>
+
+                  <div
+                    v-if="
+                      !isShellActivity(groupItem.display.activity) &&
+                      !groupItem.display.change &&
+                      (Boolean(genericActivityDetail(groupItem.display.activity)) ||
+                        Boolean(groupItem.display.activity.command) ||
+                        Boolean(groupItem.display.activity.cwd) ||
+                        Boolean(groupItem.display.activity.stdout) ||
+                        Boolean(groupItem.display.activity.stderr) ||
+                        groupItem.display.activity.meta.length > 0)
+                    "
+                    class="grid gap-[0.55rem] border-t border-[rgba(34,66,72,0.08)] px-3 pb-3 pt-2.5"
+                  >
+                    <p
+                      v-if="genericActivityDetail(groupItem.display.activity)"
+                      class="m-0 break-words whitespace-pre-wrap text-[0.9rem] text-[color:var(--app-text)]"
+                    >
+                      {{ genericActivityDetail(groupItem.display.activity) }}
+                    </p>
+                    <p
+                      v-if="groupItem.display.activity.command"
+                      class="m-0 break-words whitespace-pre-wrap font-mono text-[0.9rem] text-[color:var(--app-accent-deep)]"
+                    >
+                      {{ groupItem.display.activity.command }}
+                    </p>
+                    <p
+                      v-if="groupItem.display.activity.cwd"
+                      class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]"
+                    >
+                      cwd {{ groupItem.display.activity.cwd }}
+                    </p>
+                    <p
+                      v-for="note in groupItem.display.activity.meta"
+                      :key="`${groupItem.display.activity.id}-${note}`"
+                      class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]"
+                    >
+                      {{ note }}
+                    </p>
+
+                    <HighlightedCodeBlock
+                      v-if="groupItem.display.activity.stdout"
+                      :content="groupItem.display.activity.stdout"
+                      label="Stdout"
+                      auto-detect
+                      :copy-aria-label="`Copy stdout from ${activitySummaryText(groupItem.display)}`"
+                    />
+
+                    <HighlightedCodeBlock
+                      v-if="groupItem.display.activity.stderr"
+                      :content="groupItem.display.activity.stderr"
+                      label="Stderr"
+                      tone="danger"
+                      auto-detect
+                      :copy-aria-label="`Copy stderr from ${activitySummaryText(groupItem.display)}`"
+                    />
+                  </div>
+                </details>
+                <div
+                  v-else
+                  class="rounded-[0.9rem] border border-[rgba(34,66,72,0.08)] bg-[rgba(255,255,255,0.55)] px-3 py-2.5"
+                >
+                  <div
+                    class="min-w-0"
+                    :class="isShellActivity(groupItem.display.activity) ? 'overflow-x-auto overscroll-x-contain [-ms-overflow-style:none] [scrollbar-width:none]' : ''"
+                  >
+                    <p
+                      class="m-0 inline-flex min-w-0 max-w-full items-baseline gap-2 text-[0.9rem] font-medium max-sm:text-[0.86rem]"
+                      :class="isShellActivity(groupItem.display.activity) ? 'min-w-full whitespace-nowrap font-mono' : 'flex-wrap'"
+                    >
+                      <span class="shrink-0" :class="activitySummaryParts(groupItem.display).verbClass">
+                        {{ activitySummaryParts(groupItem.display).verb }}
+                      </span>
+                      <span class="min-w-0 break-words text-[color:var(--app-text)]">
+                        {{ activitySummaryParts(groupItem.display).text }}
+                      </span>
+                    </p>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </details>
 
           <details
             v-else-if="hasActivityDetails(entry.display)"

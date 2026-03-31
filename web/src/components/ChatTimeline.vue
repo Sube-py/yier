@@ -189,8 +189,8 @@ function messageLegend(message: UiChatMessage) {
 function messageFieldsetPt(message: UiChatMessage) {
   const rootClass =
     message.role === 'user'
-      ? 'message-fieldset message-fieldset-user ml-auto min-w-0 max-w-[min(48rem,85%)] max-[1023px]:w-full max-[1023px]:max-w-full'
-      : 'message-fieldset message-fieldset-assistant min-w-0 max-w-[min(48rem,85%)] max-[1023px]:w-full max-[1023px]:max-w-full'
+      ? 'message-fieldset message-fieldset-user inline-block min-w-0 max-w-[min(48rem,85%)] max-[1023px]:block max-[1023px]:w-full max-[1023px]:max-w-full'
+      : 'message-fieldset message-fieldset-assistant inline-block min-w-0 max-w-[min(48rem,85%)] max-[1023px]:block max-[1023px]:w-full max-[1023px]:max-w-full'
 
   return {
     root: {
@@ -868,22 +868,27 @@ watch(
         class="grid min-w-0 grid-cols-1 gap-4"
       >
         <template v-if="segment.kind === 'messages'">
-          <Fieldset
+          <div
             v-for="message in segment.messages"
             :key="message.id"
-            :legend="messageLegend(message)"
-            :pt="messageFieldsetPt(message)"
+            class="flex min-w-0"
+            :class="message.role === 'user' ? 'justify-end' : 'justify-start'"
           >
-            <p v-if="message.role === 'user'" class="m-0 whitespace-pre-wrap leading-[1.65]">
-              {{ message.content }}
-            </p>
-            <div
-              v-else
-              class="markdown-prose"
-              @click="onMarkdownClick"
-              v-html="renderAssistantMessage(message.content)"
-            ></div>
-          </Fieldset>
+            <Fieldset
+              :legend="messageLegend(message)"
+              :pt="messageFieldsetPt(message)"
+            >
+              <p v-if="message.role === 'user'" class="m-0 whitespace-pre-wrap leading-[1.65]">
+                {{ message.content }}
+              </p>
+              <div
+                v-else
+                class="markdown-prose"
+                @click="onMarkdownClick"
+                v-html="renderAssistantMessage(message.content)"
+              ></div>
+            </Fieldset>
+          </div>
         </template>
 
         <Timeline

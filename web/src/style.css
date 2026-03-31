@@ -354,13 +354,13 @@
 
   .message-fieldset-user.p-fieldset {
     margin-left: auto;
-    border-color: rgba(21, 94, 99, 0.16);
-    background: linear-gradient(135deg, rgba(21, 94, 99, 0.13), rgba(69, 141, 145, 0.08));
+    border-color: rgba(21, 94, 99, 0.28);
+    background: linear-gradient(135deg, rgba(21, 94, 99, 0.28), rgba(69, 141, 145, 0.18));
   }
 
   .message-fieldset-assistant.p-fieldset {
-    border-color: rgba(153, 125, 93, 0.15);
-    background: var(--app-panel-strong);
+    border-color: rgba(153, 125, 93, 0.12);
+    background: rgba(255, 250, 243, 0.94);
   }
 
   .message-fieldset > .message-fieldset-legend.p-fieldset-legend {
@@ -382,6 +382,20 @@
     letter-spacing: 0.08em;
     text-transform: uppercase;
     box-shadow: none !important;
+  }
+
+  .message-fieldset-user .message-fieldset-legend-label.p-fieldset-legend-label {
+    color: var(--app-accent-deep);
+  }
+
+  .message-fieldset-assistant .message-fieldset-legend-label.p-fieldset-legend-label {
+    color: color-mix(in srgb, var(--app-text-soft) 88%, #6f5a43 12%);
+  }
+
+  .message-fieldset-user .message-fieldset-content.p-fieldset-content,
+  .message-fieldset-user .message-fieldset-content-container.p-fieldset-content-container,
+  .message-fieldset-user .message-fieldset-content-wrapper.p-fieldset-content-wrapper {
+    color: #10363d;
   }
 
   .message-fieldset .message-fieldset-content-container.p-fieldset-content-container,

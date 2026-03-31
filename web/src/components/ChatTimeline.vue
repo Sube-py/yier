@@ -8,7 +8,6 @@ import ProgressSpinner from 'primevue/progressspinner'
 import ScrollPanel from 'primevue/scrollpanel'
 import Tag from 'primevue/tag'
 import Textarea from 'primevue/textarea'
-import Timeline from 'primevue/timeline'
 
 import HighlightedCodeBlock from './HighlightedCodeBlock.vue'
 import { resolveHighlightLanguage } from '../lib/codeHighlight'
@@ -22,12 +21,34 @@ import type {
   UiChatMessage,
 } from '../types/api'
 
-interface TimelineSegment {
-  kind: 'messages' | 'activities'
+interface MessageFeedItem {
+  type: 'message'
   key: string
-  messages: UiChatMessage[]
-  activities: ChatActivity[]
+  sortOrder: number
+  message: UiChatMessage
 }
+
+interface ActivityDisplayItem {
+  key: string
+  sortOrder: number
+  activity: ChatActivity
+  change?: FileChangeRecord
+}
+
+interface ActivityFeedItem {
+  type: 'activity'
+  key: string
+  sortOrder: number
+  display: ActivityDisplayItem
+}
+
+interface ActivitySummaryParts {
+  verb: string
+  text: string
+  verbClass: string
+}
+
+type FeedEntry = MessageFeedItem | ActivityFeedItem
 
 const markdown = new MarkdownIt({
   html: false,
@@ -182,19 +203,11 @@ function runtimeStatusLabel(status: string | null | undefined) {
     .join(' ')
 }
 
-function messageLegend(message: UiChatMessage) {
-  return message.role === 'user' ? 'You' : props.assistantLabel ?? 'Yier'
-}
-
-function messageFieldsetPt(message: UiChatMessage) {
-  const rootClass =
-    message.role === 'user'
-      ? 'message-fieldset message-fieldset-user inline-block min-w-0 max-w-[min(48rem,85%)] max-[1023px]:block max-[1023px]:w-full max-[1023px]:max-w-full'
-      : 'message-fieldset message-fieldset-assistant inline-block min-w-0 max-w-[min(48rem,85%)] max-[1023px]:block max-[1023px]:w-full max-[1023px]:max-w-full'
-
+function messageFieldsetPt() {
   return {
     root: {
-      class: rootClass,
+      class:
+        'message-fieldset message-fieldset-user inline-block min-w-0 max-w-[min(40rem,78%)] max-[1023px]:max-w-[min(34rem,86%)] max-sm:max-w-[88%]',
     },
     legend: {
       class: 'message-fieldset-legend',
@@ -313,19 +326,6 @@ async function onMarkdownClick(event: MouseEvent) {
   markdownCopyResetTimers.set(button, resetTimer)
 }
 
-function activityMarkerClass(activity: ChatActivity) {
-  if (activity.state === 'running') {
-    return 'bg-[#347f86]'
-  }
-  if (activity.state === 'done') {
-    return 'bg-[#4b8b58]'
-  }
-  if (activity.state === 'error') {
-    return 'bg-[#b85d48]'
-  }
-  return 'bg-[#7a6b4e]'
-}
-
 function activityUsesMarkdown(activity: ChatActivity) {
   return activity.kind === 'reasoning' || activity.kind === 'plan'
 }
@@ -358,10 +358,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function hasFileChangeDiffs(activity: ChatActivity) {
-  return fileChangeRecords(activity).length > 0
-}
-
 function fileChangeKindLabel(change: FileChangeRecord) {
   switch (change.kind.type) {
     case 'create':
@@ -377,6 +373,21 @@ function fileChangeKindLabel(change: FileChangeRecord) {
   }
 }
 
+function fileChangeVerb(change: FileChangeRecord) {
+  switch (change.kind.type) {
+    case 'create':
+      return 'Created'
+    case 'delete':
+      return 'Deleted'
+    case 'move':
+      return 'Moved'
+    case 'update':
+      return 'Edited'
+    default:
+      return 'Changed'
+  }
+}
+
 function fileChangeMetaLabel(change: FileChangeRecord) {
   if (change.kind.type === 'move' && change.kind.move_path) {
     return change.kind.move_path
@@ -384,36 +395,148 @@ function fileChangeMetaLabel(change: FileChangeRecord) {
   return ''
 }
 
-function activitySummaryPrimary(activity: ChatActivity) {
-  if (activity.kind === 'tool' && activity.detail.trim()) {
-    return activity.detail
+function fileBasename(path: string) {
+  const normalized = path.trim()
+  if (!normalized) {
+    return 'Untitled'
   }
 
-  return activity.title
+  const segments = normalized.split(/[\\/]/).filter(Boolean)
+  return segments[segments.length - 1] ?? normalized
 }
 
-function activitySummarySecondary(activity: ChatActivity) {
-  if (isShellActivity(activity) || activity.kind === 'tool') {
-    return ''
+function fileChangeStats(diff: string) {
+  let additions = 0
+  let removals = 0
+
+  for (const line of diff.split('\n')) {
+    if (!line) {
+      continue
+    }
+    if (line.startsWith('+++') || line.startsWith('---')) {
+      continue
+    }
+    if (line.startsWith('+')) {
+      additions += 1
+      continue
+    }
+    if (line.startsWith('-')) {
+      removals += 1
+    }
   }
 
-  if (!activityUsesMarkdown(activity) && activity.detail.trim()) {
-    return activity.detail
+  return { additions, removals }
+}
+
+function activityToneClass(activity: ChatActivity) {
+  if (activity.state === 'error') {
+    return 'text-[#b85d48]'
+  }
+  if (activity.state === 'running' || activity.state === 'queued') {
+    return 'text-[color:var(--app-accent)]'
+  }
+  if (activity.state === 'done') {
+    return 'text-[#4b8b58]'
+  }
+  return 'text-[color:var(--app-text-soft)]'
+}
+
+function splitSummary(summary: string, fallbackVerb: string, activity: ChatActivity): ActivitySummaryParts {
+  const trimmed = summary.trim()
+  if (!trimmed) {
+    return {
+      verb: fallbackVerb,
+      text: activity.title.trim() || 'Activity',
+      verbClass: activityToneClass(activity),
+    }
   }
 
-  return ''
+  const match = trimmed.match(/^([A-Za-z][A-Za-z-]*)\s+(.+)$/)
+  if (!match) {
+    return {
+      verb: fallbackVerb,
+      text: trimmed,
+      verbClass: activityToneClass(activity),
+    }
+  }
+
+  return {
+    verb: match[1] ?? fallbackVerb,
+    text: match[2] ?? trimmed,
+    verbClass: activityToneClass(activity),
+  }
 }
 
-function activitySummaryPrimaryClass(activity: ChatActivity) {
-  return 'font-bold'
-}
+function activitySummaryParts(display: ActivityDisplayItem): ActivitySummaryParts {
+  const { activity, change } = display
 
-function shouldAutoOpenActivity(activity: ChatActivity) {
+  if (change) {
+    const { additions, removals } = fileChangeStats(change.diff)
+    const hasStats = change.diff.trim().length > 0
+    return {
+      verb: fileChangeVerb(change),
+      text: `${fileBasename(change.path)}${hasStats ? ` +${additions} -${removals}` : ''}`,
+      verbClass: 'text-[color:var(--app-accent-deep)]',
+    }
+  }
+
+  if (isShellActivity(activity)) {
+    const command = shellCommand(activity) || activity.title || 'command'
+    const isBackground = activity.shell?.kind === 'background_command' || activity.kind === 'background'
+
+    if (activity.state === 'running') {
+      return {
+        verb: isBackground ? 'Running background terminal' : 'Running command',
+        text: command,
+        verbClass: 'text-[color:var(--app-accent)]',
+      }
+    }
+
+    if (activity.state === 'error') {
+      return {
+        verb: isBackground ? 'Background terminal failed with' : 'Command failed',
+        text: command,
+        verbClass: 'text-[#b85d48]',
+      }
+    }
+
+    if (isBackground && !props.isSending) {
+      return {
+        verb: 'Background terminal finished with',
+        text: command,
+        verbClass: 'text-[#7a6b4e]',
+      }
+    }
+
+    return {
+      verb: 'Ran',
+      text: command,
+      verbClass: 'text-[#4b8b58]',
+    }
+  }
+
   if (activity.kind === 'approval') {
-    return activity.state === 'queued' || activity.state === 'running'
+    return {
+      verb: activity.state === 'done' ? 'Resolved' : 'Approval requested',
+      text: approvalMessage(activity) || activity.title || 'Approval',
+      verbClass: activityToneClass(activity),
+    }
   }
 
-  return activity.state === 'running'
+  if (activity.kind === 'reasoning' || activity.kind === 'plan') {
+    return {
+      verb: activity.kind === 'reasoning' ? 'Reasoning' : 'Plan',
+      text: activity.title || 'Details',
+      verbClass: activityToneClass(activity),
+    }
+  }
+
+  return splitSummary(activity.detail || activity.title, 'Updated', activity)
+}
+
+function activitySummaryText(display: ActivityDisplayItem) {
+  const summary = activitySummaryParts(display)
+  return `${summary.verb} ${summary.text}`.trim()
 }
 
 function isHiddenActivity(activity: ChatActivity) {
@@ -637,13 +760,15 @@ const visibleActivities = computed(() =>
   props.activities.filter((activity) => !isHiddenActivity(activity)),
 )
 
-const timelineSegments = computed<TimelineSegment[]>(() => {
+const activityOpenOverrides = ref<Record<string, boolean>>({})
+
+const feedEntries = computed<FeedEntry[]>(() => {
   const explicitSequences = [...props.messages, ...visibleActivities.value]
     .map((item) => item.sequence)
     .filter((value): value is number => typeof value === 'number' && Number.isFinite(value))
 
   if (!explicitSequences.length) {
-    const segments: TimelineSegment[] = []
+    let sortOrder = 0
     const lastMessage = props.messages[props.messages.length - 1]
     const trailingAssistantMessage =
       visibleActivities.value.length && lastMessage?.role === 'assistant' ? lastMessage : null
@@ -651,98 +776,227 @@ const timelineSegments = computed<TimelineSegment[]>(() => {
       ? props.messages.slice(0, -1)
       : props.messages
 
-    if (leadingMessages.length) {
-      segments.push({
-        kind: 'messages',
-        key: `legacy-messages:${leadingMessages[0]?.id ?? 'empty'}`,
-        messages: leadingMessages,
-        activities: [],
-      })
-    }
+    const legacyMessages: MessageFeedItem[] = leadingMessages.map((message) => {
+      sortOrder += 1000
+      return {
+        type: 'message',
+        key: `message:${message.id}`,
+        sortOrder,
+        message,
+      }
+    })
 
-    if (visibleActivities.value.length) {
-      segments.push({
-        kind: 'activities',
-        key: `legacy-activities:${visibleActivities.value[0]?.id ?? 'empty'}`,
-        messages: [],
-        activities: visibleActivities.value,
-      })
-    }
+    const legacyActivities: ActivityFeedItem[] = visibleActivities.value.flatMap((activity) => {
+      const changes = fileChangeRecords(activity)
 
-    if (trailingAssistantMessage) {
-      segments.push({
-        kind: 'messages',
-        key: `legacy-trailing:${trailingAssistantMessage.id}`,
-        messages: [trailingAssistantMessage],
-        activities: [],
-      })
-    }
+      if (changes.length) {
+        return changes.map((change, index) => {
+          const key = `activity:${activity.id}:change:${index}`
+          sortOrder += 1
+          return {
+            type: 'activity',
+            key,
+            sortOrder,
+            display: {
+              key,
+              sortOrder,
+              activity,
+              change,
+            },
+          }
+        })
+      }
 
-    return segments
+      sortOrder += 1
+      const key = `activity:${activity.id}`
+      return [
+        {
+          type: 'activity',
+          key,
+          sortOrder,
+          display: {
+            key,
+            sortOrder,
+            activity,
+          },
+        },
+      ]
+    })
+
+    const trailingMessages: MessageFeedItem[] = trailingAssistantMessage
+      ? [
+          {
+            type: 'message',
+            key: `message:${trailingAssistantMessage.id}`,
+            sortOrder: sortOrder + 1000,
+            message: trailingAssistantMessage,
+          },
+        ]
+      : []
+
+    return [...legacyMessages, ...legacyActivities, ...trailingMessages]
   }
 
   let fallbackSequence = explicitSequences.length ? Math.max(...explicitSequences) + 1 : 0
 
-  const entries = [
-    ...props.messages.map((message) => ({
-      kind: 'message' as const,
+  const messages: MessageFeedItem[] = props.messages.map((message) => {
+    const sequence =
+      typeof message.sequence === 'number' && Number.isFinite(message.sequence)
+        ? message.sequence
+        : fallbackSequence++
+
+    return {
+      type: 'message',
       key: `message:${message.id}`,
-      sequence:
-        typeof message.sequence === 'number' && Number.isFinite(message.sequence)
-          ? message.sequence
-          : fallbackSequence++,
+      sortOrder: sequence * 1000 + 500,
       message,
-    })),
-    ...visibleActivities.value.map((activity) => ({
-      kind: 'activity' as const,
-      key: `activity:${activity.id}`,
-      sequence:
-        typeof activity.sequence === 'number' && Number.isFinite(activity.sequence)
-          ? activity.sequence
-          : fallbackSequence++,
-      activity,
-    })),
-  ].sort((left, right) => {
-    if (left.sequence !== right.sequence) {
-      return left.sequence - right.sequence
     }
-    if (left.kind === right.kind) {
-      return 0
-    }
-    return left.kind === 'message' ? -1 : 1
   })
 
-  const segments: TimelineSegment[] = []
-  for (const entry of entries) {
-    const previousSegment = segments[segments.length - 1]
-    if (entry.kind === 'message') {
-      if (previousSegment && previousSegment.kind === 'messages') {
-        previousSegment.messages.push(entry.message)
-        continue
-      }
-      segments.push({
-        kind: 'messages',
-        key: entry.key,
-        messages: [entry.message],
-        activities: [],
+  const activities: ActivityFeedItem[] = visibleActivities.value.flatMap((activity) => {
+    const sequence =
+      typeof activity.sequence === 'number' && Number.isFinite(activity.sequence)
+        ? activity.sequence
+        : fallbackSequence++
+    const baseSortOrder = sequence * 1000
+    const changes = fileChangeRecords(activity)
+
+    if (changes.length) {
+      return changes.map((change, index) => {
+        const key = `activity:${activity.id}:change:${index}`
+        const sortOrder = baseSortOrder + index + 1
+        return {
+          type: 'activity',
+          key,
+          sortOrder,
+          display: {
+            key,
+            sortOrder,
+            activity,
+            change,
+          },
+        }
       })
-      continue
     }
 
-    if (previousSegment && previousSegment.kind === 'activities') {
-      previousSegment.activities.push(entry.activity)
-      continue
+    const key = `activity:${activity.id}`
+    return [
+      {
+        type: 'activity',
+        key,
+        sortOrder: baseSortOrder + 1,
+        display: {
+          key,
+          sortOrder: baseSortOrder + 1,
+          activity,
+        },
+      },
+    ]
+  })
+
+  return [...activities, ...messages].sort((left, right) => {
+    if (left.sortOrder !== right.sortOrder) {
+      return left.sortOrder - right.sortOrder
     }
-    segments.push({
-      kind: 'activities',
-      key: entry.key,
-      messages: [],
-      activities: [entry.activity],
-    })
+    if (left.type === right.type) {
+      return left.key.localeCompare(right.key)
+    }
+    return left.type === 'activity' ? -1 : 1
+  })
+})
+
+const latestAssistantSortOrder = computed(() => {
+  const assistantOrders = feedEntries.value
+    .filter((entry): entry is MessageFeedItem => entry.type === 'message' && entry.message.role === 'assistant')
+    .map((entry) => entry.sortOrder)
+
+  return assistantOrders.length ? Math.max(...assistantOrders) : Number.NEGATIVE_INFINITY
+})
+
+function isCurrentTurnActivity(display: ActivityDisplayItem) {
+  if (!Number.isFinite(latestAssistantSortOrder.value)) {
+    return true
+  }
+  return display.sortOrder > latestAssistantSortOrder.value
+}
+
+function shouldDefaultOpenActivity(display: ActivityDisplayItem) {
+  if (isApprovalActivity(display.activity)) {
+    return display.activity.state === 'queued' || display.activity.state === 'running'
   }
 
-  return segments
-})
+  return props.isSending && isCurrentTurnActivity(display)
+}
+
+function isActivityOpen(display: ActivityDisplayItem) {
+  const override = activityOpenOverrides.value[display.key]
+  if (typeof override === 'boolean') {
+    return override
+  }
+  return shouldDefaultOpenActivity(display)
+}
+
+function onActivityToggle(display: ActivityDisplayItem, event: Event) {
+  const target = event.target
+  if (!(target instanceof HTMLDetailsElement)) {
+    return
+  }
+
+  activityOpenOverrides.value = {
+    ...activityOpenOverrides.value,
+    [display.key]: target.open,
+  }
+}
+
+function hasActivityDetails(display: ActivityDisplayItem) {
+  const { activity, change } = display
+  if (change) {
+    return Boolean(change.diff || fileChangeMetaLabel(change))
+  }
+  if (isShellActivity(activity)) {
+    return Boolean(
+      shellCommand(activity) ||
+        hasShellTranscript(activity) ||
+        activity.stdout ||
+        activity.stderr ||
+        activity.meta.length,
+    )
+  }
+  if (activityUsesMarkdown(activity) || isApprovalActivity(activity)) {
+    return Boolean(activity.detail || activity.approval)
+  }
+  return Boolean(
+    activity.detail.trim() ||
+      activity.command ||
+      activity.cwd ||
+      activity.stdout ||
+      activity.stderr ||
+      activity.meta.length,
+  )
+}
+
+function genericActivityDetail(activity: ChatActivity) {
+  const detail = activity.detail.trim()
+  if (!detail || activityUsesMarkdown(activity) || isApprovalActivity(activity) || isShellActivity(activity)) {
+    return ''
+  }
+
+  if (detail === activity.title.trim()) {
+    return ''
+  }
+
+  return detail
+}
+
+watch(
+  latestAssistantSortOrder,
+  (nextValue, previousValue) => {
+    if (Number.isFinite(previousValue) && nextValue > previousValue) {
+      activityOpenOverrides.value = {}
+    }
+  },
+  { flush: 'post' },
+)
 
 function isNearBottom(element: HTMLElement) {
   return element.scrollHeight - element.scrollTop - element.clientHeight <= bottomThreshold
@@ -850,7 +1104,7 @@ watch(
       </div>
     </div>
 
-    <div v-if="!timelineSegments.length" class="grid place-items-center gap-2 p-10 text-center">
+    <div v-if="!feedEntries.length" class="grid place-items-center gap-2 p-10 text-center">
       <p class="eyebrow">Ready</p>
       <h4 class="m-0 font-['Iowan_Old_Style','Palatino_Linotype',Palatino,serif] text-xl font-semibold">
         Start with a local task.
@@ -862,246 +1116,194 @@ watch(
     </div>
 
     <ScrollPanel v-else class="min-h-0 flex-1" :pt="timelineScrollPt">
-      <div
-        v-for="segment in timelineSegments"
-        :key="segment.key"
-        class="grid min-w-0 grid-cols-1 gap-4"
-      >
-        <template v-if="segment.kind === 'messages'">
+      <div class="grid min-w-0 grid-cols-1 gap-3">
+        <template v-for="entry in feedEntries" :key="entry.key">
           <div
-            v-for="message in segment.messages"
-            :key="message.id"
+            v-if="entry.type === 'message'"
             class="flex min-w-0"
-            :class="message.role === 'user' ? 'justify-end' : 'justify-start'"
+            :class="entry.message.role === 'user' ? 'justify-end' : 'justify-start'"
           >
-            <Fieldset
-              :legend="messageLegend(message)"
-              :pt="messageFieldsetPt(message)"
-            >
-              <p v-if="message.role === 'user'" class="m-0 whitespace-pre-wrap leading-[1.65]">
-                {{ message.content }}
+            <Fieldset v-if="entry.message.role === 'user'" legend="You" :pt="messageFieldsetPt()">
+              <p class="m-0 whitespace-pre-wrap leading-[1.65]">
+                {{ entry.message.content }}
               </p>
+            </Fieldset>
+            <div
+              v-else
+              class="min-w-0 max-w-full flex-1 px-1 max-sm:px-0"
+            >
               <div
-                v-else
                 class="markdown-prose"
                 @click="onMarkdownClick"
-                v-html="renderAssistantMessage(message.content)"
+                v-html="renderAssistantMessage(entry.message.content)"
               ></div>
-            </Fieldset>
+            </div>
           </div>
-        </template>
 
-        <Timeline
-          v-else
-          :value="segment.activities"
-          align="left"
-          :pt="{
-            root: {
-              class:
-                '[&_.p-timeline-event]:items-stretch [&_.p-timeline-event-content]:min-w-0 [&_.p-timeline-event-content]:flex-1 [&_.p-timeline-event-content]:pb-4 [&_.p-timeline-event-marker]:bg-transparent [&_.p-timeline-event-marker]:shadow-none [&_.p-timeline-event-opposite]:hidden [&_.p-timeline-event-separator]:basis-[2.2rem] [&_.p-timeline-event-connector]:w-0.5 [&_.p-timeline-event-connector]:bg-[linear-gradient(180deg,rgba(52,127,134,0.18),rgba(52,127,134,0.42))]',
-            },
-          }"
-        >
-          <template #marker="slotProps">
-            <span
-              class="mt-[0.15rem] inline-flex h-[1.4rem] w-[1.4rem] items-center justify-center rounded-full border border-[rgba(34,66,72,0.1)] bg-[rgba(255,250,242,0.96)]"
-            >
-              <span
-                class="h-3 w-3 rounded-full"
-                :class="activityMarkerClass(slotProps.item)"
-              ></span>
-            </span>
-          </template>
-          <template #content="slotProps">
-            <details
-              class="overflow-hidden rounded-2xl border border-[rgba(34,66,72,0.08)] bg-[rgba(255,250,242,0.8)]"
-              :open="shouldAutoOpenActivity(slotProps.item)"
-            >
-              <summary class="grid cursor-pointer list-none grid-cols-[minmax(0,1fr)_auto] items-start gap-[0.7rem] px-[0.9rem] py-[0.8rem] max-[1023px]:grid-cols-1 max-sm:px-3 max-sm:py-3">
-                <div class="min-w-0">
-                  <div
-                    v-if="isShellActivity(slotProps.item)"
-                    class="max-w-full overflow-x-auto overscroll-x-contain [-ms-overflow-style:none] [scrollbar-width:none]"
-                  >
-                    <p
-                      class="m-0 inline-flex min-w-full items-center gap-2 whitespace-nowrap font-mono text-[0.92rem] font-medium text-[color:var(--app-accent-deep)]"
-                    >
-                      <span class="shrink-0 text-[color:var(--app-accent)]">Ran</span>
-                      <span class="text-[color:var(--app-accent-deep)]">
-                        {{ shellCommand(slotProps.item) || slotProps.item.title }}
-                      </span>
-                    </p>
-                  </div>
-                  <p
-                    v-else
-                    class="m-0"
-                    :class="activitySummaryPrimaryClass(slotProps.item)"
-                  >
-                    {{ activitySummaryPrimary(slotProps.item) }}
-                  </p>
-                  <p
-                    v-if="activitySummarySecondary(slotProps.item)"
-                    class="mt-1 mb-0 break-words whitespace-pre-wrap text-[color:var(--app-text-soft)]"
-                  >
-                    {{ activitySummarySecondary(slotProps.item) }}
-                  </p>
-                </div>
-              </summary>
-
+          <details
+            v-else-if="hasActivityDetails(entry.display)"
+            class="overflow-hidden rounded-[1rem] border border-[rgba(34,66,72,0.08)] bg-[rgba(255,250,242,0.72)] shadow-[0_10px_30px_rgba(24,44,48,0.05)]"
+            :open="isActivityOpen(entry.display)"
+            @toggle="onActivityToggle(entry.display, $event)"
+          >
+            <summary class="grid cursor-pointer list-none grid-cols-[minmax(0,1fr)_auto] items-start gap-3 px-4 py-3 max-sm:px-3 max-sm:py-2.5">
               <div
-                v-if="isShellActivity(slotProps.item)"
-                class="grid gap-[0.7rem] border-t border-[rgba(34,66,72,0.08)] px-[0.9rem] pb-[0.9rem] pl-[2.35rem] max-[1023px]:pl-4 max-sm:px-3 max-sm:pb-3"
+                class="min-w-0"
+                :class="isShellActivity(entry.display.activity) ? 'overflow-x-auto overscroll-x-contain [-ms-overflow-style:none] [scrollbar-width:none]' : ''"
               >
-                <HighlightedCodeBlock
-                  v-if="shellCommand(slotProps.item)"
-                  :content="shellCommand(slotProps.item)"
-                  label="Command"
-                  language="bash"
-                  max-height="compact"
-                  :copy-aria-label="`Copy command ${shellCommand(slotProps.item)}`"
-                />
-
-                <HighlightedCodeBlock
-                  v-if="hasShellTranscript(slotProps.item)"
-                  :content="shellOutputTranscript(slotProps.item)"
-                  label="Output"
-                  :meta-label="shellRuntime(slotProps.item)"
-                  auto-detect
-                  :copy-aria-label="`Copy output from ${shellCommand(slotProps.item) || slotProps.item.title}`"
-                />
-
-                <HighlightedCodeBlock
-                  v-if="!hasShellTranscript(slotProps.item) && slotProps.item.stdout"
-                  :content="slotProps.item.stdout"
-                  label="Stdout"
-                  :meta-label="shellRuntime(slotProps.item)"
-                  auto-detect
-                  :copy-aria-label="`Copy stdout from ${shellCommand(slotProps.item) || slotProps.item.title}`"
-                />
-
-                <HighlightedCodeBlock
-                  v-if="!hasShellTranscript(slotProps.item) && slotProps.item.stderr"
-                  :content="slotProps.item.stderr"
-                  label="Stderr"
-                  tone="danger"
-                  auto-detect
-                  :copy-aria-label="`Copy stderr from ${shellCommand(slotProps.item) || slotProps.item.title}`"
-                />
-
                 <p
-                  v-for="note in slotProps.item.meta"
-                  :key="`${slotProps.item.id}-${note}`"
-                  class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]"
+                  class="m-0 inline-flex min-w-0 max-w-full items-baseline gap-2 text-[0.92rem] font-medium max-sm:text-[0.88rem]"
+                  :class="isShellActivity(entry.display.activity) ? 'min-w-full whitespace-nowrap font-mono' : 'flex-wrap'"
                 >
-                  {{ note }}
+                  <span class="shrink-0" :class="activitySummaryParts(entry.display).verbClass">
+                    {{ activitySummaryParts(entry.display).verb }}
+                  </span>
+                  <span class="min-w-0 break-words text-[color:var(--app-text)]">
+                    {{ activitySummaryParts(entry.display).text }}
+                  </span>
                 </p>
               </div>
+              <i
+                class="pi pi-angle-down text-[0.82rem] text-[color:var(--app-text-soft)] transition-transform duration-150"
+                :class="isActivityOpen(entry.display) ? 'rotate-180' : ''"
+              ></i>
+            </summary>
 
-              <div
-                v-if="activityUsesMarkdown(slotProps.item) || isApprovalActivity(slotProps.item)"
-                class="grid gap-[0.55rem] border-t border-[rgba(34,66,72,0.08)] px-[0.9rem] pb-[0.9rem] pl-[2.35rem] max-[1023px]:pl-4 max-sm:px-3 max-sm:pb-3"
+            <div
+              v-if="isShellActivity(entry.display.activity)"
+              class="grid gap-[0.7rem] border-t border-[rgba(34,66,72,0.08)] px-4 pb-4 pt-3 max-sm:px-3 max-sm:pb-3"
+            >
+              <HighlightedCodeBlock
+                v-if="shellCommand(entry.display.activity)"
+                :content="shellCommand(entry.display.activity)"
+                label="Command"
+                language="bash"
+                max-height="compact"
+                :copy-aria-label="`Copy command ${shellCommand(entry.display.activity)}`"
+              />
+
+              <HighlightedCodeBlock
+                v-if="hasShellTranscript(entry.display.activity)"
+                :content="shellOutputTranscript(entry.display.activity)"
+                label="Output"
+                :meta-label="shellRuntime(entry.display.activity)"
+                auto-detect
+                :copy-aria-label="`Copy output from ${shellCommand(entry.display.activity) || entry.display.activity.title}`"
+              />
+
+              <HighlightedCodeBlock
+                v-if="!hasShellTranscript(entry.display.activity) && entry.display.activity.stdout"
+                :content="entry.display.activity.stdout"
+                label="Stdout"
+                :meta-label="shellRuntime(entry.display.activity)"
+                auto-detect
+                :copy-aria-label="`Copy stdout from ${shellCommand(entry.display.activity) || entry.display.activity.title}`"
+              />
+
+              <HighlightedCodeBlock
+                v-if="!hasShellTranscript(entry.display.activity) && entry.display.activity.stderr"
+                :content="entry.display.activity.stderr"
+                label="Stderr"
+                tone="danger"
+                auto-detect
+                :copy-aria-label="`Copy stderr from ${shellCommand(entry.display.activity) || entry.display.activity.title}`"
+              />
+
+              <p
+                v-for="note in entry.display.activity.meta"
+                :key="`${entry.display.activity.id}-${note}`"
+                class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]"
               >
+                {{ note }}
+              </p>
+            </div>
+
+            <div
+              v-if="activityUsesMarkdown(entry.display.activity) || isApprovalActivity(entry.display.activity)"
+              class="grid gap-[0.55rem] border-t border-[rgba(34,66,72,0.08)] px-4 pb-4 pt-3 max-sm:px-3 max-sm:pb-3"
+            >
+              <div
+                v-if="activityUsesMarkdown(entry.display.activity) && entry.display.activity.detail"
+                class="markdown-prose"
+                @click="onMarkdownClick"
+                v-html="renderActivityMarkdown(entry.display.activity.detail)"
+              ></div>
+              <div v-if="isApprovalActivity(entry.display.activity)" class="grid gap-[0.7rem]">
+                <p
+                  v-if="approvalMessage(entry.display.activity)"
+                  class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]"
+                >
+                  {{ approvalMessage(entry.display.activity) }}
+                </p>
+                <p
+                  v-if="approvalHasUrl(entry.display.activity)"
+                  class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]"
+                >
+                  Open
+                  <a
+                    :href="approvalUrl(entry.display.activity)"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {{ approvalUrl(entry.display.activity) }}
+                  </a>
+                </p>
+                <div v-if="approvalSchemaPreview(entry.display.activity)" class="grid gap-[0.3rem]">
+                  <p class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]">Requested schema</p>
+                  <ScrollPanel class="w-full">
+                    <pre class="rounded-[0.85rem] bg-[rgba(17,38,42,0.94)] px-[0.9rem] py-[0.8rem] font-mono text-[0.86rem] leading-[1.55] break-words whitespace-pre-wrap text-[#f2f5f6]">{{
+                      approvalSchemaPreview(entry.display.activity)
+                    }}</pre>
+                  </ScrollPanel>
+                </div>
                 <div
-                  v-if="activityUsesMarkdown(slotProps.item) && slotProps.item.detail"
-                  class="markdown-prose"
-                  @click="onMarkdownClick"
-                  v-html="renderActivityMarkdown(slotProps.item.detail)"
-                ></div>
-                <div v-if="isApprovalActivity(slotProps.item)" class="grid gap-[0.7rem]">
-                  <p
-                    v-if="approvalMessage(slotProps.item)"
-                    class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]"
+                  v-if="approvalUsesStructuredForm(entry.display.activity) && entry.display.activity.approval"
+                  class="grid gap-[0.7rem]"
+                >
+                  <label
+                    v-for="field in entry.display.activity.approval.formFields"
+                    :key="`${entry.display.activity.id}-${field.id}`"
+                    class="grid gap-1"
                   >
-                    {{ approvalMessage(slotProps.item) }}
-                  </p>
-                  <p
-                    v-if="approvalHasUrl(slotProps.item)"
-                    class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]"
-                  >
-                    Open
-                    <a
-                      :href="approvalUrl(slotProps.item)"
-                      target="_blank"
-                      rel="noreferrer"
+                    <span class="text-[0.92rem] font-bold text-[color:var(--app-text)]">
+                      {{ field.label }}
+                      <span v-if="field.required" class="text-[#bc5f38]">*</span>
+                    </span>
+                    <span
+                      v-if="approvalFieldPrompt(field)"
+                      class="text-[0.82rem] leading-[1.5] text-[color:var(--app-text-soft)]"
                     >
-                      {{ approvalUrl(slotProps.item) }}
-                    </a>
-                  </p>
-                  <div
-                    v-if="approvalSchemaPreview(slotProps.item)"
-                    class="grid gap-[0.3rem]"
-                  >
-                    <p class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]">Requested schema</p>
-                    <ScrollPanel class="w-full">
-                      <pre class="rounded-[0.85rem] bg-[rgba(17,38,42,0.94)] px-[0.9rem] py-[0.8rem] font-mono text-[0.86rem] leading-[1.55] break-words whitespace-pre-wrap text-[#f2f5f6]">{{
-                        approvalSchemaPreview(slotProps.item)
-                      }}</pre>
-                    </ScrollPanel>
-                  </div>
-                  <div
-                    v-if="approvalUsesStructuredForm(slotProps.item) && slotProps.item.approval"
-                    class="grid gap-[0.7rem]"
-                  >
-                    <label
-                      v-for="field in slotProps.item.approval.formFields"
-                      :key="`${slotProps.item.id}-${field.id}`"
-                      class="grid gap-1"
+                      {{ approvalFieldPrompt(field) }}
+                    </span>
+                    <input
+                      v-if="field.kind === 'text'"
+                      class="w-full rounded-[0.85rem] border border-[rgba(34,66,72,0.12)] bg-[rgba(255,252,247,0.9)] px-[0.8rem] py-[0.7rem] text-[color:var(--app-text)] outline-none focus:border-[rgba(21,94,99,0.35)] focus:shadow-[0_0_0_3px_rgba(21,94,99,0.08)]"
+                      type="text"
+                      :value="approvalFieldValue(field)"
+                      @input="onApprovalInput(field, $event, entry.display.activity)"
+                    />
+                    <input
+                      v-else-if="field.kind === 'number'"
+                      class="w-full rounded-[0.85rem] border border-[rgba(34,66,72,0.12)] bg-[rgba(255,252,247,0.9)] px-[0.8rem] py-[0.7rem] text-[color:var(--app-text)] outline-none focus:border-[rgba(21,94,99,0.35)] focus:shadow-[0_0_0_3px_rgba(21,94,99,0.08)]"
+                      :step="field.integer ? 1 : 'any'"
+                      :min="field.min ?? undefined"
+                      :max="field.max ?? undefined"
+                      type="number"
+                      :value="approvalFieldValue(field)"
+                      @input="onApprovalInput(field, $event, entry.display.activity)"
+                    />
+                    <select
+                      v-else-if="field.kind === 'boolean' || field.kind === 'select'"
+                      class="w-full rounded-[0.85rem] border border-[rgba(34,66,72,0.12)] bg-[rgba(255,252,247,0.9)] px-[0.8rem] py-[0.7rem] text-[color:var(--app-text)] outline-none focus:border-[rgba(21,94,99,0.35)] focus:shadow-[0_0_0_3px_rgba(21,94,99,0.08)]"
+                      :value="approvalFieldValue(field)"
+                      @change="onApprovalSelect(field, $event, entry.display.activity)"
                     >
-                      <span class="text-[0.92rem] font-bold text-[color:var(--app-text)]">
-                        {{ field.label }}
-                        <span v-if="field.required" class="text-[#bc5f38]">*</span>
-                      </span>
-                      <span
-                        v-if="approvalFieldPrompt(field)"
-                        class="text-[0.82rem] leading-[1.5] text-[color:var(--app-text-soft)]"
-                      >
-                        {{ approvalFieldPrompt(field) }}
-                      </span>
-                      <input
-                        v-if="field.kind === 'text'"
-                        class="w-full rounded-[0.85rem] border border-[rgba(34,66,72,0.12)] bg-[rgba(255,252,247,0.9)] px-[0.8rem] py-[0.7rem] text-[color:var(--app-text)] outline-none focus:border-[rgba(21,94,99,0.35)] focus:shadow-[0_0_0_3px_rgba(21,94,99,0.08)]"
-                        type="text"
-                        :value="approvalFieldValue(field)"
-                        @input="onApprovalInput(field, $event, slotProps.item)"
-                      />
-                      <input
-                        v-else-if="field.kind === 'number'"
-                        class="w-full rounded-[0.85rem] border border-[rgba(34,66,72,0.12)] bg-[rgba(255,252,247,0.9)] px-[0.8rem] py-[0.7rem] text-[color:var(--app-text)] outline-none focus:border-[rgba(21,94,99,0.35)] focus:shadow-[0_0_0_3px_rgba(21,94,99,0.08)]"
-                        :step="field.integer ? 1 : 'any'"
-                        :min="field.min ?? undefined"
-                        :max="field.max ?? undefined"
-                        type="number"
-                        :value="approvalFieldValue(field)"
-                        @input="onApprovalInput(field, $event, slotProps.item)"
-                      />
-                      <select
-                        v-else-if="field.kind === 'boolean' || field.kind === 'select'"
-                        class="w-full rounded-[0.85rem] border border-[rgba(34,66,72,0.12)] bg-[rgba(255,252,247,0.9)] px-[0.8rem] py-[0.7rem] text-[color:var(--app-text)] outline-none focus:border-[rgba(21,94,99,0.35)] focus:shadow-[0_0_0_3px_rgba(21,94,99,0.08)]"
-                        :value="approvalFieldValue(field)"
-                        @change="onApprovalSelect(field, $event, slotProps.item)"
-                      >
-                        <option value="">{{ field.required ? 'Select an option' : 'No selection' }}</option>
-                        <template v-if="field.kind === 'boolean'">
-                          <option value="true">True</option>
-                          <option value="false">False</option>
-                        </template>
-                        <template v-else>
-                          <option
-                            v-for="option in field.options ?? []"
-                            :key="`${field.id}-${option.value}`"
-                            :value="option.value"
-                          >
-                            {{ option.label }}
-                          </option>
-                        </template>
-                      </select>
-                      <select
-                        v-else-if="field.kind === 'multiselect'"
-                        class="min-h-28 w-full rounded-[0.85rem] border border-[rgba(34,66,72,0.12)] bg-[rgba(255,252,247,0.9)] px-[0.8rem] py-[0.7rem] text-[color:var(--app-text)] outline-none focus:border-[rgba(21,94,99,0.35)] focus:shadow-[0_0_0_3px_rgba(21,94,99,0.08)]"
-                        multiple
-                        :value="approvalFieldValue(field)"
-                        @change="onApprovalMultiSelect(field, $event, slotProps.item)"
-                      >
+                      <option value="">{{ field.required ? 'Select an option' : 'No selection' }}</option>
+                      <template v-if="field.kind === 'boolean'">
+                        <option value="true">True</option>
+                        <option value="false">False</option>
+                      </template>
+                      <template v-else>
                         <option
                           v-for="option in field.options ?? []"
                           :key="`${field.id}-${option.value}`"
@@ -1109,129 +1311,164 @@ watch(
                         >
                           {{ option.label }}
                         </option>
-                      </select>
-                    </label>
-                  </div>
-                  <p
-                    v-if="approvalUsesJsonFallback(slotProps.item)"
-                    class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]"
-                  >
-                    JSON response
-                  </p>
-                  <Textarea
-                    v-if="approvalUsesJsonFallback(slotProps.item) && slotProps.item.approval"
-                    v-model="slotProps.item.approval.responseDraft"
-                    auto-resize
-                    fluid
-                    rows="5"
-                  />
-                  <p
-                    v-if="slotProps.item.approval?.validationError"
-                    class="m-0 text-[0.84rem] leading-[1.45] text-[#bc5f38]"
-                  >
-                    {{ slotProps.item.approval.validationError }}
-                  </p>
-                  <div v-if="slotProps.item.approval" class="flex flex-wrap gap-2">
-                    <Button
-                      v-for="option in slotProps.item.approval.options"
-                      :key="`${slotProps.item.id}-${option.value}`"
-                      :label="option.label"
-                      size="small"
-                      :severity="option.value === 'decline' || option.value === 'cancel' ? 'secondary' : undefined"
-                      :outlined="option.value === 'decline' || option.value === 'cancel'"
-                      @click="submitApproval(slotProps.item, option.value)"
-                    />
-                  </div>
+                      </template>
+                    </select>
+                    <select
+                      v-else-if="field.kind === 'multiselect'"
+                      class="min-h-28 w-full rounded-[0.85rem] border border-[rgba(34,66,72,0.12)] bg-[rgba(255,252,247,0.9)] px-[0.8rem] py-[0.7rem] text-[color:var(--app-text)] outline-none focus:border-[rgba(21,94,99,0.35)] focus:shadow-[0_0_0_3px_rgba(21,94,99,0.08)]"
+                      multiple
+                      :value="approvalFieldValue(field)"
+                      @change="onApprovalMultiSelect(field, $event, entry.display.activity)"
+                    >
+                      <option
+                        v-for="option in field.options ?? []"
+                        :key="`${field.id}-${option.value}`"
+                        :value="option.value"
+                      >
+                        {{ option.label }}
+                      </option>
+                    </select>
+                  </label>
                 </div>
-              </div>
-
-              <div
-                v-if="hasFileChangeDiffs(slotProps.item)"
-                class="grid gap-[0.7rem] border-t border-[rgba(34,66,72,0.08)] px-[0.9rem] pb-[0.9rem] pl-[2.35rem] max-[1023px]:pl-4 max-sm:px-3 max-sm:pb-3"
-              >
-                <article
-                  v-for="change in fileChangeRecords(slotProps.item)"
-                  :key="`${slotProps.item.id}-${change.path}-${change.kind.type}-${change.kind.move_path ?? ''}`"
-                  class="grid gap-[0.45rem] rounded-[1rem] border border-[rgba(34,66,72,0.08)] bg-[rgba(255,255,255,0.38)] p-3"
-                >
-                  <div class="flex items-start justify-between gap-3 max-[1023px]:flex-col max-[1023px]:items-stretch">
-                    <div class="min-w-0">
-                      <div class="flex flex-wrap items-center gap-2">
-                        <p class="m-0 text-[0.78rem] font-bold uppercase tracking-[0.08em] text-[color:var(--app-text-soft)]">
-                          {{ fileChangeKindLabel(change) }}
-                        </p>
-                        <span
-                          v-if="fileChangeMetaLabel(change)"
-                          class="inline-flex max-w-full items-center rounded-full border border-[rgba(34,66,72,0.1)] bg-[rgba(21,94,99,0.08)] px-2.5 py-1 text-[0.74rem] font-medium text-[color:var(--app-accent-deep)]"
-                        >
-                          <span class="truncate">
-                            {{ fileChangeMetaLabel(change) }}
-                          </span>
-                        </span>
-                      </div>
-                      <p class="mt-1 mb-0 break-all font-mono text-[0.84rem] text-[color:var(--app-text)]">
-                        {{ change.path }}
-                      </p>
-                    </div>
-                  </div>
-                  <HighlightedCodeBlock
-                    v-if="change.diff"
-                    :content="change.diff"
-                    label="Diff"
-                    language="diff"
-                    :copy-aria-label="`Copy diff for ${change.path}`"
-                  />
-                </article>
-              </div>
-
-              <div
-                v-if="
-                  !isShellActivity(slotProps.item) &&
-                  (Boolean(slotProps.item.command) ||
-                    Boolean(slotProps.item.cwd) ||
-                    Boolean(slotProps.item.stdout) ||
-                    Boolean(slotProps.item.stderr) ||
-                    slotProps.item.meta.length > 0)
-                "
-                class="grid gap-[0.55rem] border-t border-[rgba(34,66,72,0.08)] px-[0.9rem] pb-[0.9rem] pl-[2.35rem] max-[1023px]:pl-4 max-sm:px-3 max-sm:pb-3"
-              >
                 <p
-                  v-if="slotProps.item.command"
-                  class="m-0 break-words whitespace-pre-wrap font-mono text-[0.9rem] text-[color:var(--app-accent-deep)]"
-                >
-                  {{ slotProps.item.command }}
-                </p>
-                <p
-                  v-if="slotProps.item.cwd"
+                  v-if="approvalUsesJsonFallback(entry.display.activity)"
                   class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]"
                 >
-                  cwd {{ slotProps.item.cwd }}
+                  JSON response
                 </p>
+                <Textarea
+                  v-if="approvalUsesJsonFallback(entry.display.activity) && entry.display.activity.approval"
+                  v-model="entry.display.activity.approval.responseDraft"
+                  auto-resize
+                  fluid
+                  rows="5"
+                />
                 <p
-                  v-for="note in slotProps.item.meta"
-                  :key="`${slotProps.item.id}-${note}`"
-                  class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]"
+                  v-if="entry.display.activity.approval?.validationError"
+                  class="m-0 text-[0.84rem] leading-[1.45] text-[#bc5f38]"
                 >
-                  {{ note }}
+                  {{ entry.display.activity.approval.validationError }}
                 </p>
-
-                <div v-if="slotProps.item.stdout" class="grid gap-[0.3rem]">
-                  <p class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]">stdout</p>
-                  <ScrollPanel class="w-full">
-                    <pre class="rounded-[0.85rem] bg-[rgba(17,38,42,0.94)] px-[0.9rem] py-[0.8rem] font-mono text-[0.86rem] leading-[1.55] break-words whitespace-pre-wrap text-[#f2f5f6]">{{ slotProps.item.stdout }}</pre>
-                  </ScrollPanel>
-                </div>
-
-                <div v-if="slotProps.item.stderr" class="grid gap-[0.3rem]">
-                  <p class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]">stderr</p>
-                  <ScrollPanel class="w-full">
-                    <pre class="rounded-[0.85rem] bg-[rgba(78,31,24,0.92)] px-[0.9rem] py-[0.8rem] font-mono text-[0.86rem] leading-[1.55] break-words whitespace-pre-wrap text-[#f2f5f6]">{{ slotProps.item.stderr }}</pre>
-                  </ScrollPanel>
+                <div v-if="entry.display.activity.approval" class="flex flex-wrap gap-2">
+                  <Button
+                    v-for="option in entry.display.activity.approval.options"
+                    :key="`${entry.display.activity.id}-${option.value}`"
+                    :label="option.label"
+                    size="small"
+                    :severity="option.value === 'decline' || option.value === 'cancel' ? 'secondary' : undefined"
+                    :outlined="option.value === 'decline' || option.value === 'cancel'"
+                    @click="submitApproval(entry.display.activity, option.value)"
+                  />
                 </div>
               </div>
-            </details>
-          </template>
-        </Timeline>
+            </div>
+
+            <div
+              v-if="entry.display.change"
+              class="grid gap-[0.7rem] border-t border-[rgba(34,66,72,0.08)] px-4 pb-4 pt-3 max-sm:px-3 max-sm:pb-3"
+            >
+              <div class="min-w-0">
+                <div class="flex flex-wrap items-center gap-2">
+                  <p class="m-0 text-[0.78rem] font-bold uppercase tracking-[0.08em] text-[color:var(--app-text-soft)]">
+                    {{ fileChangeKindLabel(entry.display.change) }}
+                  </p>
+                  <span
+                    v-if="fileChangeMetaLabel(entry.display.change)"
+                    class="inline-flex max-w-full items-center rounded-full border border-[rgba(34,66,72,0.1)] bg-[rgba(21,94,99,0.08)] px-2.5 py-1 text-[0.74rem] font-medium text-[color:var(--app-accent-deep)]"
+                  >
+                    <span class="truncate">
+                      {{ fileChangeMetaLabel(entry.display.change) }}
+                    </span>
+                  </span>
+                </div>
+                <p class="mt-1 mb-0 break-all font-mono text-[0.84rem] text-[color:var(--app-text)]">
+                  {{ entry.display.change.path }}
+                </p>
+              </div>
+              <HighlightedCodeBlock
+                v-if="entry.display.change.diff"
+                :content="entry.display.change.diff"
+                label="Diff"
+                language="diff"
+                :copy-aria-label="`Copy diff for ${entry.display.change.path}`"
+              />
+            </div>
+
+            <div
+              v-if="
+                !isShellActivity(entry.display.activity) &&
+                !entry.display.change &&
+                (Boolean(genericActivityDetail(entry.display.activity)) ||
+                  Boolean(entry.display.activity.command) ||
+                  Boolean(entry.display.activity.cwd) ||
+                  Boolean(entry.display.activity.stdout) ||
+                  Boolean(entry.display.activity.stderr) ||
+                  entry.display.activity.meta.length > 0)
+              "
+              class="grid gap-[0.55rem] border-t border-[rgba(34,66,72,0.08)] px-4 pb-4 pt-3 max-sm:px-3 max-sm:pb-3"
+            >
+              <p
+                v-if="genericActivityDetail(entry.display.activity)"
+                class="m-0 break-words whitespace-pre-wrap text-[0.9rem] text-[color:var(--app-text)]"
+              >
+                {{ genericActivityDetail(entry.display.activity) }}
+              </p>
+              <p
+                v-if="entry.display.activity.command"
+                class="m-0 break-words whitespace-pre-wrap font-mono text-[0.9rem] text-[color:var(--app-accent-deep)]"
+              >
+                {{ entry.display.activity.command }}
+              </p>
+              <p
+                v-if="entry.display.activity.cwd"
+                class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]"
+              >
+                cwd {{ entry.display.activity.cwd }}
+              </p>
+              <p
+                v-for="note in entry.display.activity.meta"
+                :key="`${entry.display.activity.id}-${note}`"
+                class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]"
+              >
+                {{ note }}
+              </p>
+
+              <HighlightedCodeBlock
+                v-if="entry.display.activity.stdout"
+                :content="entry.display.activity.stdout"
+                label="Stdout"
+                auto-detect
+                :copy-aria-label="`Copy stdout from ${activitySummaryText(entry.display)}`"
+              />
+
+              <HighlightedCodeBlock
+                v-if="entry.display.activity.stderr"
+                :content="entry.display.activity.stderr"
+                label="Stderr"
+                tone="danger"
+                auto-detect
+                :copy-aria-label="`Copy stderr from ${activitySummaryText(entry.display)}`"
+              />
+            </div>
+          </details>
+
+          <div
+            v-else
+            class="rounded-[1rem] border border-[rgba(34,66,72,0.08)] bg-[rgba(255,250,242,0.58)] px-4 py-3 max-sm:px-3 max-sm:py-2.5"
+          >
+            <p
+              class="m-0 inline-flex min-w-0 max-w-full items-baseline gap-2 text-[0.92rem] font-medium max-sm:text-[0.88rem]"
+              :class="isShellActivity(entry.display.activity) ? 'overflow-x-auto overscroll-x-contain whitespace-nowrap font-mono [-ms-overflow-style:none] [scrollbar-width:none]' : 'flex-wrap'"
+            >
+              <span class="shrink-0" :class="activitySummaryParts(entry.display).verbClass">
+                {{ activitySummaryParts(entry.display).verb }}
+              </span>
+              <span class="min-w-0 break-words text-[color:var(--app-text)]">
+                {{ activitySummaryParts(entry.display).text }}
+              </span>
+            </p>
+          </div>
+        </template>
       </div>
     </ScrollPanel>
   </section>

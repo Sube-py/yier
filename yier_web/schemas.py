@@ -278,6 +278,12 @@ class StoredSessionMessage(BaseModel):
     channel_meta: ChannelMetaPayload | None = None
 
 
+class CodexTurnTimingPayload(BaseModel):
+    turn_id: str = ""
+    turn_started_at_ms: int | None = None
+    final_assistant_started_at_ms: int | None = None
+
+
 class SessionTranscriptResponse(BaseModel):
     session_id: str
     source: SessionSource = "chat"
@@ -289,6 +295,7 @@ class SessionTranscriptResponse(BaseModel):
     pending_approvals: list[PendingApproval] = Field(default_factory=list)
     messages: list[StoredSessionMessage] = Field(default_factory=list)
     activity_events: list[StoredActivityEvent] = Field(default_factory=list)
+    codex_turn_timings: list[CodexTurnTimingPayload] = Field(default_factory=list)
 
 
 class ChatStreamRequest(BaseModel):

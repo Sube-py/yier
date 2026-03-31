@@ -17,6 +17,7 @@ import type {
   ApprovalFormFieldState,
   BackendRuntime,
   ChatActivity,
+  CodexTurnTiming,
   FileChangeRecord,
   UiChatMessage,
 } from '../types/api'
@@ -46,6 +47,7 @@ interface TurnGroupEntry {
   type: 'turn-group'
   key: string
   sortOrder: number
+  turnIndex: number
   items: Array<ActivityFeedItem | MessageFeedItem>
 }
 
@@ -139,6 +141,7 @@ markdown.renderer.rules.code_block = (tokens, idx) => {
 const props = defineProps<{
   messages: UiChatMessage[]
   activities: ChatActivity[]
+  turnTimings?: CodexTurnTiming[]
   isSending: boolean
   sessionLabel: string
   sessionRuntime: BackendRuntime | null
@@ -937,6 +940,7 @@ const renderEntries = computed<RenderEntry[]>(() => {
   const entries: RenderEntry[] = []
   let activeUserMessage: MessageFeedItem | null = null
   let pendingTurnItems: Array<ActivityFeedItem | MessageFeedItem> = []
+  let activeTurnIndex = -1
 
   function flushTurn() {
     if (!activeUserMessage) {
@@ -973,6 +977,7 @@ const renderEntries = computed<RenderEntry[]>(() => {
         type: 'turn-group',
         key: `turn-group:${firstSortOrder}:${lastSortOrder}`,
         sortOrder: firstSortOrder,
+        turnIndex: activeTurnIndex,
         items: groupedItems,
       })
     }
@@ -991,6 +996,7 @@ const renderEntries = computed<RenderEntry[]>(() => {
   for (const entry of feedEntries.value) {
     if (entry.type === 'message' && entry.message.role === 'user') {
       flushTurn()
+      activeTurnIndex += 1
       activeUserMessage = entry
       continue
     }
@@ -1065,10 +1071,92 @@ function onTurnGroupToggle(group: TurnGroupEntry, event: Event) {
   }
 }
 
+function turnGroupDurationSeconds(group: TurnGroupEntry) {
+  const turnTiming = props.turnTimings?.[group.turnIndex]
+  const turnStartedAtMs = turnTiming?.turn_started_at_ms
+  const finalAssistantStartedAtMs = turnTiming?.final_assistant_started_at_ms
+
+  if (
+    typeof turnStartedAtMs === 'number' &&
+    Number.isFinite(turnStartedAtMs) &&
+    typeof finalAssistantStartedAtMs === 'number' &&
+    Number.isFinite(finalAssistantStartedAtMs) &&
+    finalAssistantStartedAtMs >= turnStartedAtMs
+  ) {
+    return (finalAssistantStartedAtMs - turnStartedAtMs) / 1000
+  }
+
+  let startedAt: number | null = null
+  let finishedAt: number | null = null
+  let maxRuntimeSeconds = 0
+
+  for (const item of group.items) {
+    if (item.type !== 'activity') {
+      continue
+    }
+
+    const process = item.display.activity.shell?.process
+    if (!process) {
+      continue
+    }
+
+    if (Number.isFinite(process.runtime_seconds)) {
+      maxRuntimeSeconds = Math.max(maxRuntimeSeconds, process.runtime_seconds)
+    }
+
+    if (Number.isFinite(process.started_at)) {
+      startedAt = startedAt === null ? process.started_at : Math.min(startedAt, process.started_at)
+    }
+
+    const candidateFinishedAt =
+      Number.isFinite(process.finished_at)
+        ? process.finished_at
+        : Number.isFinite(process.started_at) && Number.isFinite(process.runtime_seconds)
+          ? process.started_at + process.runtime_seconds
+          : null
+
+    if (candidateFinishedAt !== null) {
+      finishedAt = finishedAt === null ? candidateFinishedAt : Math.max(finishedAt, candidateFinishedAt)
+    }
+  }
+
+  if (startedAt !== null && finishedAt !== null && finishedAt >= startedAt) {
+    return Math.max(0, finishedAt - startedAt)
+  }
+
+  return maxRuntimeSeconds > 0 ? maxRuntimeSeconds : null
+}
+
+function formatDurationLabel(totalSeconds: number) {
+  const roundedSeconds = Math.max(0, Math.round(totalSeconds))
+  const minutes = Math.floor(roundedSeconds / 60)
+  const seconds = roundedSeconds % 60
+
+  if (minutes <= 0) {
+    return `${seconds}s`
+  }
+
+  return `${minutes}m ${seconds}s`
+}
+
 function turnGroupSummary(group: TurnGroupEntry) {
+  const durationSeconds = turnGroupDurationSeconds(group)
+  if (durationSeconds !== null) {
+    return `Worked for ${formatDurationLabel(durationSeconds)}`
+  }
+
   const count = group.items.length
   const noun = count === 1 ? 'update' : 'updates'
-  return `${count} ${noun}`
+  return `Worked through ${count} ${noun}`
+}
+
+function shouldShowFinalMessageSeparator(entry: MessageFeedItem, index: number) {
+  if (entry.message.role !== 'assistant') {
+    return false
+  }
+
+  const previousEntry = renderEntries.value[index - 1]
+  return previousEntry?.type === 'turn-group' ? isTurnGroupOpen(previousEntry) : false
 }
 
 function hasActivityDetails(display: ActivityDisplayItem) {
@@ -1250,7 +1338,7 @@ watch(
 
     <ScrollPanel v-else class="min-h-0 flex-1" :pt="timelineScrollPt">
       <div class="grid min-w-0 grid-cols-1 gap-3">
-        <template v-for="entry in renderEntries" :key="entry.key">
+        <template v-for="(entry, entryIndex) in renderEntries" :key="entry.key">
           <div
             v-if="entry.type === 'message'"
             class="flex min-w-0"
@@ -1266,6 +1354,14 @@ watch(
               class="min-w-0 max-w-full flex-1 px-1 max-sm:px-0"
             >
               <div
+                v-if="shouldShowFinalMessageSeparator(entry, entryIndex)"
+                class="mb-3 flex items-center gap-3 text-[0.72rem] font-semibold uppercase tracking-[0.12em] text-[color:var(--app-text-soft)]"
+              >
+                <span class="h-px flex-1 bg-[rgba(34,66,72,0.12)]"></span>
+                <span>Final message</span>
+                <span class="h-px flex-1 bg-[rgba(34,66,72,0.12)]"></span>
+              </div>
+              <div
                 class="markdown-prose"
                 @click="onMarkdownClick"
                 v-html="renderAssistantMessage(entry.message.content)"
@@ -1275,31 +1371,23 @@ watch(
 
           <details
             v-else-if="entry.type === 'turn-group'"
-            class="overflow-hidden rounded-[1rem] border border-[rgba(34,66,72,0.08)] bg-[rgba(255,250,242,0.56)] shadow-[0_10px_24px_rgba(24,44,48,0.04)]"
+            class="overflow-hidden"
             :open="isTurnGroupOpen(entry)"
             @toggle="onTurnGroupToggle(entry, $event)"
           >
-            <summary class="grid cursor-pointer list-none grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-4 py-3 max-sm:px-3 max-sm:py-2.5">
-              <div class="min-w-0">
-                <p class="m-0 text-[0.8rem] font-semibold uppercase tracking-[0.08em] text-[color:var(--app-text-soft)]">
-                  Process
-                </p>
-                <p class="mt-1 mb-0 text-[0.92rem] text-[color:var(--app-text)] max-sm:text-[0.88rem]">
-                  {{ turnGroupSummary(entry) }}
-                </p>
-              </div>
+            <summary class="flex cursor-pointer list-none items-center gap-3 py-1.5 text-[0.72rem] font-semibold uppercase tracking-[0.12em] text-[color:var(--app-text-soft)]">
+              <span class="h-px flex-1 bg-[rgba(34,66,72,0.12)]"></span>
+              <span class="shrink-0">{{ turnGroupSummary(entry) }}</span>
               <i
-                class="pi pi-angle-down text-[0.82rem] text-[color:var(--app-text-soft)] transition-transform duration-150"
-                :class="isTurnGroupOpen(entry) ? 'rotate-180' : ''"
+                class="pi pi-angle-right shrink-0 text-[0.78rem] transition-transform duration-150"
+                :class="isTurnGroupOpen(entry) ? 'rotate-90' : ''"
               ></i>
+              <span class="h-px flex-1 bg-[rgba(34,66,72,0.12)]"></span>
             </summary>
 
-            <div class="grid gap-2 border-t border-[rgba(34,66,72,0.08)] px-4 pb-4 pt-3 max-sm:px-3 max-sm:pb-3">
+            <div class="grid gap-3 pt-3">
               <template v-for="groupItem in entry.items" :key="groupItem.key">
-                <div
-                  v-if="groupItem.type === 'message'"
-                  class="rounded-[0.9rem] border border-[rgba(34,66,72,0.08)] bg-[rgba(255,255,255,0.55)] px-3 py-2.5"
-                >
+                <div v-if="groupItem.type === 'message'" class="min-w-0">
                   <div
                     class="markdown-prose"
                     @click="onMarkdownClick"
@@ -1308,9 +1396,9 @@ watch(
                 </div>
                 <details
                   v-else-if="hasActivityDetails(groupItem.display)"
-                  class="overflow-hidden rounded-[0.9rem] border border-[rgba(34,66,72,0.08)] bg-[rgba(255,255,255,0.55)]"
+                  class="overflow-hidden"
                 >
-                  <summary class="grid cursor-pointer list-none grid-cols-[minmax(0,1fr)_auto] items-start gap-3 px-3 py-2.5">
+                  <summary class="grid cursor-pointer list-none grid-cols-[minmax(0,1fr)_auto] items-start gap-3 py-1.5">
                     <div
                       class="min-w-0"
                       :class="isShellActivity(groupItem.display.activity) ? 'overflow-x-auto overscroll-x-contain [-ms-overflow-style:none] [scrollbar-width:none]' : ''"
@@ -1327,12 +1415,12 @@ watch(
                         </span>
                       </p>
                     </div>
-                    <i class="pi pi-angle-down text-[0.8rem] text-[color:var(--app-text-soft)]"></i>
+                    <i class="pi pi-angle-right text-[0.8rem] text-[color:var(--app-text-soft)]"></i>
                   </summary>
 
                   <div
                     v-if="isShellActivity(groupItem.display.activity)"
-                    class="grid gap-[0.7rem] border-t border-[rgba(34,66,72,0.08)] px-3 pb-3 pt-2.5"
+                    class="grid gap-[0.7rem] border-l border-[rgba(34,66,72,0.08)] pl-4"
                   >
                     <HighlightedCodeBlock
                       v-if="shellCommand(groupItem.display.activity)"
@@ -1381,7 +1469,7 @@ watch(
 
                   <div
                     v-if="activityUsesMarkdown(groupItem.display.activity) || isApprovalActivity(groupItem.display.activity)"
-                    class="grid gap-[0.55rem] border-t border-[rgba(34,66,72,0.08)] px-3 pb-3 pt-2.5"
+                    class="grid gap-[0.55rem] border-l border-[rgba(34,66,72,0.08)] pl-4"
                   >
                     <div
                       v-if="activityUsesMarkdown(groupItem.display.activity) && groupItem.display.activity.detail"
@@ -1526,7 +1614,7 @@ watch(
 
                   <div
                     v-if="groupItem.display.change"
-                    class="grid gap-[0.7rem] border-t border-[rgba(34,66,72,0.08)] px-3 pb-3 pt-2.5"
+                    class="grid gap-[0.7rem] border-l border-[rgba(34,66,72,0.08)] pl-4"
                   >
                     <div class="min-w-0">
                       <div class="flex flex-wrap items-center gap-2">
@@ -1566,7 +1654,7 @@ watch(
                         Boolean(groupItem.display.activity.stderr) ||
                         groupItem.display.activity.meta.length > 0)
                     "
-                    class="grid gap-[0.55rem] border-t border-[rgba(34,66,72,0.08)] px-3 pb-3 pt-2.5"
+                    class="grid gap-[0.55rem] border-l border-[rgba(34,66,72,0.08)] pl-4"
                   >
                     <p
                       v-if="genericActivityDetail(groupItem.display.activity)"
@@ -1614,7 +1702,7 @@ watch(
                 </details>
                 <div
                   v-else
-                  class="rounded-[0.9rem] border border-[rgba(34,66,72,0.08)] bg-[rgba(255,255,255,0.55)] px-3 py-2.5"
+                  class="min-w-0 py-1.5"
                 >
                   <div
                     class="min-w-0"

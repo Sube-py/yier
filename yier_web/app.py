@@ -266,6 +266,33 @@ async def get_session(session_id: str, state: State) -> SessionTranscriptRespons
     services = get_services(state)
     messages, activity_events = services.chat_service.load_session_view(session_id)
     metadata = services.chat_service.get_session_metadata(session_id)
+    codex_turn_timings: list[dict[str, int | str | None]] = []
+
+    if metadata["backend_id"] == "codex":
+        conversation_state = services.chat_service.build_codex_ipc_conversation_state(session_id)
+        turns = conversation_state.get("turns")
+        if isinstance(turns, list):
+            codex_turn_timings = [
+                {
+                    "turn_id": str(turn.get("turnId") or turn.get("id") or ""),
+                    "turn_started_at_ms": (
+                        int(turn_started_at_ms)
+                        if isinstance((turn_started_at_ms := turn.get("turnStartedAtMs")), (int, float))
+                        else None
+                    ),
+                    "final_assistant_started_at_ms": (
+                        int(final_started_at_ms)
+                        if isinstance(
+                            (final_started_at_ms := turn.get("finalAssistantStartedAtMs")),
+                            (int, float),
+                        )
+                        else None
+                    ),
+                }
+                for turn in turns
+                if isinstance(turn, dict)
+            ]
+
     return SessionTranscriptResponse(
         session_id=session_id,
         source=metadata["source"],
@@ -281,6 +308,7 @@ async def get_session(session_id: str, state: State) -> SessionTranscriptRespons
         pending_approvals=services.chat_service.get_pending_approvals(session_id),
         messages=messages,
         activity_events=activity_events,
+        codex_turn_timings=codex_turn_timings,
     )
 
 

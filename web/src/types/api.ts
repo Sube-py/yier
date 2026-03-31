@@ -117,6 +117,13 @@ export interface SessionTranscriptResponse {
   pending_approvals: PendingApproval[]
   messages: StoredMessage[]
   activity_events: StoredActivityEvent[]
+  codex_turn_timings: CodexTurnTiming[]
+}
+
+export interface CodexTurnTiming {
+  turn_id: string
+  turn_started_at_ms?: number | null
+  final_assistant_started_at_ms?: number | null
 }
 
 export interface SessionSummary {

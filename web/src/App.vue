@@ -41,6 +41,7 @@ import type {
   ChatApprovalRequestedEvent,
   ChatAssistantDeltaEvent,
   CodexWorkMode,
+  CodexTurnTiming,
   CodexPairedEditorStateRequest,
   CodexWorkspaceResponse,
   ChatStreamDoneEvent,
@@ -132,6 +133,7 @@ const activeSessionRuntime = ref<BackendRuntime | null>(null)
 const activeSessionId = ref(localStorage.getItem(SESSION_STORAGE_KEY) ?? '')
 const chatMessages = ref<UiChatMessage[]>([])
 const activities = ref<ChatActivity[]>([])
+const codexTurnTimings = ref<CodexTurnTiming[]>([])
 const sessionHistory = ref<SessionSummary[]>([])
 const activeCodexWorkMode = ref<CodexWorkMode>('build')
 const isCodexCompactLayout = ref(false)
@@ -762,6 +764,9 @@ async function loadSessionTranscript(sessionId: string) {
   resetTimelineSequence()
   chatMessages.value = toUiMessages(transcript.messages)
   activities.value = []
+  codexTurnTimings.value = Array.isArray(transcript.codex_turn_timings)
+    ? transcript.codex_turn_timings
+    : []
   activeSessionRuntime.value = transcript.backend_runtime ?? null
   activeCodexWorkMode.value = transcript.codex_work_mode ?? 'build'
   backgroundActivityIdsByToolCallId.clear()
@@ -783,6 +788,7 @@ async function openSessionFromHistory(sessionId: string) {
   activeSessionId.value = sessionId
   chatMessages.value = []
   activities.value = []
+  codexTurnTimings.value = []
   resetTimelineSequence()
   activeSessionRuntime.value = null
   backgroundActivityIdsByToolCallId.clear()
@@ -3636,6 +3642,7 @@ function toErrorMessage(error: unknown) {
                 <ChatTimeline
                   :messages="chatMessages"
                   :activities="activities"
+                  :turn-timings="codexTurnTimings"
                   :is-sending="isSending"
                   :session-label="sessionLabel"
                 :session-runtime="activeSessionRuntime"

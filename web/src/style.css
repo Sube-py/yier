@@ -131,6 +131,53 @@
     max-width: 100%;
   }
 
+  .markdown-prose > :first-child {
+    margin-top: 0 !important;
+  }
+
+  .markdown-prose > :last-child {
+    margin-bottom: 0 !important;
+  }
+
+  .markdown-prose p {
+    margin-top: 0.7em;
+    margin-bottom: 0.7em;
+  }
+
+  .markdown-prose p:first-of-type {
+    margin-top: 0;
+  }
+
+  .markdown-prose p:last-of-type {
+    margin-bottom: 0;
+  }
+
+  .markdown-prose ul,
+  .markdown-prose ol {
+    margin-top: 0.7em;
+    margin-bottom: 0.7em;
+    padding-left: 1.2em;
+  }
+
+  .markdown-prose ul:first-child,
+  .markdown-prose ol:first-child,
+  .markdown-prose ul:first-of-type,
+  .markdown-prose ol:first-of-type {
+    margin-top: 0;
+  }
+
+  .markdown-prose ul:last-child,
+  .markdown-prose ol:last-child,
+  .markdown-prose ul:last-of-type,
+  .markdown-prose ol:last-of-type {
+    margin-bottom: 0;
+  }
+
+  .markdown-prose li {
+    margin-top: 0.18em;
+    margin-bottom: 0.18em;
+  }
+
   .markdown-prose pre {
     max-width: 100%;
     max-height: min(24rem, 52vh);
@@ -297,6 +344,59 @@
   .markdown-prose td {
     border-color: rgba(34, 66, 72, 0.14);
     white-space: nowrap;
+  }
+
+  .message-fieldset.p-fieldset {
+    padding: 0 !important;
+    box-shadow: none !important;
+    border-radius: 1.3rem;
+  }
+
+  .message-fieldset-user.p-fieldset {
+    margin-left: auto;
+    border-color: rgba(21, 94, 99, 0.16);
+    background: linear-gradient(135deg, rgba(21, 94, 99, 0.13), rgba(69, 141, 145, 0.08));
+  }
+
+  .message-fieldset-assistant.p-fieldset {
+    border-color: rgba(153, 125, 93, 0.15);
+    background: var(--app-panel-strong);
+  }
+
+  .message-fieldset > .message-fieldset-legend.p-fieldset-legend {
+    margin-left: 0.75rem;
+    padding: 0 !important;
+    border: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    max-width: max-content;
+  }
+
+  .message-fieldset .message-fieldset-legend-label.p-fieldset-legend-label {
+    display: inline-block;
+    padding: 0 0.375rem;
+    background: transparent !important;
+    color: var(--app-text-soft);
+    font-size: 0.76rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    box-shadow: none !important;
+  }
+
+  .message-fieldset .message-fieldset-content-container.p-fieldset-content-container,
+  .message-fieldset .message-fieldset-content-wrapper.p-fieldset-content-wrapper {
+    background: transparent !important;
+    border: 0 !important;
+    border-radius: inherit;
+    box-shadow: none !important;
+  }
+
+  .message-fieldset .message-fieldset-content.p-fieldset-content {
+    padding: 0.375rem 0.875rem 0.75rem !important;
+    background: transparent !important;
+    border: 0 !important;
+    border-radius: inherit;
   }
 
   .code-surface {
@@ -674,6 +774,18 @@
   }
 
   @media (max-width: 640px) {
+    .message-fieldset.p-fieldset {
+      border-radius: 1.1rem;
+    }
+
+    .message-fieldset > .message-fieldset-legend.p-fieldset-legend {
+      margin-left: 0.625rem;
+    }
+
+    .message-fieldset .message-fieldset-content.p-fieldset-content {
+      padding: 0.25rem 0.625rem 0.625rem !important;
+    }
+
     .markdown-prose {
       @apply prose-sm;
     }

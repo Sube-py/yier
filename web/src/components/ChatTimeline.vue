@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import MarkdownIt from 'markdown-it'
 import hljs from 'highlight.js/lib/common'
 import Button from 'primevue/button'
+import Fieldset from 'primevue/fieldset'
 import ProgressSpinner from 'primevue/progressspinner'
 import ScrollPanel from 'primevue/scrollpanel'
 import Tag from 'primevue/tag'
@@ -179,6 +180,38 @@ function runtimeStatusLabel(status: string | null | undefined) {
     .filter(Boolean)
     .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
     .join(' ')
+}
+
+function messageLegend(message: UiChatMessage) {
+  return message.role === 'user' ? 'You' : props.assistantLabel ?? 'Yier'
+}
+
+function messageFieldsetPt(message: UiChatMessage) {
+  const rootClass =
+    message.role === 'user'
+      ? 'message-fieldset message-fieldset-user ml-auto min-w-0 max-w-[min(48rem,85%)] max-[1023px]:w-full max-[1023px]:max-w-full'
+      : 'message-fieldset message-fieldset-assistant min-w-0 max-w-[min(48rem,85%)] max-[1023px]:w-full max-[1023px]:max-w-full'
+
+  return {
+    root: {
+      class: rootClass,
+    },
+    legend: {
+      class: 'message-fieldset-legend',
+    },
+    legendLabel: {
+      class: 'message-fieldset-legend-label',
+    },
+    contentContainer: {
+      class: 'message-fieldset-content-container',
+    },
+    contentWrapper: {
+      class: 'message-fieldset-content-wrapper',
+    },
+    content: {
+      class: 'message-fieldset-content',
+    },
+  }
 }
 
 function renderAssistantMessage(content: string) {
@@ -835,19 +868,12 @@ watch(
         class="grid min-w-0 grid-cols-1 gap-4"
       >
         <template v-if="segment.kind === 'messages'">
-          <article
+          <Fieldset
             v-for="message in segment.messages"
             :key="message.id"
-            class="min-w-0 max-w-[min(48rem,85%)] overflow-hidden rounded-[1.3rem] border p-4 max-[1023px]:w-full max-[1023px]:max-w-full max-sm:rounded-[1.1rem] max-sm:p-3"
-            :class="
-              message.role === 'user'
-                ? 'ml-auto border-[rgba(21,94,99,0.16)] bg-[linear-gradient(135deg,rgba(21,94,99,0.13),rgba(69,141,145,0.08))]'
-                : 'border-[rgba(153,125,93,0.15)] bg-[color:var(--app-panel-strong)]'
-            "
+            :legend="messageLegend(message)"
+            :pt="messageFieldsetPt(message)"
           >
-            <p class="mb-[0.35rem] mt-0 text-[0.82rem] font-bold uppercase tracking-[0.08em] text-[color:var(--app-text-soft)]">
-              {{ message.role === 'user' ? 'You' : assistantLabel ?? 'Yier' }}
-            </p>
             <p v-if="message.role === 'user'" class="m-0 whitespace-pre-wrap leading-[1.65]">
               {{ message.content }}
             </p>
@@ -857,7 +883,7 @@ watch(
               @click="onMarkdownClick"
               v-html="renderAssistantMessage(message.content)"
             ></div>
-          </article>
+          </Fieldset>
         </template>
 
         <Timeline

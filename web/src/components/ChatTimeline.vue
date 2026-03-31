@@ -351,6 +351,38 @@ function fileChangeMetaLabel(change: FileChangeRecord) {
   return ''
 }
 
+function activitySummaryPrimary(activity: ChatActivity) {
+  if (activity.kind === 'tool' && activity.detail.trim()) {
+    return activity.detail
+  }
+
+  return activity.title
+}
+
+function activitySummarySecondary(activity: ChatActivity) {
+  if (isShellActivity(activity) || activity.kind === 'tool') {
+    return ''
+  }
+
+  if (!activityUsesMarkdown(activity) && activity.detail.trim()) {
+    return activity.detail
+  }
+
+  return ''
+}
+
+function activitySummaryPrimaryClass(activity: ChatActivity) {
+  return 'font-bold'
+}
+
+function shouldAutoOpenActivity(activity: ChatActivity) {
+  if (activity.kind === 'approval') {
+    return activity.state === 'queued' || activity.state === 'running'
+  }
+
+  return activity.state === 'running'
+}
+
 function isHiddenActivity(activity: ChatActivity) {
   if (activity.kind === 'approval') {
     return false
@@ -852,33 +884,37 @@ watch(
           <template #content="slotProps">
             <details
               class="overflow-hidden rounded-2xl border border-[rgba(34,66,72,0.08)] bg-[rgba(255,250,242,0.8)]"
-              :open="
-                slotProps.item.state === 'running' ||
-                Boolean(slotProps.item.stdout || slotProps.item.stderr) ||
-                activityUsesMarkdown(slotProps.item) ||
-                hasFileChangeDiffs(slotProps.item)
-              "
+              :open="shouldAutoOpenActivity(slotProps.item)"
             >
               <summary class="grid cursor-pointer list-none grid-cols-[minmax(0,1fr)_auto] items-start gap-[0.7rem] px-[0.9rem] py-[0.8rem] max-[1023px]:grid-cols-1 max-sm:px-3 max-sm:py-3">
                 <div class="min-w-0">
-                  <p class="m-0 font-bold">{{ slotProps.item.title }}</p>
+                  <div
+                    v-if="isShellActivity(slotProps.item)"
+                    class="max-w-full overflow-x-auto overscroll-x-contain [-ms-overflow-style:none] [scrollbar-width:none]"
+                  >
+                    <p
+                      class="m-0 inline-flex min-w-full items-center gap-2 whitespace-nowrap font-mono text-[0.92rem] font-medium text-[color:var(--app-accent-deep)]"
+                    >
+                      <span class="shrink-0 text-[color:var(--app-accent)]">Ran</span>
+                      <span class="text-[color:var(--app-accent-deep)]">
+                        {{ shellCommand(slotProps.item) || slotProps.item.title }}
+                      </span>
+                    </p>
+                  </div>
                   <p
-                    v-if="
-                      !isShellActivity(slotProps.item) &&
-                      slotProps.item.detail &&
-                      !activityUsesMarkdown(slotProps.item)
-                    "
+                    v-else
+                    class="m-0"
+                    :class="activitySummaryPrimaryClass(slotProps.item)"
+                  >
+                    {{ activitySummaryPrimary(slotProps.item) }}
+                  </p>
+                  <p
+                    v-if="activitySummarySecondary(slotProps.item)"
                     class="mt-1 mb-0 break-words whitespace-pre-wrap text-[color:var(--app-text-soft)]"
                   >
-                    {{ slotProps.item.detail }}
+                    {{ activitySummarySecondary(slotProps.item) }}
                   </p>
                 </div>
-                <p
-                  v-if="isShellActivity(slotProps.item) && shellCwd(slotProps.item)"
-                  class="m-0 max-w-[min(40vw,24rem)] overflow-hidden text-ellipsis whitespace-nowrap font-mono text-[0.78rem] text-[color:var(--app-text-soft)] max-[1023px]:max-w-full max-[1023px]:whitespace-normal max-[1023px]:break-all"
-                >
-                  {{ shellCwd(slotProps.item) }}
-                </p>
               </summary>
 
               <div

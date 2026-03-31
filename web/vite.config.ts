@@ -15,7 +15,7 @@ export default defineConfig({
     tailwindcss(),
   ],
   server: {
-    host: '127.0.0.1',
+    host: '0.0.0.0',
     port: 5173,
     strictPort: true,
     proxy: {
@@ -23,11 +23,6 @@ export default defineConfig({
         target: backendOrigin,
         changeOrigin: true,
       },
-    },
-    hmr: {
-      host: '127.0.0.1',
-      port: 5173,
-      protocol: 'ws',
     },
   },
   resolve: {

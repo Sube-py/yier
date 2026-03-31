@@ -212,6 +212,31 @@ let currentStreamSequenceHint: number | null = null
 const backgroundActivityIdsByToolCallId = new Map<string, string>()
 let hydratingLlmForm = false
 
+function createClientId() {
+  const cryptoApi = globalThis.crypto
+  if (typeof cryptoApi?.randomUUID === 'function') {
+    return cryptoApi.randomUUID()
+  }
+
+  if (typeof cryptoApi?.getRandomValues === 'function') {
+    const bytes = cryptoApi.getRandomValues(new Uint8Array(16))
+    const versionByte = bytes[6] ?? 0
+    const variantByte = bytes[8] ?? 0
+    bytes[6] = (versionByte & 0x0f) | 0x40
+    bytes[8] = (variantByte & 0x3f) | 0x80
+    const hex = Array.from(bytes, (value) => value.toString(16).padStart(2, '0'))
+    return [
+      hex.slice(0, 4).join(''),
+      hex.slice(4, 6).join(''),
+      hex.slice(6, 8).join(''),
+      hex.slice(8, 10).join(''),
+      hex.slice(10, 16).join(''),
+    ].join('-')
+  }
+
+  return `id-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
 const SHELL_TOOL_NAMES = new Set([
   'run_command',
   'start_background_command',
@@ -1328,7 +1353,7 @@ function handleStreamEvent(event: ChatStreamEvent) {
   }
 
   if (event.event === 'reasoning') {
-    const activityId = event.data.item_id || `reasoning:${crypto.randomUUID()}`
+    const activityId = event.data.item_id || `reasoning:${createClientId()}`
     upsertActivity(
       activityId,
       makeActivity({
@@ -1343,7 +1368,7 @@ function handleStreamEvent(event: ChatStreamEvent) {
   }
 
   if (event.event === 'plan') {
-    const activityId = event.data.item_id || `plan:${crypto.randomUUID()}`
+    const activityId = event.data.item_id || `plan:${createClientId()}`
     upsertActivity(activityId, {
       id: activityId,
       kind: 'plan',
@@ -1404,7 +1429,7 @@ function handleStreamEvent(event: ChatStreamEvent) {
     errorMessage.value = abortedEvent.data.reason || 'Codex turn was interrupted.'
     activities.value.push(
       makeActivity({
-        id: abortedEvent.data.turn_id ? `turn:${abortedEvent.data.turn_id}:aborted` : crypto.randomUUID(),
+        id: abortedEvent.data.turn_id ? `turn:${abortedEvent.data.turn_id}:aborted` : createClientId(),
         title: 'Turn aborted',
         detail: abortedEvent.data.reason || 'Codex interrupted this turn before completion.',
         state: 'error',
@@ -1426,7 +1451,7 @@ function handleStreamEvent(event: ChatStreamEvent) {
       makeActivity({
         id: streamErrorEvent.data.turn_id
           ? `turn:${streamErrorEvent.data.turn_id}:stream-error`
-          : crypto.randomUUID(),
+          : createClientId(),
         title: 'Stream error',
         detail: streamErrorEvent.data.message,
         state: 'error',
@@ -1594,7 +1619,7 @@ async function reloadMcpSettings() {
 
 function addMcpServer() {
   mcpDraft.value.push({
-    id: crypto.randomUUID(),
+    id: createClientId(),
     name: `server-${mcpDraft.value.length + 1}`,
     type: 'stdio',
     enabled: true,
@@ -1609,7 +1634,7 @@ function addMcpServer() {
 
 function addAllowedRoot() {
   rootsDraft.value.push({
-    id: crypto.randomUUID(),
+    id: createClientId(),
     path: '',
   })
 }
@@ -1705,7 +1730,7 @@ function makeUiMessage(
   options: { draftId?: string | null; sequence?: number | null } = {},
 ): UiChatMessage {
   return {
-    id: crypto.randomUUID(),
+    id: createClientId(),
     role,
     content,
     sequence: reserveTimelineSequence(options.sequence),
@@ -2294,7 +2319,7 @@ function makeActivity(
   overrides: Partial<ChatActivity> & Pick<ChatActivity, 'title' | 'detail' | 'state' | 'kind'>,
 ): ChatActivity {
   return {
-    id: overrides.id ?? crypto.randomUUID(),
+    id: overrides.id ?? createClientId(),
     sequence: reserveTimelineSequence(overrides.sequence),
     kind: overrides.kind,
     title: overrides.title,
@@ -3187,14 +3212,14 @@ function handleShellToolEndFallback(
 
 function toEditableAllowedRoots(paths: string[]): EditableAllowedRoot[] {
   return paths.map((path) => ({
-    id: crypto.randomUUID(),
+    id: createClientId(),
     path,
   }))
 }
 
 function toEditableMcpServers(payload: McpConfigResponse): EditableMcpServer[] {
   return Object.entries(payload.mcp_servers).map(([name, server]) => ({
-    id: crypto.randomUUID(),
+    id: createClientId(),
     name,
     type: server.type,
     enabled: server.enabled ?? true,

@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import signal
 from typing import Any, AsyncIterator
 
 from litestar import Litestar, Request, Router, delete, get, post, put
@@ -18,7 +19,7 @@ from yier_web.chat import ChatService
 from yier_web.channel_workspace import IntegratedChannelWorkspaceService
 from yier_web.config import AppConfigService, MCPValidationError
 from yier_web.directory_picker import LocalDirectoryPickerService
-from yier_web.event_stream import EventStreamBroker
+from yier_web.event_stream import EventStreamBroker, EventStreamItem
 from yier_web.frontend import FrontendService
 from yier_web.schemas import (
     ApprovalResponseRequest,
@@ -61,6 +62,101 @@ class AppServices:
     event_broker: EventStreamBroker
     frontend_service: FrontendService
     directory_picker_service: LocalDirectoryPickerService
+
+
+EVENT_STREAM_PING_INTERVAL_SECONDS = 15.0
+
+
+def install_shutdown_signal_bridge(shutdown_event: asyncio.Event) -> None:
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+
+    if getattr(loop, "_yier_shutdown_signal_bridge_installed", False):
+        return
+
+    signal_handlers = getattr(loop, "_signal_handlers", None)
+    if not isinstance(signal_handlers, dict):
+        return
+
+    installed = False
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        existing_handle = signal_handlers.get(signum)
+        if existing_handle is None or not hasattr(existing_handle, "_run"):
+            continue
+
+        def chained_handler(
+            handle: Any = existing_handle,
+            current_loop: asyncio.AbstractEventLoop = loop,
+        ) -> None:
+            shutdown_event.set()
+            current_loop.call_soon(handle._run)
+
+        try:
+            loop.add_signal_handler(signum, chained_handler)
+        except (NotImplementedError, RuntimeError, ValueError):
+            continue
+        installed = True
+
+    if installed:
+        setattr(loop, "_yier_shutdown_signal_bridge_installed", True)
+
+
+def get_shutdown_event(state: State) -> asyncio.Event | None:
+    shutdown_event = getattr(state, "shutdown_event", None)
+    if isinstance(shutdown_event, asyncio.Event):
+        return shutdown_event
+    return None
+
+
+async def wait_for_event_stream_item(
+    subscriber: asyncio.Queue[EventStreamItem],
+    shutdown_event: asyncio.Event | None,
+    timeout: float,
+) -> tuple[EventStreamItem | None, bool]:
+    subscriber_task = asyncio.create_task(subscriber.get())
+    shutdown_task: asyncio.Task[bool] | None = None
+    wait_tasks: list[asyncio.Task[Any]] = [subscriber_task]
+
+    if shutdown_event is not None:
+        shutdown_task = asyncio.create_task(shutdown_event.wait())
+        wait_tasks.append(shutdown_task)
+
+    try:
+        done, pending = await asyncio.wait(
+            wait_tasks,
+            timeout=timeout,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in pending:
+            task.cancel()
+        for task in pending:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        if not done:
+            return None, False
+
+        if shutdown_task is not None and shutdown_task in done:
+            return None, True
+
+        return subscriber_task.result(), False
+    finally:
+        if not subscriber_task.done():
+            subscriber_task.cancel()
+            try:
+                await subscriber_task
+            except asyncio.CancelledError:
+                pass
+        if shutdown_task is not None and not shutdown_task.done():
+            shutdown_task.cancel()
+            try:
+                await shutdown_task
+            except asyncio.CancelledError:
+                pass
 
 
 def build_services(project_root: Path | None = None, home_dir: Path | None = None) -> AppServices:
@@ -443,6 +539,7 @@ async def get_channel_monitor_sessions(state: State) -> SessionListResponse:
 @get("/events/stream")
 async def stream_events(state: State) -> ServerSentEvent:
     services = get_services(state)
+    shutdown_event = get_shutdown_event(state)
 
     async def event_stream() -> AsyncIterator[ServerSentEventMessage]:
         subscriber = services.event_broker.subscribe()
@@ -452,9 +549,14 @@ async def stream_events(state: State) -> ServerSentEvent:
                 data=json.dumps({"status": "ok"}, ensure_ascii=False),
             )
             while True:
-                try:
-                    item = await asyncio.wait_for(subscriber.get(), timeout=15)
-                except TimeoutError:
+                item, shutting_down = await wait_for_event_stream_item(
+                    subscriber,
+                    shutdown_event,
+                    timeout=EVENT_STREAM_PING_INTERVAL_SECONDS,
+                )
+                if shutting_down:
+                    break
+                if item is None:
                     yield ServerSentEventMessage(
                         event="ping",
                         data=json.dumps({"status": "alive"}, ensure_ascii=False),
@@ -525,6 +627,9 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: Litestar) -> AsyncIterator[None]:
+        shutdown_event = asyncio.Event()
+        install_shutdown_signal_bridge(shutdown_event)
+        app.state.shutdown_event = shutdown_event
         app.state.config_service = app_services.config_service
         app.state.chat_service = app_services.chat_service
         app.state.channel_workspace_service = app_services.channel_workspace_service
@@ -536,6 +641,7 @@ def create_app(
         try:
             yield
         finally:
+            shutdown_event.set()
             await app_services.channel_workspace_service.stop()
             await app_services.chat_service.stop()
 

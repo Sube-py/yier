@@ -179,7 +179,7 @@ const timelineScrollPt = computed(() => ({
     class: 'h-full w-full',
   },
   content: {
-    class: 'flex min-h-0 flex-col gap-4 pr-[0.35rem]',
+    class: 'flex min-h-0 flex-col gap-4 [overflow-x:clip] pr-[0.35rem]',
     style: {
       paddingBottom: `${Math.max(props.bottomInset ?? 0, 0)}px`,
     },
@@ -837,13 +837,13 @@ const feedEntries = computed<FeedEntry[]>(() => {
 
     const trailingMessages: MessageFeedItem[] = trailingAssistantMessage
       ? [
-          {
-            type: 'message',
-            key: `message:${trailingAssistantMessage.id}`,
-            sortOrder: sortOrder + 1000,
-            message: trailingAssistantMessage,
-          },
-        ]
+        {
+          type: 'message',
+          key: `message:${trailingAssistantMessage.id}`,
+          sortOrder: sortOrder + 1000,
+          message: trailingAssistantMessage,
+        },
+      ]
       : []
 
     return [...legacyMessages, ...legacyActivities, ...trailingMessages]
@@ -1167,10 +1167,10 @@ function hasActivityDetails(display: ActivityDisplayItem) {
   if (isShellActivity(activity)) {
     return Boolean(
       shellCommand(activity) ||
-        hasShellTranscript(activity) ||
-        activity.stdout ||
-        activity.stderr ||
-        activity.meta.length,
+      hasShellTranscript(activity) ||
+      activity.stdout ||
+      activity.stderr ||
+      activity.meta.length,
     )
   }
   if (activityUsesMarkdown(activity) || isApprovalActivity(activity)) {
@@ -1178,11 +1178,11 @@ function hasActivityDetails(display: ActivityDisplayItem) {
   }
   return Boolean(
     activity.detail.trim() ||
-      activity.command ||
-      activity.cwd ||
-      activity.stdout ||
-      activity.stderr ||
-      activity.meta.length,
+    activity.command ||
+    activity.cwd ||
+    activity.stdout ||
+    activity.stderr ||
+    activity.meta.length,
   )
 }
 
@@ -1288,11 +1288,17 @@ watch(
         v-if="isSending"
         class="inline-flex shrink-0 items-center gap-2 text-[0.82rem] text-[color:var(--app-text-soft)]"
       >
-        <ProgressSpinner stroke-width="4" class="h-[1rem] w-[1rem]" />
+        <ProgressSpinner
+          stroke-width="4"
+          class="h-[1rem] w-[1rem]"
+        />
         <span>Working</span>
       </div>
     </div>
-    <div v-else class="flex items-start justify-between gap-3 max-[1023px]:flex-col max-[1023px]:items-stretch">
+    <div
+      v-else
+      class="flex items-start justify-between gap-3 max-[1023px]:flex-col max-[1023px]:items-stretch"
+    >
       <div>
         <p class="eyebrow">Current session</p>
         <div class="flex items-center justify-start gap-3 max-sm:flex-wrap">
@@ -1305,14 +1311,23 @@ watch(
             severity="secondary"
           />
         </div>
-        <p v-if="sessionRuntime" class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]">
+        <p
+          v-if="sessionRuntime"
+          class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]"
+        >
           {{ sessionRuntime.label }} · {{ runtimeStatusLabel(sessionRuntime.status) }}
           <span v-if="sessionRuntime.thread_id"> · {{ sessionRuntime.thread_id }}</span>
         </p>
-        <p v-if="sessionRuntime?.detail" class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]">
+        <p
+          v-if="sessionRuntime?.detail"
+          class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]"
+        >
           {{ sessionRuntime.detail }}
         </p>
-        <p v-if="projectPath" class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]">
+        <p
+          v-if="projectPath"
+          class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]"
+        >
           {{ projectPath }}
         </p>
       </div>
@@ -1320,12 +1335,18 @@ watch(
         v-if="isSending"
         class="inline-flex items-center gap-2.5 self-start text-[color:var(--app-text-soft)]"
       >
-        <ProgressSpinner stroke-width="4" class="h-[1.1rem] w-[1.1rem]" />
+        <ProgressSpinner
+          stroke-width="4"
+          class="h-[1.1rem] w-[1.1rem]"
+        />
         <span>Working…</span>
       </div>
     </div>
 
-    <div v-if="!renderEntries.length" class="grid place-items-center gap-2 p-10 text-center">
+    <div
+      v-if="!renderEntries.length"
+      class="grid place-items-center gap-2 p-10 text-center"
+    >
       <p class="eyebrow">Ready</p>
       <h4 class="m-0 font-['Iowan_Old_Style','Palatino_Linotype',Palatino,serif] text-xl font-semibold">
         Start with a local task.
@@ -1336,15 +1357,26 @@ watch(
       </p>
     </div>
 
-    <ScrollPanel v-else class="min-h-0 flex-1" :pt="timelineScrollPt">
-      <div class="grid min-w-0 grid-cols-1 gap-3">
-        <template v-for="(entry, entryIndex) in renderEntries" :key="entry.key">
+    <ScrollPanel
+      v-else
+      class="min-h-0 flex-1"
+      :pt="timelineScrollPt"
+    >
+      <div class="grid min-w-0 grid-cols-1 gap-3 [overflow-x:clip]">
+        <template
+          v-for="(entry, entryIndex) in renderEntries"
+          :key="entry.key"
+        >
           <div
             v-if="entry.type === 'message'"
             class="flex min-w-0"
             :class="entry.message.role === 'user' ? 'justify-end' : 'justify-start'"
           >
-            <Fieldset v-if="entry.message.role === 'user'" legend="You" :pt="messageFieldsetPt()">
+            <Fieldset
+              v-if="entry.message.role === 'user'"
+              legend="You"
+              :pt="messageFieldsetPt()"
+            >
               <p class="m-0 whitespace-pre-wrap leading-[1.65]">
                 {{ entry.message.content }}
               </p>
@@ -1375,7 +1407,9 @@ watch(
             :open="isTurnGroupOpen(entry)"
             @toggle="onTurnGroupToggle(entry, $event)"
           >
-            <summary class="flex cursor-pointer list-none items-center gap-3 py-1.5 text-[0.72rem] font-semibold uppercase tracking-[0.12em] text-[color:var(--app-text-soft)]">
+            <summary
+              class="flex cursor-pointer list-none items-center gap-3 py-1.5 text-[0.72rem] font-semibold uppercase tracking-[0.12em] text-[color:var(--app-text-soft)]"
+            >
               <span class="h-px flex-1 bg-[rgba(34,66,72,0.12)]"></span>
               <span class="shrink-0">{{ turnGroupSummary(entry) }}</span>
               <i
@@ -1386,8 +1420,14 @@ watch(
             </summary>
 
             <div class="grid gap-3 pt-3">
-              <template v-for="groupItem in entry.items" :key="groupItem.key">
-                <div v-if="groupItem.type === 'message'" class="min-w-0">
+              <template
+                v-for="groupItem in entry.items"
+                :key="groupItem.key"
+              >
+                <div
+                  v-if="groupItem.type === 'message'"
+                  class="min-w-0"
+                >
                   <div
                     class="markdown-prose"
                     @click="onMarkdownClick"
@@ -1407,7 +1447,10 @@ watch(
                         class="m-0 inline-flex min-w-0 max-w-full items-baseline gap-2 text-[0.9rem] font-medium max-sm:text-[0.86rem]"
                         :class="isShellActivity(groupItem.display.activity) ? 'min-w-full whitespace-nowrap font-mono' : 'flex-wrap'"
                       >
-                        <span class="shrink-0" :class="activitySummaryParts(groupItem.display).verbClass">
+                        <span
+                          class="shrink-0"
+                          :class="activitySummaryParts(groupItem.display).verbClass"
+                        >
                           {{ activitySummaryParts(groupItem.display).verb }}
                         </span>
                         <span class="min-w-0 break-words text-[color:var(--app-text)]">
@@ -1477,7 +1520,10 @@ watch(
                       @click="onMarkdownClick"
                       v-html="renderActivityMarkdown(groupItem.display.activity.detail)"
                     ></div>
-                    <div v-if="isApprovalActivity(groupItem.display.activity)" class="grid gap-[0.7rem]">
+                    <div
+                      v-if="isApprovalActivity(groupItem.display.activity)"
+                      class="grid gap-[0.7rem]"
+                    >
                       <p
                         v-if="approvalMessage(groupItem.display.activity)"
                         class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]"
@@ -1497,10 +1543,15 @@ watch(
                           {{ approvalUrl(groupItem.display.activity) }}
                         </a>
                       </p>
-                      <div v-if="approvalSchemaPreview(groupItem.display.activity)" class="grid gap-[0.3rem]">
+                      <div
+                        v-if="approvalSchemaPreview(groupItem.display.activity)"
+                        class="grid gap-[0.3rem]"
+                      >
                         <p class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]">Requested schema</p>
                         <ScrollPanel class="w-full">
-                          <pre class="rounded-[0.85rem] bg-[rgba(17,38,42,0.94)] px-[0.9rem] py-[0.8rem] font-mono text-[0.86rem] leading-[1.55] break-words whitespace-pre-wrap text-[#f2f5f6]">{{
+                          <pre
+                            class="rounded-[0.85rem] bg-[rgba(17,38,42,0.94)] px-[0.9rem] py-[0.8rem] font-mono text-[0.86rem] leading-[1.55] break-words whitespace-pre-wrap text-[#f2f5f6]"
+                          >{{
                             approvalSchemaPreview(groupItem.display.activity)
                           }}</pre>
                         </ScrollPanel>
@@ -1516,7 +1567,10 @@ watch(
                         >
                           <span class="text-[0.92rem] font-bold text-[color:var(--app-text)]">
                             {{ field.label }}
-                            <span v-if="field.required" class="text-[#bc5f38]">*</span>
+                            <span
+                              v-if="field.required"
+                              class="text-[#bc5f38]"
+                            >*</span>
                           </span>
                           <span
                             v-if="approvalFieldPrompt(field)"
@@ -1598,7 +1652,10 @@ watch(
                       >
                         {{ groupItem.display.activity.approval.validationError }}
                       </p>
-                      <div v-if="groupItem.display.activity.approval" class="flex flex-wrap gap-2">
+                      <div
+                        v-if="groupItem.display.activity.approval"
+                        class="flex flex-wrap gap-2"
+                      >
                         <Button
                           v-for="option in groupItem.display.activity.approval.options"
                           :key="`${groupItem.display.activity.id}-${option.value}`"
@@ -1712,7 +1769,10 @@ watch(
                       class="m-0 inline-flex min-w-0 max-w-full items-baseline gap-2 text-[0.9rem] font-medium max-sm:text-[0.86rem]"
                       :class="isShellActivity(groupItem.display.activity) ? 'min-w-full whitespace-nowrap font-mono' : 'flex-wrap'"
                     >
-                      <span class="shrink-0" :class="activitySummaryParts(groupItem.display).verbClass">
+                      <span
+                        class="shrink-0"
+                        :class="activitySummaryParts(groupItem.display).verbClass"
+                      >
                         {{ activitySummaryParts(groupItem.display).verb }}
                       </span>
                       <span class="min-w-0 break-words text-[color:var(--app-text)]">
@@ -1740,7 +1800,10 @@ watch(
                   class="m-0 inline-flex min-w-0 max-w-full items-baseline gap-2 text-[0.92rem] font-medium max-sm:text-[0.88rem]"
                   :class="isShellActivity(entry.display.activity) ? 'min-w-full whitespace-nowrap font-mono' : 'flex-wrap'"
                 >
-                  <span class="shrink-0" :class="activitySummaryParts(entry.display).verbClass">
+                  <span
+                    class="shrink-0"
+                    :class="activitySummaryParts(entry.display).verbClass"
+                  >
                     {{ activitySummaryParts(entry.display).verb }}
                   </span>
                   <span class="min-w-0 break-words text-[color:var(--app-text)]">
@@ -1813,7 +1876,10 @@ watch(
                 @click="onMarkdownClick"
                 v-html="renderActivityMarkdown(entry.display.activity.detail)"
               ></div>
-              <div v-if="isApprovalActivity(entry.display.activity)" class="grid gap-[0.7rem]">
+              <div
+                v-if="isApprovalActivity(entry.display.activity)"
+                class="grid gap-[0.7rem]"
+              >
                 <p
                   v-if="approvalMessage(entry.display.activity)"
                   class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]"
@@ -1833,10 +1899,15 @@ watch(
                     {{ approvalUrl(entry.display.activity) }}
                   </a>
                 </p>
-                <div v-if="approvalSchemaPreview(entry.display.activity)" class="grid gap-[0.3rem]">
+                <div
+                  v-if="approvalSchemaPreview(entry.display.activity)"
+                  class="grid gap-[0.3rem]"
+                >
                   <p class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]">Requested schema</p>
                   <ScrollPanel class="w-full">
-                    <pre class="rounded-[0.85rem] bg-[rgba(17,38,42,0.94)] px-[0.9rem] py-[0.8rem] font-mono text-[0.86rem] leading-[1.55] break-words whitespace-pre-wrap text-[#f2f5f6]">{{
+                    <pre
+                      class="rounded-[0.85rem] bg-[rgba(17,38,42,0.94)] px-[0.9rem] py-[0.8rem] font-mono text-[0.86rem] leading-[1.55] break-words whitespace-pre-wrap text-[#f2f5f6]"
+                    >{{
                       approvalSchemaPreview(entry.display.activity)
                     }}</pre>
                   </ScrollPanel>
@@ -1852,7 +1923,10 @@ watch(
                   >
                     <span class="text-[0.92rem] font-bold text-[color:var(--app-text)]">
                       {{ field.label }}
-                      <span v-if="field.required" class="text-[#bc5f38]">*</span>
+                      <span
+                        v-if="field.required"
+                        class="text-[#bc5f38]"
+                      >*</span>
                     </span>
                     <span
                       v-if="approvalFieldPrompt(field)"
@@ -1934,7 +2008,10 @@ watch(
                 >
                   {{ entry.display.activity.approval.validationError }}
                 </p>
-                <div v-if="entry.display.activity.approval" class="flex flex-wrap gap-2">
+                <div
+                  v-if="entry.display.activity.approval"
+                  class="flex flex-wrap gap-2"
+                >
                   <Button
                     v-for="option in entry.display.activity.approval.options"
                     :key="`${entry.display.activity.id}-${option.value}`"
@@ -2045,7 +2122,10 @@ watch(
               class="m-0 inline-flex min-w-0 max-w-full items-baseline gap-2 text-[0.92rem] font-medium max-sm:text-[0.88rem]"
               :class="isShellActivity(entry.display.activity) ? 'overflow-x-auto overscroll-x-contain whitespace-nowrap font-mono [-ms-overflow-style:none] [scrollbar-width:none]' : 'flex-wrap'"
             >
-              <span class="shrink-0" :class="activitySummaryParts(entry.display).verbClass">
+              <span
+                class="shrink-0"
+                :class="activitySummaryParts(entry.display).verbClass"
+              >
                 {{ activitySummaryParts(entry.display).verb }}
               </span>
               <span class="min-w-0 break-words text-[color:var(--app-text)]">

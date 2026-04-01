@@ -435,6 +435,29 @@ function fileChangeStats(diff: string) {
   return { additions, removals }
 }
 
+function fileChangeSummary(change: FileChangeRecord) {
+  const stats = fileChangeStats(change.diff)
+  return {
+    label: fileBasename(change.path),
+    additions: stats.additions,
+    removals: stats.removals,
+  }
+}
+
+function fileChangeVerbClass(change: FileChangeRecord) {
+  switch (change.kind.type) {
+    case 'create':
+    case 'update':
+      return 'text-[#4b8b58]'
+    case 'delete':
+      return 'text-[#b85d48]'
+    case 'move':
+      return 'text-[color:var(--app-accent)]'
+    default:
+      return 'text-[color:var(--app-accent-deep)]'
+  }
+}
+
 function activityToneClass(activity: ChatActivity) {
   if (activity.state === 'error') {
     return 'text-[#b85d48]'
@@ -483,7 +506,7 @@ function activitySummaryParts(display: ActivityDisplayItem): ActivitySummaryPart
     return {
       verb: fileChangeVerb(change),
       text: `${fileBasename(change.path)}${hasStats ? ` +${additions} -${removals}` : ''}`,
-      verbClass: 'text-[color:var(--app-accent-deep)]',
+      verbClass: fileChangeVerbClass(change),
     }
   }
 
@@ -1436,15 +1459,40 @@ watch(
                         class="m-0 inline-flex min-w-0 max-w-full items-baseline gap-2 text-[0.9rem] font-medium max-sm:text-[0.86rem]"
                         :class="isShellActivity(groupItem.display.activity) ? 'min-w-full whitespace-nowrap font-mono' : 'flex-wrap'"
                       >
-                        <span
-                          class="shrink-0"
-                          :class="activitySummaryParts(groupItem.display).verbClass"
-                        >
-                          {{ activitySummaryParts(groupItem.display).verb }}
-                        </span>
-                        <span class="min-w-0 break-words text-[color:var(--app-text)]">
-                          {{ activitySummaryParts(groupItem.display).text }}
-                        </span>
+                        <template v-if="groupItem.display.change">
+                          <span
+                            class="shrink-0"
+                            :class="fileChangeVerbClass(groupItem.display.change)"
+                          >
+                            {{ fileChangeVerb(groupItem.display.change) }}
+                          </span>
+                          <span class="min-w-0 break-words text-[color:var(--app-text)]">
+                            {{ fileChangeSummary(groupItem.display.change).label }}
+                          </span>
+                          <span
+                            v-if="fileChangeSummary(groupItem.display.change).additions > 0"
+                            class="inline-flex items-center rounded-full bg-[rgba(75,139,88,0.14)] px-2 py-0.5 text-[0.78rem] font-semibold text-[#4b8b58]"
+                          >
+                            +{{ fileChangeSummary(groupItem.display.change).additions }}
+                          </span>
+                          <span
+                            v-if="fileChangeSummary(groupItem.display.change).removals > 0"
+                            class="inline-flex items-center rounded-full bg-[rgba(184,93,72,0.14)] px-2 py-0.5 text-[0.78rem] font-semibold text-[#b85d48]"
+                          >
+                            -{{ fileChangeSummary(groupItem.display.change).removals }}
+                          </span>
+                        </template>
+                        <template v-else>
+                          <span
+                            class="shrink-0"
+                            :class="activitySummaryParts(groupItem.display).verbClass"
+                          >
+                            {{ activitySummaryParts(groupItem.display).verb }}
+                          </span>
+                          <span class="min-w-0 break-words text-[color:var(--app-text)]">
+                            {{ activitySummaryParts(groupItem.display).text }}
+                          </span>
+                        </template>
                       </p>
                     </div>
                     <i class="pi pi-angle-right text-[0.8rem] text-[color:var(--app-text-soft)]"></i>
@@ -1664,9 +1712,24 @@ watch(
                   >
                     <div class="min-w-0">
                       <div class="flex flex-wrap items-center gap-2">
-                        <p class="m-0 text-[0.78rem] font-bold uppercase tracking-[0.08em] text-[color:var(--app-text-soft)]">
+                        <p
+                          class="m-0 text-[0.78rem] font-bold uppercase tracking-[0.08em]"
+                          :class="fileChangeVerbClass(groupItem.display.change)"
+                        >
                           {{ fileChangeKindLabel(groupItem.display.change) }}
                         </p>
+                        <span
+                          v-if="fileChangeSummary(groupItem.display.change).additions > 0"
+                          class="inline-flex items-center rounded-full bg-[rgba(75,139,88,0.14)] px-2 py-0.5 text-[0.74rem] font-semibold text-[#4b8b58]"
+                        >
+                          +{{ fileChangeSummary(groupItem.display.change).additions }}
+                        </span>
+                        <span
+                          v-if="fileChangeSummary(groupItem.display.change).removals > 0"
+                          class="inline-flex items-center rounded-full bg-[rgba(184,93,72,0.14)] px-2 py-0.5 text-[0.74rem] font-semibold text-[#b85d48]"
+                        >
+                          -{{ fileChangeSummary(groupItem.display.change).removals }}
+                        </span>
                         <span
                           v-if="fileChangeMetaLabel(groupItem.display.change)"
                           class="inline-flex max-w-full items-center rounded-full border border-[rgba(34,66,72,0.1)] bg-[rgba(21,94,99,0.08)] px-2.5 py-1 text-[0.74rem] font-medium text-[color:var(--app-accent-deep)]"
@@ -1758,15 +1821,40 @@ watch(
                       class="m-0 inline-flex min-w-0 max-w-full items-baseline gap-2 text-[0.9rem] font-medium max-sm:text-[0.86rem]"
                       :class="isShellActivity(groupItem.display.activity) ? 'min-w-full whitespace-nowrap font-mono' : 'flex-wrap'"
                     >
-                      <span
-                        class="shrink-0"
-                        :class="activitySummaryParts(groupItem.display).verbClass"
-                      >
-                        {{ activitySummaryParts(groupItem.display).verb }}
-                      </span>
-                      <span class="min-w-0 break-words text-[color:var(--app-text)]">
-                        {{ activitySummaryParts(groupItem.display).text }}
-                      </span>
+                      <template v-if="groupItem.display.change">
+                        <span
+                          class="shrink-0"
+                          :class="fileChangeVerbClass(groupItem.display.change)"
+                        >
+                          {{ fileChangeVerb(groupItem.display.change) }}
+                        </span>
+                        <span class="min-w-0 break-words text-[color:var(--app-text)]">
+                          {{ fileChangeSummary(groupItem.display.change).label }}
+                        </span>
+                        <span
+                          v-if="fileChangeSummary(groupItem.display.change).additions > 0"
+                          class="inline-flex items-center rounded-full bg-[rgba(75,139,88,0.14)] px-2 py-0.5 text-[0.78rem] font-semibold text-[#4b8b58]"
+                        >
+                          +{{ fileChangeSummary(groupItem.display.change).additions }}
+                        </span>
+                        <span
+                          v-if="fileChangeSummary(groupItem.display.change).removals > 0"
+                          class="inline-flex items-center rounded-full bg-[rgba(184,93,72,0.14)] px-2 py-0.5 text-[0.78rem] font-semibold text-[#b85d48]"
+                        >
+                          -{{ fileChangeSummary(groupItem.display.change).removals }}
+                        </span>
+                      </template>
+                      <template v-else>
+                        <span
+                          class="shrink-0"
+                          :class="activitySummaryParts(groupItem.display).verbClass"
+                        >
+                          {{ activitySummaryParts(groupItem.display).verb }}
+                        </span>
+                        <span class="min-w-0 break-words text-[color:var(--app-text)]">
+                          {{ activitySummaryParts(groupItem.display).text }}
+                        </span>
+                      </template>
                     </p>
                   </div>
                 </div>
@@ -1789,15 +1877,40 @@ watch(
                   class="m-0 inline-flex min-w-0 max-w-full items-baseline gap-2 text-[0.92rem] font-medium max-sm:text-[0.88rem]"
                   :class="isShellActivity(entry.display.activity) ? 'min-w-full whitespace-nowrap font-mono' : 'flex-wrap'"
                 >
-                  <span
-                    class="shrink-0"
-                    :class="activitySummaryParts(entry.display).verbClass"
-                  >
-                    {{ activitySummaryParts(entry.display).verb }}
-                  </span>
-                  <span class="min-w-0 break-words text-[color:var(--app-text)]">
-                    {{ activitySummaryParts(entry.display).text }}
-                  </span>
+                  <template v-if="entry.display.change">
+                    <span
+                      class="shrink-0"
+                      :class="fileChangeVerbClass(entry.display.change)"
+                    >
+                      {{ fileChangeVerb(entry.display.change) }}
+                    </span>
+                    <span class="min-w-0 break-words text-[color:var(--app-text)]">
+                      {{ fileChangeSummary(entry.display.change).label }}
+                    </span>
+                    <span
+                      v-if="fileChangeSummary(entry.display.change).additions > 0"
+                      class="inline-flex items-center rounded-full bg-[rgba(75,139,88,0.14)] px-2 py-0.5 text-[0.78rem] font-semibold text-[#4b8b58]"
+                    >
+                      +{{ fileChangeSummary(entry.display.change).additions }}
+                    </span>
+                    <span
+                      v-if="fileChangeSummary(entry.display.change).removals > 0"
+                      class="inline-flex items-center rounded-full bg-[rgba(184,93,72,0.14)] px-2 py-0.5 text-[0.78rem] font-semibold text-[#b85d48]"
+                    >
+                      -{{ fileChangeSummary(entry.display.change).removals }}
+                    </span>
+                  </template>
+                  <template v-else>
+                    <span
+                      class="shrink-0"
+                      :class="activitySummaryParts(entry.display).verbClass"
+                    >
+                      {{ activitySummaryParts(entry.display).verb }}
+                    </span>
+                    <span class="min-w-0 break-words text-[color:var(--app-text)]">
+                      {{ activitySummaryParts(entry.display).text }}
+                    </span>
+                  </template>
                 </p>
               </div>
               <i
@@ -2020,9 +2133,24 @@ watch(
             >
               <div class="min-w-0">
                 <div class="flex flex-wrap items-center gap-2">
-                  <p class="m-0 text-[0.78rem] font-bold uppercase tracking-[0.08em] text-[color:var(--app-text-soft)]">
+                  <p
+                    class="m-0 text-[0.78rem] font-bold uppercase tracking-[0.08em]"
+                    :class="fileChangeVerbClass(entry.display.change)"
+                  >
                     {{ fileChangeKindLabel(entry.display.change) }}
                   </p>
+                  <span
+                    v-if="fileChangeSummary(entry.display.change).additions > 0"
+                    class="inline-flex items-center rounded-full bg-[rgba(75,139,88,0.14)] px-2 py-0.5 text-[0.74rem] font-semibold text-[#4b8b58]"
+                  >
+                    +{{ fileChangeSummary(entry.display.change).additions }}
+                  </span>
+                  <span
+                    v-if="fileChangeSummary(entry.display.change).removals > 0"
+                    class="inline-flex items-center rounded-full bg-[rgba(184,93,72,0.14)] px-2 py-0.5 text-[0.74rem] font-semibold text-[#b85d48]"
+                  >
+                    -{{ fileChangeSummary(entry.display.change).removals }}
+                  </span>
                   <span
                     v-if="fileChangeMetaLabel(entry.display.change)"
                     class="inline-flex max-w-full items-center rounded-full border border-[rgba(34,66,72,0.1)] bg-[rgba(21,94,99,0.08)] px-2.5 py-1 text-[0.74rem] font-medium text-[color:var(--app-accent-deep)]"
@@ -2111,15 +2239,40 @@ watch(
               class="m-0 inline-flex min-w-0 max-w-full items-baseline gap-2 text-[0.92rem] font-medium max-sm:text-[0.88rem]"
               :class="isShellActivity(entry.display.activity) ? 'overflow-x-auto overscroll-x-contain whitespace-nowrap font-mono [-ms-overflow-style:none] [scrollbar-width:none]' : 'flex-wrap'"
             >
-              <span
-                class="shrink-0"
-                :class="activitySummaryParts(entry.display).verbClass"
-              >
-                {{ activitySummaryParts(entry.display).verb }}
-              </span>
-              <span class="min-w-0 break-words text-[color:var(--app-text)]">
-                {{ activitySummaryParts(entry.display).text }}
-              </span>
+              <template v-if="entry.display.change">
+                <span
+                  class="shrink-0"
+                  :class="fileChangeVerbClass(entry.display.change)"
+                >
+                  {{ fileChangeVerb(entry.display.change) }}
+                </span>
+                <span class="min-w-0 break-words text-[color:var(--app-text)]">
+                  {{ fileChangeSummary(entry.display.change).label }}
+                </span>
+                <span
+                  v-if="fileChangeSummary(entry.display.change).additions > 0"
+                  class="inline-flex items-center rounded-full bg-[rgba(75,139,88,0.14)] px-2 py-0.5 text-[0.78rem] font-semibold text-[#4b8b58]"
+                >
+                  +{{ fileChangeSummary(entry.display.change).additions }}
+                </span>
+                <span
+                  v-if="fileChangeSummary(entry.display.change).removals > 0"
+                  class="inline-flex items-center rounded-full bg-[rgba(184,93,72,0.14)] px-2 py-0.5 text-[0.78rem] font-semibold text-[#b85d48]"
+                >
+                  -{{ fileChangeSummary(entry.display.change).removals }}
+                </span>
+              </template>
+              <template v-else>
+                <span
+                  class="shrink-0"
+                  :class="activitySummaryParts(entry.display).verbClass"
+                >
+                  {{ activitySummaryParts(entry.display).verb }}
+                </span>
+                <span class="min-w-0 break-words text-[color:var(--app-text)]">
+                  {{ activitySummaryParts(entry.display).text }}
+                </span>
+              </template>
             </p>
           </div>
         </template>

@@ -4,6 +4,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 import signal
 from typing import Any, AsyncIterator
@@ -66,6 +67,16 @@ class AppServices:
 
 
 EVENT_STREAM_PING_INTERVAL_SECONDS = 15.0
+
+
+def _env_flag(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() not in {
+        "",
+        "0",
+        "false",
+        "no",
+        "off",
+    }
 
 
 def install_shutdown_signal_bridge(shutdown_event: asyncio.Event) -> None:
@@ -160,7 +171,10 @@ async def wait_for_event_stream_item(
                 pass
 
 
-def build_services(project_root: Path | None = None, home_dir: Path | None = None) -> AppServices:
+def build_services(
+    project_root: Path | None = None,
+    home_dir: Path | None = None,
+) -> AppServices:
     resolved_root = (project_root or Path.cwd()).resolve()
     config_service = AppConfigService(project_root=resolved_root, home_dir=home_dir)
     event_broker = EventStreamBroker()
@@ -178,7 +192,10 @@ def build_services(project_root: Path | None = None, home_dir: Path | None = Non
             event_broker=event_broker,
         ),
         event_broker=event_broker,
-        frontend_service=FrontendService(project_root=resolved_root),
+        frontend_service=FrontendService(
+            project_root=resolved_root,
+            debug=_env_flag("YIER_DEBUG"),
+        ),
         directory_picker_service=LocalDirectoryPickerService(),
     )
 

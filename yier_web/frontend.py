@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import mimetypes
+import os
 from pathlib import Path
 from typing import Any
 
@@ -16,14 +17,16 @@ class FrontendService:
         self,
         project_root: Path,
         vite_origin: str = "http://127.0.0.1:5173",
+        debug: bool = False,
     ) -> None:
         self.project_root = project_root.resolve()
         self.web_root = self.project_root / "web"
         self.dist_root = self.web_root / "dist"
         self.vite_origin = vite_origin.rstrip("/")
+        self.debug = debug
 
     async def get_status(self) -> FrontendHealth:
-        if await self._vite_available():
+        if await self._should_proxy_to_vite():
             return FrontendHealth(ready=True, mode="proxy", detail=f"Proxying {self.vite_origin}")
         if (self.dist_root / "index.html").exists():
             return FrontendHealth(ready=True, mode="static", detail=f"Serving {self.dist_root}")
@@ -34,7 +37,7 @@ class FrontendService:
         )
 
     async def handle_request(self, request: Request[Any, Any, Any], path: str) -> Response | File:
-        if await self._vite_available():
+        if await self._should_proxy_to_vite():
             return await self._proxy_request(request)
 
         resolved_path = self._resolve_dist_path(path)
@@ -50,6 +53,11 @@ class FrontendService:
             media_type="text/plain",
             status_code=503,
         )
+
+    async def _should_proxy_to_vite(self) -> bool:
+        if not self.debug:
+            return False
+        return await self._vite_available()
 
     async def _proxy_request(self, request: Request[Any, Any, Any]) -> Response:
         target_url = f"{self.vite_origin}{request.url.path}"

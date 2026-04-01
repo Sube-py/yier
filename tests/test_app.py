@@ -366,6 +366,47 @@ class FakeMCPManager:
         return {}
 
 
+def test_frontend_service_prefers_static_bundle_when_debug_is_disabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "project"
+    dist_root = project_root / "web" / "dist"
+    dist_root.mkdir(parents=True)
+    (dist_root / "index.html").write_text("<html></html>", encoding="utf-8")
+    frontend_service = FrontendService(project_root=project_root, debug=False)
+
+    async def fake_vite_available() -> bool:
+        return True
+
+    monkeypatch.setattr(frontend_service, "_vite_available", fake_vite_available)
+
+    import asyncio
+
+    status = asyncio.run(frontend_service.get_status())
+
+    assert status.mode == "static"
+
+
+def test_frontend_service_uses_vite_proxy_when_debug_is_enabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "project"
+    frontend_service = FrontendService(project_root=project_root, debug=True)
+
+    async def fake_vite_available() -> bool:
+        return True
+
+    monkeypatch.setattr(frontend_service, "_vite_available", fake_vite_available)
+
+    import asyncio
+
+    status = asyncio.run(frontend_service.get_status())
+
+    assert status.mode == "proxy"
+
+
 def build_test_client(tmp_path: Path) -> TestClient[Any]:
     project_root = tmp_path / "project"
     (project_root / "web" / "dist").mkdir(parents=True)

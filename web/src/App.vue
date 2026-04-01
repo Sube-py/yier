@@ -93,13 +93,6 @@ const LLM_PROVIDER_DEFAULTS: Record<
 }
 const route = useRoute()
 const router = useRouter()
-const chatDockRef = ref<HTMLElement | null>(null)
-const chatDockHeight = ref(0)
-let chatDockResizeObserver: ResizeObserver | null = null
-
-function updateChatDockHeight() {
-  chatDockHeight.value = chatDockRef.value?.offsetHeight ?? 0
-}
 
 function normalizeWorkspaceSurface(value: string | null | undefined): WorkspaceSurface {
   if (value === 'codex' || value === 'yier' || value === 'claude') {
@@ -307,9 +300,6 @@ const showCodexMobileChrome = computed(
 const isMobileChatPage = computed(
   () => isChatRoute.value && isCodexCompactLayout.value,
 )
-const useFloatingChatDock = computed(
-  () => isChatRoute.value,
-)
 const showSidebarDrawer = computed(
   () => showCodexMobileChrome.value && isSidebarDrawerOpen.value,
 )
@@ -470,30 +460,6 @@ watch(
   { immediate: true },
 )
 
-watch(
-  chatDockRef,
-  (element, previousElement) => {
-    if (previousElement && chatDockResizeObserver) {
-      chatDockResizeObserver.unobserve(previousElement)
-    }
-
-    if (!element) {
-      chatDockHeight.value = 0
-      return
-    }
-
-    if (!chatDockResizeObserver) {
-      chatDockResizeObserver = new ResizeObserver(() => {
-        updateChatDockHeight()
-      })
-    }
-
-    chatDockResizeObserver.observe(element)
-    updateChatDockHeight()
-  },
-  { flush: 'post' },
-)
-
 onMounted(async () => {
   setupCodexCompactLayoutWatcher()
   window.addEventListener('keydown', handleGlobalKeydown)
@@ -503,8 +469,6 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   syncSheetScrollLock(false)
-  chatDockResizeObserver?.disconnect()
-  chatDockResizeObserver = null
   window.removeEventListener('keydown', handleGlobalKeydown)
   teardownCodexCompactLayoutWatcher()
   closePersistentEventStream?.()
@@ -3660,31 +3624,27 @@ function toErrorMessage(error: unknown) {
         >
           <template v-if="isChatRoute">
             <div
-              v-if="useFloatingChatDock"
-              class="relative min-h-0 flex-1"
+              class="flex min-h-0 flex-1 flex-col overflow-hidden rounded-3xl border border-[color:var(--app-border)] bg-[color:var(--app-panel)] shadow-[var(--app-shadow)] backdrop-blur-[14px] max-[1023px]:rounded-[1.35rem]"
             >
-              <div class="absolute inset-0 min-h-0">
+              <div class="min-h-0 flex-1">
                 <ChatTimeline
                   :messages="chatMessages"
                   :activities="activities"
                   :turn-timings="codexTurnTimings"
                   :is-sending="isSending"
                   :session-label="sessionLabel"
-                :session-runtime="activeSessionRuntime"
-                :project-path="activeProjectPath"
+                  :session-runtime="activeSessionRuntime"
+                  :project-path="activeProjectPath"
                   :assistant-label="assistantLabel"
-                  :bottom-inset="chatDockHeight"
                   :compact-header="isMobileChatPage"
                   :show-reasoning-cards="appForm.codexShowReasoningCards"
                   @approval-action="submitApprovalDecision"
-              />
+                />
               </div>
               <div
-                ref="chatDockRef"
-                data-chat-dock
-                class="pointer-events-none absolute inset-x-0 bottom-0 z-10 p-4 max-sm:p-3"
+                class="shrink-0 px-[1.1rem] pb-4 max-[1023px]:px-4 max-sm:px-3 max-sm:pb-3"
               >
-                <div class="pointer-events-auto flex flex-col gap-3">
+                <div class="flex flex-col gap-3">
                   <Message
                     v-if="activeSession?.source === 'channel'"
                     severity="info"

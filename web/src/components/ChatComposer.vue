@@ -196,7 +196,7 @@ onMounted(async () => {
 <template>
   <div class="shrink-0">
     <div
-      class="rounded-[1.4rem] border border-[color:var(--app-border)] bg-[color:var(--app-panel)] p-4 shadow-[var(--app-shadow)] backdrop-blur-[14px] max-sm:rounded-[1.15rem] max-sm:p-3"
+      class="rounded-[1.35rem] bg-[rgba(255,250,242,0.82)] px-4 py-3 shadow-[inset_0_0_0_1px_rgba(34,66,72,0.06)] max-sm:rounded-[1.1rem] max-sm:px-3 max-sm:py-2.5"
     >
       <Textarea
         ref="textareaRef"

@@ -147,7 +147,6 @@ const props = defineProps<{
   sessionRuntime: BackendRuntime | null
   projectPath: string
   assistantLabel?: string
-  bottomInset?: number
   compactHeader?: boolean
   showReasoningCards?: boolean
 }>()
@@ -180,9 +179,6 @@ const timelineScrollPt = computed(() => ({
   },
   content: {
     class: 'flex min-h-0 flex-col gap-4 [overflow-x:clip] pr-[0.35rem]',
-    style: {
-      paddingBottom: `${Math.max(props.bottomInset ?? 0, 0)}px`,
-    },
     ref: (element: HTMLElement | null) => {
       timelineBody.value = element
     },
@@ -1258,18 +1254,11 @@ watch(
   { flush: 'post' },
 )
 
-watch(
-  () => props.bottomInset,
-  async () => {
-    await scrollToBottomIfNeeded()
-  },
-  { flush: 'post' },
-)
 </script>
 
 <template>
   <section
-    class="flex h-full min-h-0 flex-1 flex-col gap-4 overflow-hidden rounded-3xl border border-[color:var(--app-border)] bg-[color:var(--app-panel)] p-[1.1rem] shadow-[var(--app-shadow)] backdrop-blur-[14px] max-[1023px]:rounded-[1.35rem] max-[1023px]:p-4 max-sm:gap-3 max-sm:p-3"
+    class="flex h-full min-h-0 flex-1 flex-col gap-4 overflow-hidden bg-transparent px-[1.1rem] pt-[1.1rem] pb-0 max-[1023px]:px-4 max-[1023px]:pt-4 max-[1023px]:pb-0 max-sm:gap-3 max-sm:px-3 max-sm:pt-3 max-sm:pb-0"
   >
     <div
       v-if="compactHeader"

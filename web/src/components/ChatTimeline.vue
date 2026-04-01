@@ -1137,7 +1137,7 @@ function formatDurationLabel(totalSeconds: number) {
 
 function turnGroupSummary(group: TurnGroupEntry) {
   const durationSeconds = turnGroupDurationSeconds(group)
-  if (durationSeconds !== null) {
+  if (durationSeconds !== null && durationSeconds > 0) {
     return `Worked for ${formatDurationLabel(durationSeconds)}`
   }
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -146,6 +147,51 @@ class FakeChatService:
 
     def get_session_activity_events(self, session_id: str) -> list[dict[str, Any]]:
         return self.activity_events.get(session_id, [])
+
+    def get_session_activity_page(
+        self,
+        session_id: str,
+        *,
+        before: int | None = None,
+        limit: int | None = None,
+    ) -> tuple[list[dict[str, Any]], dict[str, int | None]]:
+        events = self.get_session_activity_events(session_id)
+        total_count = len(events)
+        normalized_before = total_count if before is None else max(0, min(before, total_count))
+        if limit is None or limit <= 0:
+            page = events[:normalized_before]
+        else:
+            start_index = max(0, normalized_before - limit)
+            page = events[start_index:normalized_before]
+        return (
+            page,
+            {
+                "total_count": total_count,
+                "returned_count": len(page),
+                "next_before": (
+                    normalized_before - len(page)
+                    if normalized_before - len(page) > 0
+                    else None
+                ),
+            },
+        )
+
+    def load_session_transcript(
+        self,
+        session_id: str,
+        *,
+        activity_limit: int | None = None,
+    ) -> SimpleNamespace:
+        activity_events, activity_history = self.get_session_activity_page(
+            session_id,
+            limit=activity_limit,
+        )
+        return SimpleNamespace(
+            messages=self.build_transcript_messages(session_id),
+            activity_events=activity_events,
+            activity_history=activity_history,
+            codex_turn_timings=[],
+        )
 
     def load_session_view(self, session_id: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         return (self.build_transcript_messages(session_id), self.get_session_activity_events(session_id))
@@ -592,6 +638,11 @@ def test_api_endpoints_cover_config_session_and_stream(tmp_path: Path) -> None:
         assert transcript_response.status_code == 200
         assert transcript_response.json()["messages"][0]["content"] == "hello"
         assert transcript_response.json()["activity_events"][0]["event"] == "tool_call_start"
+        assert transcript_response.json()["activity_history"]["total_count"] == 1
+
+        activity_page_response = client.get("/api/chat/sessions/session-a/activity-events?limit=1")
+        assert activity_page_response.status_code == 200
+        assert activity_page_response.json()["activity_events"][0]["event"] == "tool_call_start"
 
         codex_workspace_response = client.get("/api/codex/workspace")
         assert codex_workspace_response.status_code == 200
@@ -1246,7 +1297,7 @@ def test_chat_service_load_session_view_uses_local_snapshot_for_active_codex_ses
         status="active",
     )
 
-    def fail_load_thread_view(context: Any) -> dict[str, Any]:
+    def fail_load_thread_view(context: Any, *, activity_limit: int | None = None) -> dict[str, Any]:
         raise AssertionError("load_thread_view should not run for active Codex sessions")
 
     monkeypatch.setattr(codex_backend, "load_thread_view", fail_load_thread_view)
@@ -1324,7 +1375,7 @@ def test_chat_service_load_session_view_prefers_native_thread_view_without_local
     monkeypatch.setattr(
         codex_backend,
         "load_thread_view",
-        lambda context: {
+        lambda context, activity_limit=None: {
             "title": "Native Thread",
             "preview": "remote-preview",
             "updated_at": 1234,
@@ -1338,6 +1389,12 @@ def test_chat_service_load_session_view_prefers_native_thread_view_without_local
                     "data": {"session_id": session_id, "content": "remote"},
                 }
             ],
+            "activity_history": {
+                "total_count": 1,
+                "returned_count": 1,
+                "next_before": None,
+            },
+            "codex_turn_timings": [],
         },
     )
 
@@ -1388,7 +1445,7 @@ def test_chat_service_load_session_view_prefers_cached_ipc_state_for_remote_code
     monkeypatch.setattr(
         codex_backend,
         "load_thread_view",
-        lambda context: {
+        lambda context, activity_limit=None: {
             "title": "Stale Native Thread",
             "preview": "stale-preview",
             "updated_at": 10.0,
@@ -1396,6 +1453,12 @@ def test_chat_service_load_session_view_prefers_cached_ipc_state_for_remote_code
                 Message(role="assistant", content="stale-assistant"),
             ],
             "activity_events": [],
+            "activity_history": {
+                "total_count": 0,
+                "returned_count": 0,
+                "next_before": None,
+            },
+            "codex_turn_timings": [],
         },
     )
 
@@ -1820,3 +1883,139 @@ def test_chat_service_persists_activity_events_under_session_id_file(
     session_ui_file = service.session_ui_path / "session-1.json"
     assert session_ui_file.exists()
     assert chat_service.get_session_activity_events("session-1")[0]["event"] == "tool_call_start"
+
+
+def test_chat_service_load_session_transcript_limits_activity_events(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog())
+
+    project_root = tmp_path / "project"
+    project_root.mkdir(parents=True)
+    service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
+    chat_service = ChatService(
+        project_root=project_root,
+        config_service=service,
+        mcp_manager=FakeMCPManager(),  # type: ignore[arg-type]
+    )
+
+    for index in range(5):
+        chat_service.session_ui_store.append_activity_event(
+            "session-1",
+            "reasoning",
+            {
+                "session_id": "session-1",
+                "item_id": f"reasoning-{index}",
+                "content": f"step {index}",
+            },
+        )
+
+    transcript = chat_service.load_session_transcript("session-1", activity_limit=2)
+
+    assert [event["data"]["item_id"] for event in transcript.activity_events] == [
+        "reasoning-3",
+        "reasoning-4",
+    ]
+    assert transcript.activity_history == {
+        "total_count": 5,
+        "returned_count": 2,
+        "next_before": 3,
+    }
+
+
+def test_chat_service_get_session_activity_page_uses_before_cursor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog())
+
+    project_root = tmp_path / "project"
+    project_root.mkdir(parents=True)
+    service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
+    chat_service = ChatService(
+        project_root=project_root,
+        config_service=service,
+        mcp_manager=FakeMCPManager(),  # type: ignore[arg-type]
+    )
+
+    for index in range(5):
+        chat_service.session_ui_store.append_activity_event(
+            "session-1",
+            "reasoning",
+            {
+                "session_id": "session-1",
+                "item_id": f"reasoning-{index}",
+                "content": f"step {index}",
+            },
+        )
+
+    activity_events, activity_history = chat_service.get_session_activity_page(
+        "session-1",
+        before=3,
+        limit=2,
+    )
+
+    assert [event["data"]["item_id"] for event in activity_events] == [
+        "reasoning-1",
+        "reasoning-2",
+    ]
+    assert activity_history == {
+        "total_count": 5,
+        "returned_count": 2,
+        "next_before": 1,
+    }
+
+
+def test_chat_service_get_session_metadata_migrates_legacy_conversation_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog())
+
+    project_root = tmp_path / "project"
+    project_root.mkdir(parents=True)
+    service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
+    chat_service = ChatService(
+        project_root=project_root,
+        config_service=service,
+        mcp_manager=FakeMCPManager(),  # type: ignore[arg-type]
+    )
+
+    legacy_payload = {
+        "session_id": "session-1",
+        "source": "chat",
+        "backend_id": "codex",
+        "project_path": str(project_root),
+        "backend_state": {
+            "status": "idle",
+            "ipc_conversation_state": {
+                "id": "session-1",
+                "turns": [{"id": "turn-1", "turnId": "turn-1", "items": []}],
+            },
+        },
+        "codex_work_mode": "build",
+        "title": "Legacy",
+        "preview": "Legacy preview",
+        "updated_at": 1.0,
+    }
+    service.session_meta_path.mkdir(parents=True, exist_ok=True)
+    (service.session_meta_path / "session-1.json").write_text(
+        json.dumps(legacy_payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    metadata = chat_service.get_session_metadata(
+        "session-1",
+        include_conversation_state=True,
+    )
+
+    assert metadata["backend_state"]["status"] == "idle"
+    assert metadata["backend_state"]["ipc_conversation_state"]["id"] == "session-1"
+
+    stored_metadata = json.loads(
+        (service.session_meta_path / "session-1.json").read_text(encoding="utf-8")
+    )
+    assert "ipc_conversation_state" not in stored_metadata["backend_state"]
+    conversation_state_file = service.session_conversation_state_path / "session-1.json"
+    assert conversation_state_file.exists()

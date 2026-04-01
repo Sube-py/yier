@@ -16,6 +16,7 @@ const props = defineProps<{
   activities: ChatActivity[]
   turnTimings?: CodexTurnTiming[]
   isSending: boolean
+  isHydratingOlderActivity?: boolean
   sessionLabel: string
   sessionRuntime: BackendRuntime | null
   projectPath: string
@@ -138,6 +139,12 @@ watch(
       :pt="timelineScrollPt"
     >
       <div class="grid min-w-0 grid-cols-1 gap-3 [overflow-x:clip]">
+        <div
+          v-if="isHydratingOlderActivity"
+          class="rounded-2xl border border-[color:var(--app-border)] bg-[rgba(255,252,245,0.7)] px-3 py-2 text-sm text-[color:var(--app-text-soft)]"
+        >
+          Loading earlier activity…
+        </div>
         <template
           v-for="(entry, entryIndex) in renderEntries"
           :key="entry.key"

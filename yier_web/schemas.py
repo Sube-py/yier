@@ -268,6 +268,12 @@ class StoredActivityEvent(BaseModel):
     data: dict[str, Any] = Field(default_factory=dict)
 
 
+class ActivityHistoryPayload(BaseModel):
+    total_count: int = 0
+    returned_count: int = 0
+    next_before: int | None = None
+
+
 class StoredSessionMessage(BaseModel):
     role: Literal["system", "user", "assistant", "tool"]
     content: str | None = None
@@ -295,7 +301,14 @@ class SessionTranscriptResponse(BaseModel):
     pending_approvals: list[PendingApproval] = Field(default_factory=list)
     messages: list[StoredSessionMessage] = Field(default_factory=list)
     activity_events: list[StoredActivityEvent] = Field(default_factory=list)
+    activity_history: ActivityHistoryPayload = Field(default_factory=ActivityHistoryPayload)
     codex_turn_timings: list[CodexTurnTimingPayload] = Field(default_factory=list)
+
+
+class SessionActivityPageResponse(BaseModel):
+    session_id: str
+    activity_events: list[StoredActivityEvent] = Field(default_factory=list)
+    activity_history: ActivityHistoryPayload = Field(default_factory=ActivityHistoryPayload)
 
 
 class ChatStreamRequest(BaseModel):

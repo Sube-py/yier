@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from copy import deepcopy
 from dataclasses import dataclass, field
 import logging
@@ -535,7 +536,12 @@ class CodexAppServerBackend(ChatBackend):
         )
         return normalized_turns
 
-    def load_thread_view(self, context: ChatSessionContext) -> dict[str, Any]:
+    def load_thread_view(
+        self,
+        context: ChatSessionContext,
+        *,
+        activity_limit: int | None = None,
+    ) -> dict[str, Any]:
         runtime = self._ensure_runtime_blocking(context)
         assert runtime.client is not None
         assert runtime.thread_id is not None
@@ -552,7 +558,11 @@ class CodexAppServerBackend(ChatBackend):
                 "detail": runtime.detail,
             },
         )
-        return self._thread_view_payload(context, response.thread)
+        return self._thread_view_payload(
+            context,
+            response.thread,
+            activity_limit=activity_limit,
+        )
 
     def should_use_local_session_view(self, context: ChatSessionContext) -> bool:
         runtime = self._runtimes.get(context.session_id)
@@ -1947,14 +1957,30 @@ class CodexAppServerBackend(ChatBackend):
         self,
         context: ChatSessionContext,
         thread: Any,
+        *,
+        activity_limit: int | None = None,
     ) -> dict[str, Any]:
         messages: list[StoredSessionMessage] = []
-        activity_events: list[dict[str, Any]] = []
+        activity_events: list[dict[str, Any]] | deque[dict[str, Any]]
+        activity_events = (
+            deque(maxlen=activity_limit)
+            if isinstance(activity_limit, int) and activity_limit > 0
+            else []
+        )
+        activity_event_counter = [0]
         sequence_counter = [0]
 
-        turns = getattr(thread, "turns", []) or []
-        for turn in turns:
-            for raw_item in getattr(turn, "items", []) or []:
+        raw_turns = getattr(thread, "turns", []) or []
+        normalized_turns = self.build_ipc_turns(
+            context,
+            [
+                dumped
+                for turn in raw_turns
+                if isinstance((dumped := self._safe_model_dump(turn)), dict)
+            ],
+        )
+        for turn in normalized_turns:
+            for raw_item in turn.get("items", []) or []:
                 item = self._unwrap_thread_item(raw_item)
                 if item is None:
                     continue
@@ -1963,67 +1989,123 @@ class CodexAppServerBackend(ChatBackend):
                     item,
                     messages,
                     activity_events,
+                    activity_event_counter,
                     sequence_counter,
                 )
 
         title = getattr(thread, "name", None) or getattr(thread, "preview", None) or getattr(thread, "id", "Codex session")
         preview = getattr(thread, "preview", None) or title
         updated_at = float(getattr(thread, "updated_at", 0) or 0)
+        returned_activity_events = list(activity_events)
         return {
             "title": title,
             "preview": preview,
             "updated_at": updated_at,
             "messages": messages,
-            "activity_events": activity_events,
+            "activity_events": returned_activity_events,
+            "activity_history": {
+                "total_count": activity_event_counter[0],
+                "returned_count": len(returned_activity_events),
+                "next_before": (
+                    activity_event_counter[0] - len(returned_activity_events)
+                    if activity_event_counter[0] > len(returned_activity_events)
+                    else None
+                ),
+            },
+            "codex_turn_timings": self._codex_turn_timings_from_turns(normalized_turns),
         }
 
     def ipc_conversation_view(
         self,
         context: ChatSessionContext,
         conversation_state: dict[str, Any],
+        *,
+        activity_limit: int | None = None,
     ) -> dict[str, Any]:
         messages: list[StoredSessionMessage] = []
-        activity_events: list[dict[str, Any]] = []
+        activity_events: list[dict[str, Any]] | deque[dict[str, Any]]
+        activity_events = (
+            deque(maxlen=activity_limit)
+            if isinstance(activity_limit, int) and activity_limit > 0
+            else []
+        )
+        activity_event_counter = [0]
         sequence_counter = [0]
 
         turns = conversation_state.get("turns")
-        if isinstance(turns, list):
-            for turn in turns:
-                if not isinstance(turn, dict):
+        normalized_turns = self.build_ipc_turns(context, turns) if isinstance(turns, list) else []
+        for turn in normalized_turns:
+            items = turn.get("items")
+            if not isinstance(items, list):
+                continue
+            for raw_item in items:
+                item = self._unwrap_thread_item(raw_item)
+                if item is None:
                     continue
-                items = turn.get("items")
-                if not isinstance(items, list):
-                    continue
-                for raw_item in items:
-                    item = self._unwrap_thread_item(raw_item)
-                    if item is None:
-                        continue
-                    self._append_thread_item_view(
-                        context,
-                        item,
-                        messages,
-                        activity_events,
-                        sequence_counter,
-                    )
+                self._append_thread_item_view(
+                    context,
+                    item,
+                    messages,
+                    activity_events,
+                    activity_event_counter,
+                    sequence_counter,
+                )
 
         title = conversation_state.get("title") or conversation_state.get("preview") or context.session_id
         preview = conversation_state.get("preview") or title
         updated_at_raw = conversation_state.get("updatedAt")
         updated_at = float(updated_at_raw or 0) / 1000 if isinstance(updated_at_raw, (int, float)) else 0.0
+        returned_activity_events = list(activity_events)
         return {
             "title": title,
             "preview": preview,
             "updated_at": updated_at,
             "messages": messages,
-            "activity_events": activity_events,
+            "activity_events": returned_activity_events,
+            "activity_history": {
+                "total_count": activity_event_counter[0],
+                "returned_count": len(returned_activity_events),
+                "next_before": (
+                    activity_event_counter[0] - len(returned_activity_events)
+                    if activity_event_counter[0] > len(returned_activity_events)
+                    else None
+                ),
+            },
+            "codex_turn_timings": self._codex_turn_timings_from_turns(normalized_turns),
         }
+
+    def _codex_turn_timings_from_turns(
+        self,
+        turns: list[dict[str, Any]],
+    ) -> list[dict[str, int | str | None]]:
+        codex_turn_timings: list[dict[str, int | str | None]] = []
+        for turn in turns:
+            turn_started_at_ms = turn.get("turnStartedAtMs")
+            final_started_at_ms = turn.get("finalAssistantStartedAtMs")
+            codex_turn_timings.append(
+                {
+                    "turn_id": str(turn.get("turnId") or turn.get("id") or ""),
+                    "turn_started_at_ms": (
+                        int(turn_started_at_ms)
+                        if isinstance(turn_started_at_ms, (int, float))
+                        else None
+                    ),
+                    "final_assistant_started_at_ms": (
+                        int(final_started_at_ms)
+                        if isinstance(final_started_at_ms, (int, float))
+                        else None
+                    ),
+                }
+            )
+        return codex_turn_timings
 
     def _append_thread_item_view(
         self,
         context: ChatSessionContext,
         item: Any,
         messages: list[StoredSessionMessage],
-        activity_events: list[dict[str, Any]],
+        activity_events: list[dict[str, Any]] | deque[dict[str, Any]],
+        activity_event_counter: list[int],
         sequence_counter: list[int],
     ) -> None:
         item_type = self._thread_item_value(item, "type", "")
@@ -2067,6 +2149,7 @@ class CodexAppServerBackend(ChatBackend):
                     "content": self._thread_item_value(item, "text", ""),
                     "iteration": 0,
                 },
+                activity_event_counter=activity_event_counter,
                 sequence_counter=sequence_counter,
             )
             return
@@ -2087,6 +2170,7 @@ class CodexAppServerBackend(ChatBackend):
                         "content": content,
                         "iteration": 0,
                     },
+                    activity_event_counter=activity_event_counter,
                     sequence_counter=sequence_counter,
                 )
             return
@@ -2103,6 +2187,7 @@ class CodexAppServerBackend(ChatBackend):
                     "cwd": self._thread_item_value(item, "cwd", ""),
                     "is_background": False,
                 },
+                activity_event_counter=activity_event_counter,
                 sequence_counter=sequence_counter,
             )
             output = self._thread_item_value(item, "aggregatedOutput", None)
@@ -2118,6 +2203,7 @@ class CodexAppServerBackend(ChatBackend):
                         "content": output,
                         "is_background": False,
                     },
+                    activity_event_counter=activity_event_counter,
                     sequence_counter=sequence_counter,
                 )
             self._append_activity_event(
@@ -2133,6 +2219,7 @@ class CodexAppServerBackend(ChatBackend):
                     "timed_out": False,
                     "is_background": False,
                 },
+                activity_event_counter=activity_event_counter,
                 sequence_counter=sequence_counter,
             )
             return
@@ -2141,6 +2228,7 @@ class CodexAppServerBackend(ChatBackend):
             self._append_tool_activity_events(
                 context.session_id,
                 activity_events,
+                activity_event_counter=activity_event_counter,
                 sequence_counter=sequence_counter,
                 tool_name="file_change",
                 tool_call_id=self._thread_item_value(item, "id", ""),
@@ -2159,6 +2247,7 @@ class CodexAppServerBackend(ChatBackend):
             self._append_tool_activity_events(
                 context.session_id,
                 activity_events,
+                activity_event_counter=activity_event_counter,
                 sequence_counter=sequence_counter,
                 tool_name=f"mcp:{self._thread_item_value(item, 'server', 'unknown')}/{self._thread_item_value(item, 'tool', 'tool')}",
                 tool_call_id=self._thread_item_value(item, "id", ""),
@@ -2173,6 +2262,7 @@ class CodexAppServerBackend(ChatBackend):
             self._append_tool_activity_events(
                 context.session_id,
                 activity_events,
+                activity_event_counter=activity_event_counter,
                 sequence_counter=sequence_counter,
                 tool_name=f"dynamic:{self._thread_item_value(item, 'tool', 'tool')}",
                 tool_call_id=self._thread_item_value(item, "id", ""),
@@ -2187,6 +2277,7 @@ class CodexAppServerBackend(ChatBackend):
             self._append_tool_activity_events(
                 context.session_id,
                 activity_events,
+                activity_event_counter=activity_event_counter,
                 sequence_counter=sequence_counter,
                 tool_name=f"collab:{self._thread_item_value(item, 'tool', 'tool')}",
                 tool_call_id=self._thread_item_value(item, "id", ""),
@@ -2206,6 +2297,7 @@ class CodexAppServerBackend(ChatBackend):
             self._append_tool_activity_events(
                 context.session_id,
                 activity_events,
+                activity_event_counter=activity_event_counter,
                 sequence_counter=sequence_counter,
                 tool_name="web_search",
                 tool_call_id=self._thread_item_value(item, "id", ""),
@@ -2218,8 +2310,9 @@ class CodexAppServerBackend(ChatBackend):
     def _append_tool_activity_events(
         self,
         session_id: str,
-        activity_events: list[dict[str, Any]],
+        activity_events: list[dict[str, Any]] | deque[dict[str, Any]],
         *,
+        activity_event_counter: list[int],
         sequence_counter: list[int],
         tool_name: str,
         tool_call_id: str,
@@ -2238,6 +2331,7 @@ class CodexAppServerBackend(ChatBackend):
                 "arguments": arguments,
                 "iteration": 0,
             },
+            activity_event_counter=activity_event_counter,
             sequence_counter=sequence_counter,
         )
         self._append_activity_event(
@@ -2253,15 +2347,17 @@ class CodexAppServerBackend(ChatBackend):
                 "raw": None,
                 "iteration": 0,
             },
+            activity_event_counter=activity_event_counter,
             sequence_counter=sequence_counter,
         )
 
     def _append_activity_event(
         self,
-        activity_events: list[dict[str, Any]],
+        activity_events: list[dict[str, Any]] | deque[dict[str, Any]],
         event: str,
         data: dict[str, Any],
         *,
+        activity_event_counter: list[int] | None = None,
         sequence_counter: list[int] | None = None,
     ) -> None:
         if sequence_counter is not None and "sequence" not in data:
@@ -2269,6 +2365,8 @@ class CodexAppServerBackend(ChatBackend):
                 **data,
                 "sequence": self._next_thread_view_sequence(sequence_counter),
             }
+        if activity_event_counter is not None:
+            activity_event_counter[0] += 1
         activity_events.append({"event": event, "data": data})
 
     def _next_thread_view_sequence(self, sequence_counter: list[int]) -> int:

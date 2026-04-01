@@ -69,6 +69,14 @@ function isSessionCreateRequest(path: string, init?: RequestInit) {
   return path.endsWith('/api/chat/sessions') && init?.method === 'POST'
 }
 
+function isSessionTranscriptRequest(path: string, sessionId: string, init?: RequestInit) {
+  const normalizedPath = `/api/chat/sessions/${sessionId}`
+  return (
+    (!init?.method || init.method === 'GET') &&
+    (path === normalizedPath || path.startsWith(`${normalizedPath}?`))
+  )
+}
+
 function shellCommandRaw(overrides: Record<string, unknown> = {}) {
   return {
     kind: 'shell_command',
@@ -382,7 +390,7 @@ describe('App', () => {
             ],
           })
         }
-        if (path.endsWith('/api/chat/sessions/session-1')) {
+        if (isSessionTranscriptRequest(path, 'session-1', init)) {
           return jsonResponse({
             session_id: 'session-1',
             messages: [
@@ -392,7 +400,7 @@ describe('App', () => {
             activity_events: [],
           })
         }
-        if (path.endsWith('/api/chat/sessions/session-2')) {
+        if (isSessionTranscriptRequest(path, 'session-2', init)) {
           return jsonResponse({
             session_id: 'session-2',
             messages: [
@@ -527,7 +535,7 @@ describe('App', () => {
           ],
         })
       }
-      if (path.endsWith('/api/chat/sessions/codex-thread') && (!init || init.method === 'GET')) {
+      if (isSessionTranscriptRequest(path, 'codex-thread', init)) {
         return jsonResponse({
           session_id: 'codex-thread',
           source: 'chat',
@@ -658,7 +666,7 @@ describe('App', () => {
             ],
           })
         }
-        if (path.endsWith('/api/chat/sessions/codex-thread') && (!init || init.method === 'GET')) {
+        if (isSessionTranscriptRequest(path, 'codex-thread', init)) {
           return jsonResponse({
             session_id: 'codex-thread',
             source: 'chat',
@@ -793,7 +801,7 @@ describe('App', () => {
             ],
           })
         }
-        if (path.endsWith('/api/chat/sessions/codex-thread') && (!init || init.method === 'GET')) {
+        if (isSessionTranscriptRequest(path, 'codex-thread', init)) {
           return jsonResponse({
             session_id: 'codex-thread',
             source: 'chat',
@@ -959,7 +967,7 @@ describe('App', () => {
         expect(JSON.parse(String(init.body))).toEqual({ thread_id: 'codex-thread-b' })
         return jsonResponse({ session_id: 'codex-thread-b' }, 201)
       }
-      if (path.endsWith('/api/chat/sessions/codex-thread-a')) {
+      if (isSessionTranscriptRequest(path, 'codex-thread-a', init)) {
         return jsonResponse({
           session_id: 'codex-thread-a',
           source: 'chat',
@@ -981,7 +989,7 @@ describe('App', () => {
           activity_events: [],
         })
       }
-      if (path.endsWith('/api/chat/sessions/codex-thread-b')) {
+      if (isSessionTranscriptRequest(path, 'codex-thread-b', init)) {
         return jsonResponse({
           session_id: 'codex-thread-b',
           source: 'chat',
@@ -1119,7 +1127,7 @@ describe('App', () => {
           ],
         })
       }
-      if (path.endsWith('/api/chat/sessions/codex-thread-a')) {
+      if (isSessionTranscriptRequest(path, 'codex-thread-a', init)) {
         return jsonResponse({
           session_id: 'codex-thread-a',
           source: 'chat',
@@ -1253,7 +1261,7 @@ describe('App', () => {
           ],
         })
       }
-      if (path.endsWith('/api/chat/sessions/codex-thread-a')) {
+      if (isSessionTranscriptRequest(path, 'codex-thread-a', init)) {
         return jsonResponse({
           session_id: 'codex-thread-a',
           source: 'chat',
@@ -1405,7 +1413,7 @@ describe('App', () => {
           ],
         })
       }
-      if (path.endsWith('/api/chat/sessions/codex-thread-a')) {
+      if (isSessionTranscriptRequest(path, 'codex-thread-a', init)) {
         return jsonResponse({
           session_id: 'codex-thread-a',
           source: 'chat',
@@ -1427,7 +1435,7 @@ describe('App', () => {
           activity_events: [],
         })
       }
-      if (path.endsWith('/api/chat/sessions/yier-thread-a')) {
+      if (isSessionTranscriptRequest(path, 'yier-thread-a', init)) {
         return jsonResponse({
           session_id: 'yier-thread-a',
           source: 'chat',
@@ -1535,7 +1543,7 @@ describe('App', () => {
           ],
         })
       }
-      if (path.endsWith('/api/chat/sessions/codex-thread')) {
+      if (isSessionTranscriptRequest(path, 'codex-thread', init)) {
         return jsonResponse({
           session_id: 'codex-thread',
           source: 'chat',
@@ -1648,7 +1656,7 @@ describe('App', () => {
           sessions = sessions.filter((session) => session.session_id !== 'session-1')
           return jsonResponse({ session_id: 'session-1', deleted: true })
         }
-        if (path.endsWith('/api/chat/sessions/session-1')) {
+        if (isSessionTranscriptRequest(path, 'session-1', init)) {
           return jsonResponse({
             session_id: 'session-1',
             messages: [
@@ -1658,7 +1666,7 @@ describe('App', () => {
             activity_events: [],
           })
         }
-        if (path.endsWith('/api/chat/sessions/session-2')) {
+        if (isSessionTranscriptRequest(path, 'session-2', init)) {
           return jsonResponse({
             session_id: 'session-2',
             messages: [
@@ -2010,7 +2018,7 @@ describe('App', () => {
     const textarea = wrapper.get('textarea')
     await textarea.setValue('List the project files')
     const buttons = wrapper.findAll('button')
-    const sendButton = buttons.find((item) => item.text().includes('Send'))
+    const sendButton = buttons.find((item) => item.attributes('aria-label') === 'Send message')
     expect(sendButton).toBeTruthy()
     await sendButton!.trigger('click')
     await flushPromises()
@@ -2110,7 +2118,9 @@ describe('App', () => {
 
     const textarea = wrapper.get('textarea')
     await textarea.setValue('Run the command')
-    const sendButton = wrapper.findAll('button').find((item) => item.text().includes('Send'))
+    const sendButton = wrapper
+      .findAll('button')
+      .find((item) => item.attributes('aria-label') === 'Send message')
     expect(sendButton).toBeTruthy()
     await sendButton!.trigger('click')
     await flushPromises()
@@ -2388,7 +2398,9 @@ describe('App', () => {
 
     const textarea = wrapper.get('textarea')
     await textarea.setValue('Say hello')
-    const sendButton = wrapper.findAll('button').find((item) => item.text().includes('Send'))
+    const sendButton = wrapper
+      .findAll('button')
+      .find((item) => item.attributes('aria-label') === 'Send message')
     expect(sendButton).toBeTruthy()
     await sendButton!.trigger('click')
     await flushPromises()
@@ -2454,7 +2466,9 @@ describe('App', () => {
 
     const textarea = wrapper.get('textarea')
     await textarea.setValue('Run codex')
-    const sendButton = wrapper.findAll('button').find((item) => item.text().includes('Send'))
+    const sendButton = wrapper
+      .findAll('button')
+      .find((item) => item.attributes('aria-label') === 'Send message')
     expect(sendButton).toBeTruthy()
     await sendButton!.trigger('click')
     await flushPromises()
@@ -3366,7 +3380,7 @@ describe('App', () => {
         if (path.endsWith('/api/channel/monitor/sessions')) {
           return jsonResponse({ sessions: [] })
         }
-        if (path.endsWith('/api/chat/sessions/session-1')) {
+        if (isSessionTranscriptRequest(path, 'session-1', init)) {
           sessionRequestCount += 1
           const hasSynced = sessionRequestCount > 1
           return jsonResponse({

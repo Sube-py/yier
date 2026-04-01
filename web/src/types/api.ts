@@ -106,6 +106,12 @@ export interface StoredActivityEvent {
   data: Record<string, unknown>
 }
 
+export interface ActivityHistory {
+  total_count: number
+  returned_count: number
+  next_before?: number | null
+}
+
 export interface SessionTranscriptResponse {
   session_id: string
   source: 'chat' | 'channel'
@@ -117,7 +123,14 @@ export interface SessionTranscriptResponse {
   pending_approvals: PendingApproval[]
   messages: StoredMessage[]
   activity_events: StoredActivityEvent[]
+  activity_history?: ActivityHistory
   codex_turn_timings: CodexTurnTiming[]
+}
+
+export interface SessionActivityPageResponse {
+  session_id: string
+  activity_events: StoredActivityEvent[]
+  activity_history?: ActivityHistory
 }
 
 export interface CodexTurnTiming {

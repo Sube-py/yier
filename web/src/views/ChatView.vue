@@ -61,6 +61,7 @@ const workspace = useWorkspaceAppContext()
           :activities="workspace.activities"
           :turn-timings="workspace.codexTurnTimings"
           :is-sending="workspace.isSending"
+          :is-hydrating-older-activity="workspace.isHydratingOlderActivity"
           :session-label="workspace.sessionLabel"
           :session-runtime="workspace.activeSessionRuntime"
           :project-path="workspace.activeProjectPath"

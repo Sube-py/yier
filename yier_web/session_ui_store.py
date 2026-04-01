@@ -21,6 +21,42 @@ class SessionUIStore:
             return []
         return [item for item in activity_events if isinstance(item, dict)]
 
+    def load_activity_page(
+        self,
+        session_id: str,
+        *,
+        before: int | None = None,
+        limit: int | None = None,
+    ) -> tuple[list[dict[str, Any]], dict[str, int | None]]:
+        activity_events = self.load_activity_events(session_id)
+        total_count = len(activity_events)
+        normalized_before = total_count if before is None else max(0, min(before, total_count))
+
+        if limit is None or limit <= 0:
+            page = activity_events[:normalized_before]
+            returned_count = len(page)
+            return (
+                page,
+                {
+                    "total_count": total_count,
+                    "returned_count": returned_count,
+                    "next_before": None,
+                },
+            )
+
+        start_index = max(0, normalized_before - limit)
+        page = activity_events[start_index:normalized_before]
+        returned_count = len(page)
+        next_before = start_index if start_index > 0 else None
+        return (
+            page,
+            {
+                "total_count": total_count,
+                "returned_count": returned_count,
+                "next_before": next_before,
+            },
+        )
+
     def append_activity_event(self, session_id: str, event: str, data: dict[str, Any]) -> None:
         activity_events = self.load_activity_events(session_id)
         activity_events.append(

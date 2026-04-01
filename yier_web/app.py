@@ -48,6 +48,7 @@ from yier_web.schemas import (
     SelectDirectoryResponse,
     SaveLLMRequest,
     SaveMCPConfigRequest,
+    SessionActivityPageResponse,
     SessionListResponse,
     SessionTranscriptResponse,
     UpdateCodexSessionModeRequest,
@@ -358,36 +359,17 @@ async def update_codex_paired_editor_state(
 
 
 @get("/chat/sessions/{session_id:str}")
-async def get_session(session_id: str, state: State) -> SessionTranscriptResponse:
+async def get_session(
+    session_id: str,
+    state: State,
+    activity_limit: int | None = None,
+) -> SessionTranscriptResponse:
     services = get_services(state)
-    messages, activity_events = services.chat_service.load_session_view(session_id)
+    transcript = services.chat_service.load_session_transcript(
+        session_id,
+        activity_limit=activity_limit,
+    )
     metadata = services.chat_service.get_session_metadata(session_id)
-    codex_turn_timings: list[dict[str, int | str | None]] = []
-
-    if metadata["backend_id"] == "codex":
-        conversation_state = services.chat_service.build_codex_ipc_conversation_state(session_id)
-        turns = conversation_state.get("turns")
-        if isinstance(turns, list):
-            codex_turn_timings = [
-                {
-                    "turn_id": str(turn.get("turnId") or turn.get("id") or ""),
-                    "turn_started_at_ms": (
-                        int(turn_started_at_ms)
-                        if isinstance((turn_started_at_ms := turn.get("turnStartedAtMs")), (int, float))
-                        else None
-                    ),
-                    "final_assistant_started_at_ms": (
-                        int(final_started_at_ms)
-                        if isinstance(
-                            (final_started_at_ms := turn.get("finalAssistantStartedAtMs")),
-                            (int, float),
-                        )
-                        else None
-                    ),
-                }
-                for turn in turns
-                if isinstance(turn, dict)
-            ]
 
     return SessionTranscriptResponse(
         session_id=session_id,
@@ -402,9 +384,29 @@ async def get_session(session_id: str, state: State) -> SessionTranscriptRespons
         codex_work_mode=metadata["codex_work_mode"],
         backend_runtime=services.chat_service.get_backend_runtime(session_id),
         pending_approvals=services.chat_service.get_pending_approvals(session_id),
-        messages=messages,
+        messages=transcript.messages,
+        activity_events=transcript.activity_events,
+        activity_history=transcript.activity_history,
+        codex_turn_timings=transcript.codex_turn_timings,
+    )
+
+
+@get("/chat/sessions/{session_id:str}/activity-events")
+async def get_session_activity_events(
+    session_id: str,
+    state: State,
+    before: int | None = None,
+    limit: int | None = None,
+) -> SessionActivityPageResponse:
+    activity_events, activity_history = get_services(state).chat_service.get_session_activity_page(
+        session_id,
+        before=before,
+        limit=limit,
+    )
+    return SessionActivityPageResponse(
+        session_id=session_id,
         activity_events=activity_events,
-        codex_turn_timings=codex_turn_timings,
+        activity_history=activity_history,
     )
 
 
@@ -591,6 +593,7 @@ api_router = Router(
         open_codex_session,
         update_codex_paired_editor_state,
         get_session,
+        get_session_activity_events,
         delete_session,
         respond_to_approval,
         update_codex_session_mode,

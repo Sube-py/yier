@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from copy import deepcopy
 from contextlib import suppress
+from dataclasses import dataclass
 import json
 import logging
 import os
@@ -47,6 +48,7 @@ from yier_web.config import AppConfigService
 from yier_web.codex_ipc import CodexThreadFollowerBridge
 from yier_web.event_stream import EventStreamBroker
 from yier_web.paired_editor_bridge import CodexPairedEditorBridge
+from yier_web.session_conversation_state_store import SessionConversationStateStore
 from yier_web.session_metadata_store import SessionMetadataStore
 from yier_web.session_ui_store import SessionUIStore
 from yier_web.schemas import (
@@ -68,6 +70,14 @@ from yier_web.tool_events import reset_tool_event_emitter, set_tool_event_emitte
 
 StreamEmitter = Callable[[str, dict[str, Any]], Awaitable[None]]
 logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class SessionTranscriptView:
+    messages: list[StoredSessionMessage]
+    activity_events: list[dict[str, Any]]
+    activity_history: dict[str, int | None]
+    codex_turn_timings: list[dict[str, int | str | None]]
 
 
 def _codex_ipc_debug_enabled() -> bool:
@@ -111,6 +121,9 @@ class ChatService:
         self.transcript_store = JSONSessionStore(self.config_service.transcripts_path)
         self.session_ui_store = SessionUIStore(self.config_service.session_ui_path)
         self.session_metadata_store = SessionMetadataStore(self.config_service.session_meta_path)
+        self.session_conversation_state_store = SessionConversationStateStore(
+            self.config_service.session_conversation_state_path
+        )
         self.codex_workspace = CodexWorkspaceService(
             self.config_service.home_dir,
             config_service=self.config_service,
@@ -280,9 +293,52 @@ class ChatService:
             return transcript_messages
         return self.session_store.get_session_messages(session_id) or []
 
-    def get_session_metadata(self, session_id: str) -> dict[str, Any]:
+    def get_session_metadata(
+        self,
+        session_id: str,
+        *,
+        include_conversation_state: bool = False,
+    ) -> dict[str, Any]:
         payload = self.session_metadata_store.load(session_id) or {}
-        return self._normalize_session_metadata_payload(payload)
+        payload = self._migrate_legacy_session_conversation_state(session_id, payload)
+        normalized = self._normalize_session_metadata_payload(payload)
+        if not include_conversation_state:
+            return normalized
+
+        conversation_state = self.session_conversation_state_store.load(session_id)
+        if not isinstance(conversation_state, dict):
+            return normalized
+
+        return {
+            **normalized,
+            "backend_state": {
+                **normalized["backend_state"],
+                "ipc_conversation_state": conversation_state,
+            },
+        }
+
+    def _migrate_legacy_session_conversation_state(
+        self,
+        session_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        backend_state = payload.get("backend_state")
+        if not isinstance(backend_state, dict) or "ipc_conversation_state" not in backend_state:
+            return payload
+
+        next_backend_state = dict(backend_state)
+        conversation_state = next_backend_state.pop("ipc_conversation_state", None)
+        if isinstance(conversation_state, dict):
+            self.session_conversation_state_store.save(session_id, conversation_state)
+        elif conversation_state is None:
+            self.session_conversation_state_store.delete(session_id)
+
+        next_payload = {
+            **payload,
+            "backend_state": next_backend_state,
+        }
+        self.session_metadata_store.save(session_id, next_payload)
+        return next_payload
 
     def ensure_session_metadata(
         self,
@@ -297,7 +353,7 @@ class ChatService:
         preview: str | None = None,
         updated_at: float | None = None,
     ) -> None:
-        existing = self.get_session_metadata(session_id)
+        existing = self.get_session_metadata(session_id, include_conversation_state=True)
         settings = self.config_service.load_web_settings()
         normalized_source = source if source in {"chat", "channel"} else existing["source"]
         default_backend_id = (
@@ -310,6 +366,18 @@ class ChatService:
             if normalized_source == "channel"
             else settings.session_defaults.default_project_path
         )
+        existing_backend_state = dict(existing.get("backend_state", {}))
+        existing_conversation_state = existing_backend_state.pop("ipc_conversation_state", None)
+        conversation_state_provided = isinstance(backend_state, dict) and "ipc_conversation_state" in backend_state
+        next_backend_state = (
+            dict(backend_state)
+            if isinstance(backend_state, dict)
+            else existing_backend_state
+        )
+        next_conversation_state = next_backend_state.pop(
+            "ipc_conversation_state",
+            existing_conversation_state,
+        )
         payload = {
             "session_id": session_id,
             "source": normalized_source,
@@ -318,11 +386,7 @@ class ChatService:
                 project_path or existing["project_path"] or default_project_path
             ),
             "channel_meta": channel_meta if isinstance(channel_meta, dict) else existing.get("channel_meta"),
-            "backend_state": (
-                backend_state
-                if isinstance(backend_state, dict)
-                else existing.get("backend_state", {})
-            ),
+            "backend_state": next_backend_state,
             "codex_work_mode": (
                 codex_work_mode
                 if codex_work_mode in {"plan", "build"}
@@ -335,6 +399,10 @@ class ChatService:
         if payload["backend_id"] == "codex" and payload["codex_work_mode"] not in {"plan", "build"}:
             payload["codex_work_mode"] = "build"
         self.session_metadata_store.save(session_id, payload)
+        if isinstance(next_conversation_state, dict):
+            self.session_conversation_state_store.save(session_id, next_conversation_state)
+        elif conversation_state_provided:
+            self.session_conversation_state_store.delete(session_id)
 
     async def update_paired_editor_state(
         self,
@@ -381,7 +449,7 @@ class ChatService:
         return self.get_session_metadata(session_id)["source"] == "channel"
 
     def update_session_backend_state(self, session_id: str, updates: dict[str, Any]) -> None:
-        metadata = self.get_session_metadata(session_id)
+        metadata = self.get_session_metadata(session_id, include_conversation_state=True)
         next_backend_state = {
             **metadata["backend_state"],
             **updates,
@@ -403,11 +471,9 @@ class ChatService:
         normalized_conversation_id = conversation_id.strip()
         if not normalized_conversation_id:
             return False
-        metadata = self.session_metadata_store.load(normalized_conversation_id)
-        if isinstance(metadata, dict):
-            normalized = self._normalize_session_metadata_payload(metadata)
-            if normalized["backend_id"] == "codex":
-                return True
+        metadata = self.get_session_metadata(normalized_conversation_id)
+        if metadata["backend_id"] == "codex":
+            return True
         return self.codex_workspace.get_active_session(normalized_conversation_id) is not None
 
     def ensure_codex_conversation_session(self, conversation_id: str) -> str:
@@ -417,7 +483,7 @@ class ChatService:
 
         metadata = self.session_metadata_store.load(normalized_conversation_id)
         if isinstance(metadata, dict):
-            normalized = self._normalize_session_metadata_payload(metadata)
+            normalized = self.get_session_metadata(normalized_conversation_id)
             if normalized["backend_id"] != "codex":
                 raise RuntimeError("Conversation is not backed by Codex.")
             return normalized_conversation_id
@@ -504,6 +570,19 @@ class ChatService:
 
     def get_session_activity_events(self, session_id: str) -> list[dict[str, Any]]:
         return self.session_ui_store.load_activity_events(session_id)
+
+    def get_session_activity_page(
+        self,
+        session_id: str,
+        *,
+        before: int | None = None,
+        limit: int | None = None,
+    ) -> tuple[list[dict[str, Any]], dict[str, int | None]]:
+        return self.session_ui_store.load_activity_page(
+            session_id,
+            before=before,
+            limit=limit,
+        )
 
     def get_codex_workspace(self) -> CodexWorkspaceResponse:
         return self.codex_workspace.load_workspace()
@@ -604,22 +683,83 @@ class ChatService:
 
         return sorted(summaries, key=lambda item: item.updated_at, reverse=True)
 
+    def load_session_transcript(
+        self,
+        session_id: str,
+        *,
+        activity_limit: int | None = None,
+    ) -> SessionTranscriptView:
+        native_view = self._native_codex_session_view(
+            session_id,
+            activity_limit=activity_limit,
+        )
+        if native_view is not None:
+            return native_view
+
+        messages = self.build_transcript_messages(session_id)
+        activity_events, activity_history = self.get_session_activity_page(
+            session_id,
+            limit=activity_limit,
+        )
+        return SessionTranscriptView(
+            messages=messages,
+            activity_events=activity_events,
+            activity_history=activity_history,
+            codex_turn_timings=self._fallback_codex_turn_timings(session_id),
+        )
+
     def load_session_view(
         self,
         session_id: str,
     ) -> tuple[list[StoredSessionMessage], list[dict[str, Any]]]:
-        native_view = self._native_codex_session_view(session_id)
-        if native_view is not None:
-            return native_view
-        return (
-            self.build_transcript_messages(session_id),
-            self.get_session_activity_events(session_id),
-        )
+        transcript = self.load_session_transcript(session_id)
+        return (transcript.messages, transcript.activity_events)
+
+    def _codex_turn_timings_from_turns(
+        self,
+        turns: Any,
+    ) -> list[dict[str, int | str | None]]:
+        if not isinstance(turns, list):
+            return []
+        codex_turn_timings: list[dict[str, int | str | None]] = []
+        for turn in turns:
+            if not isinstance(turn, dict):
+                continue
+            turn_started_at_ms = turn.get("turnStartedAtMs")
+            final_started_at_ms = turn.get("finalAssistantStartedAtMs")
+            codex_turn_timings.append(
+                {
+                    "turn_id": str(turn.get("turnId") or turn.get("id") or ""),
+                    "turn_started_at_ms": (
+                        int(turn_started_at_ms)
+                        if isinstance(turn_started_at_ms, (int, float))
+                        else None
+                    ),
+                    "final_assistant_started_at_ms": (
+                        int(final_started_at_ms)
+                        if isinstance(final_started_at_ms, (int, float))
+                        else None
+                    ),
+                }
+            )
+        return codex_turn_timings
+
+    def _fallback_codex_turn_timings(
+        self,
+        session_id: str,
+    ) -> list[dict[str, int | str | None]]:
+        metadata = self.get_session_metadata(session_id)
+        if metadata["backend_id"] != "codex":
+            return []
+        conversation_state = self.build_codex_ipc_conversation_state(session_id)
+        return self._codex_turn_timings_from_turns(conversation_state.get("turns"))
 
     def _native_codex_session_view(
         self,
         session_id: str,
-    ) -> tuple[list[StoredSessionMessage], list[dict[str, Any]]] | None:
+        *,
+        activity_limit: int | None = None,
+    ) -> SessionTranscriptView | None:
         context = self.get_session_context(session_id)
         thread_id = context.backend_state.get("thread_id")
         if context.backend_id != "codex" or not isinstance(thread_id, str) or not thread_id:
@@ -630,16 +770,25 @@ class ChatService:
             return None
 
         if backend.should_use_local_session_view(context):
-            return (
-                self.build_transcript_messages(session_id),
-                self.get_session_activity_events(session_id),
+            activity_events, activity_history = self.get_session_activity_page(
+                session_id,
+                limit=activity_limit,
+            )
+            return SessionTranscriptView(
+                messages=self.build_transcript_messages(session_id),
+                activity_events=activity_events,
+                activity_history=activity_history,
+                codex_turn_timings=self._fallback_codex_turn_timings(session_id),
             )
 
-        cached_ipc_view = self._cached_codex_ipc_session_view(session_id)
+        cached_ipc_view = self._cached_codex_ipc_session_view(
+            session_id,
+            activity_limit=activity_limit,
+        )
         if cached_ipc_view is not None:
             return cached_ipc_view
 
-        view = backend.load_thread_view(context)
+        view = backend.load_thread_view(context, activity_limit=activity_limit)
         self.ensure_session_metadata(
             session_id,
             source=context.source,
@@ -652,17 +801,28 @@ class ChatService:
             preview=view["preview"],
             updated_at=view["updated_at"],
         )
-        return (view["messages"], view["activity_events"])
+        return SessionTranscriptView(
+            messages=view["messages"],
+            activity_events=view["activity_events"],
+            activity_history=view["activity_history"],
+            codex_turn_timings=view.get("codex_turn_timings", []),
+        )
 
     def _cached_codex_ipc_session_view(
         self,
         session_id: str,
-    ) -> tuple[list[StoredSessionMessage], list[dict[str, Any]]] | None:
+        *,
+        activity_limit: int | None = None,
+    ) -> SessionTranscriptView | None:
         context = self.get_session_context(session_id)
         if context.backend_id != "codex":
             return None
 
-        backend_state = context.backend_state
+        metadata = self.get_session_metadata(
+            session_id,
+            include_conversation_state=True,
+        )
+        backend_state = metadata["backend_state"]
         conversation_state = backend_state.get("ipc_conversation_state")
         if not isinstance(conversation_state, dict):
             return None
@@ -671,7 +831,11 @@ class ChatService:
         if not isinstance(backend, CodexAppServerBackend):
             return None
 
-        view = backend.ipc_conversation_view(context, conversation_state)
+        view = backend.ipc_conversation_view(
+            context,
+            conversation_state,
+            activity_limit=activity_limit,
+        )
         self.ensure_session_metadata(
             session_id,
             source=context.source,
@@ -684,7 +848,12 @@ class ChatService:
             preview=view["preview"],
             updated_at=view["updated_at"],
         )
-        return (view["messages"], view["activity_events"])
+        return SessionTranscriptView(
+            messages=view["messages"],
+            activity_events=view["activity_events"],
+            activity_history=view["activity_history"],
+            codex_turn_timings=view.get("codex_turn_timings", []),
+        )
 
     async def delete_session(self, session_id: str) -> bool:
         metadata = self.get_session_metadata(session_id)
@@ -697,6 +866,7 @@ class ChatService:
             session_ui_file.unlink()
             deleted = True
         deleted = self.session_metadata_store.delete(session_id) or deleted
+        deleted = self.session_conversation_state_store.delete(session_id) or deleted
 
         owned_background_ids = [
             background_session_id
@@ -1128,7 +1298,10 @@ class ChatService:
         session_id: str,
         change: dict[str, Any],
     ) -> None:
-        metadata = self.get_session_metadata(session_id)
+        metadata = self.get_session_metadata(
+            session_id,
+            include_conversation_state=True,
+        )
         if metadata["backend_id"] != "codex":
             return
 

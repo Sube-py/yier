@@ -22,6 +22,7 @@ import {
   streamChat,
 } from '../lib/api'
 import type {
+  ActivityHistory,
   ApprovalDecision,
   ApprovalFormFieldState,
   ApprovalFormMode,
@@ -57,6 +58,7 @@ import type {
   OpenCodexSessionResponse,
   PendingApproval,
   SaveAppSettingsRequest,
+  SessionActivityPageResponse,
   SessionListResponse,
   SessionSummary,
   SessionTranscriptResponse,
@@ -76,6 +78,7 @@ import type {
 const SESSION_STORAGE_KEY = 'yier.active-session-id'
 const WORKSPACE_SURFACE_STORAGE_KEY = 'yier.workspace-surface'
 const CODEX_COMPACT_MEDIA_QUERY = '(max-width: 1023px)'
+const SESSION_ACTIVITY_PAGE_SIZE = 120
 const LLM_PROVIDER_DEFAULTS: Record<
   Exclude<LlmProvider, ''>,
   { baseUrl: string; model: string }
@@ -169,6 +172,7 @@ function createWorkspaceApp() {
   const chatMessages = ref<UiChatMessage[]>([])
   const activities = ref<ChatActivity[]>([])
   const codexTurnTimings = ref<CodexTurnTiming[]>([])
+  const isHydratingOlderActivity = ref(false)
   const sessionHistory = ref<SessionSummary[]>([])
   const activeCodexWorkMode = ref<CodexWorkMode>('build')
   const isCodexCompactLayout = ref(false)
@@ -244,7 +248,12 @@ function createWorkspaceApp() {
   let lastPairedEditorSyncSignature = ''
   let nextTimelineSequence = 0
   let currentStreamSequenceHint: number | null = null
+  let isReplayingSessionActivityEvents = false
   const backgroundActivityIdsByToolCallId = new Map<string, string>()
+  const loadedTranscriptMessagesRaw = ref<StoredMessage[]>([])
+  const loadedActivityEventsRaw = ref<SessionTranscriptResponse['activity_events']>([])
+  const loadedPendingApprovals = ref<PendingApproval[]>([])
+  const activityHistoryMeta = ref<ActivityHistory | null>(null)
   let hydratingLlmForm = false
 
   const sessionLabel = computed(() => {
@@ -594,6 +603,7 @@ function createWorkspaceApp() {
     activeSessionId.value = payload.session_id
     chatMessages.value = []
     activities.value = []
+    resetLoadedTranscriptState()
     resetTimelineSequence()
     activeSessionRuntime.value = null
     activeCodexWorkMode.value = 'build'
@@ -722,6 +732,8 @@ function createWorkspaceApp() {
       return
     }
 
+    latestSessionLoadRequestId += 1
+    isHydratingOlderActivity.value = false
     errorMessage.value = ''
     successMessage.value = ''
     isSending.value = true
@@ -769,25 +781,104 @@ function createWorkspaceApp() {
     codexWorkspace.value = codexWorkspacePayload
   }
 
+  function normalizeActivityHistory(
+    history: ActivityHistory | null | undefined,
+    returnedCount: number,
+  ): ActivityHistory {
+    return {
+      total_count: typeof history?.total_count === 'number' ? history.total_count : returnedCount,
+      returned_count:
+        typeof history?.returned_count === 'number' ? history.returned_count : returnedCount,
+      next_before:
+        typeof history?.next_before === 'number' ? history.next_before : (history?.next_before ?? null),
+    }
+  }
+
+  function resetLoadedTranscriptState() {
+    loadedTranscriptMessagesRaw.value = []
+    loadedActivityEventsRaw.value = []
+    loadedPendingApprovals.value = []
+    activityHistoryMeta.value = null
+    isHydratingOlderActivity.value = false
+  }
+
+  function rebuildLoadedSessionTimeline() {
+    resetTimelineSequence()
+    chatMessages.value = toUiMessages(loadedTranscriptMessagesRaw.value)
+    activities.value = []
+    backgroundActivityIdsByToolCallId.clear()
+    replaySessionActivityEvents(loadedActivityEventsRaw.value)
+    appendPendingApprovalActivities(loadedPendingApprovals.value)
+  }
+
+  async function hydrateOlderActivityEvents(
+    sessionId: string,
+    requestId: number,
+  ) {
+    if (activityHistoryMeta.value?.next_before === null || activityHistoryMeta.value === null) {
+      isHydratingOlderActivity.value = false
+      return
+    }
+
+    isHydratingOlderActivity.value = true
+
+    try {
+      while (
+        requestId === latestSessionLoadRequestId &&
+        sessionId === activeSessionId.value &&
+        activityHistoryMeta.value?.next_before !== null
+      ) {
+        const before = activityHistoryMeta.value?.next_before
+        if (typeof before !== 'number') {
+          break
+        }
+
+        const page = await apiGet<SessionActivityPageResponse>(
+          `/api/chat/sessions/${sessionId}/activity-events?before=${before}&limit=${SESSION_ACTIVITY_PAGE_SIZE}`,
+        )
+        if (requestId !== latestSessionLoadRequestId || sessionId !== activeSessionId.value) {
+          return
+        }
+
+        const olderEvents = Array.isArray(page.activity_events) ? page.activity_events : []
+        loadedActivityEventsRaw.value = [...olderEvents, ...loadedActivityEventsRaw.value]
+        activityHistoryMeta.value = normalizeActivityHistory(
+          page.activity_history,
+          olderEvents.length,
+        )
+        rebuildLoadedSessionTimeline()
+      }
+    } finally {
+      if (requestId === latestSessionLoadRequestId && sessionId === activeSessionId.value) {
+        isHydratingOlderActivity.value = false
+      }
+    }
+  }
+
   async function loadSessionTranscript(sessionId: string) {
     const requestId = ++latestSessionLoadRequestId
-    const transcript = await apiGet<SessionTranscriptResponse>(`/api/chat/sessions/${sessionId}`)
+    const transcript = await apiGet<SessionTranscriptResponse>(
+      `/api/chat/sessions/${sessionId}?activity_limit=${SESSION_ACTIVITY_PAGE_SIZE}`,
+    )
     if (requestId !== latestSessionLoadRequestId || sessionId !== activeSessionId.value) {
       return
     }
-    resetTimelineSequence()
-    chatMessages.value = toUiMessages(transcript.messages)
-    activities.value = []
+    loadedTranscriptMessagesRaw.value = Array.isArray(transcript.messages) ? transcript.messages : []
+    loadedActivityEventsRaw.value = Array.isArray(transcript.activity_events)
+      ? transcript.activity_events
+      : []
+    loadedPendingApprovals.value = transcript.pending_approvals ?? []
+    activityHistoryMeta.value = normalizeActivityHistory(
+      transcript.activity_history,
+      loadedActivityEventsRaw.value.length,
+    )
     codexTurnTimings.value = Array.isArray(transcript.codex_turn_timings)
       ? transcript.codex_turn_timings
       : []
     activeSessionRuntime.value = transcript.backend_runtime ?? null
     activeCodexWorkMode.value = transcript.codex_work_mode ?? 'build'
-    backgroundActivityIdsByToolCallId.clear()
-    replaySessionActivityEvents(
-      Array.isArray(transcript.activity_events) ? transcript.activity_events : [],
-    )
-    appendPendingApprovalActivities(transcript.pending_approvals ?? [])
+    rebuildLoadedSessionTimeline()
+    void hydrateOlderActivityEvents(sessionId, requestId)
   }
 
   async function openSessionFromHistory(sessionId: string) {
@@ -802,6 +893,7 @@ function createWorkspaceApp() {
     activeSessionId.value = sessionId
     chatMessages.value = []
     activities.value = []
+    resetLoadedTranscriptState()
     codexTurnTimings.value = []
     resetTimelineSequence()
     activeSessionRuntime.value = null
@@ -977,12 +1069,49 @@ function createWorkspaceApp() {
     return eventSessionId === activeSessionId.value
   }
 
+  function isPersistedActivityEvent(eventName: ChatStreamEvent['event']) {
+    return (
+      eventName === 'tool_call_start' ||
+      eventName === 'tool_call_end' ||
+      eventName === 'command_start' ||
+      eventName === 'command_output' ||
+      eventName === 'command_end' ||
+      eventName === 'background_command_started' ||
+      eventName === 'background_command_output' ||
+      eventName === 'background_command_end' ||
+      eventName === 'background_followup_queued' ||
+      eventName === 'background_followup_started' ||
+      eventName === 'background_followup_finished' ||
+      eventName === 'reasoning' ||
+      eventName === 'plan' ||
+      eventName === 'approval_requested' ||
+      eventName === 'approval_resolved' ||
+      eventName === 'turn_aborted' ||
+      eventName === 'stream_error'
+    )
+  }
+
   function handleStreamEvent(event: ChatStreamEvent) {
     const previousTimelineSequenceHint = currentStreamSequenceHint
     currentStreamSequenceHint = normalizeTimelineSequence(
       isRecord(event.data) && 'sequence' in event.data ? event.data.sequence : null,
     )
     try {
+      if (
+        !isReplayingSessionActivityEvents &&
+        isPersistedActivityEvent(event.event) &&
+        ('session_id' in event.data ? event.data.session_id : '') === activeSessionId.value
+      ) {
+        const persistedEventData = isRecord(event.data) ? { ...event.data } : {}
+        loadedActivityEventsRaw.value = [
+          ...loadedActivityEventsRaw.value,
+          {
+            event: event.event,
+            data: persistedEventData,
+          },
+        ]
+      }
+
       if (event.event === 'codex_pairings_updated') {
         codexWorkspace.value = {
           projects: codexWorkspace.value?.projects ?? [],
@@ -1395,6 +1524,14 @@ function createWorkspaceApp() {
       }
 
       if (event.event === 'approval_requested') {
+        if (!isReplayingSessionActivityEvents) {
+          loadedPendingApprovals.value = [
+            ...loadedPendingApprovals.value.filter(
+              (approval) => approval.request_id !== event.data.request_id,
+            ),
+            event.data,
+          ]
+        }
         if (activeSessionRuntime.value) {
           activeSessionRuntime.value.pending_approval_count += 1
           activeSessionRuntime.value.status = 'active'
@@ -1404,6 +1541,11 @@ function createWorkspaceApp() {
       }
 
       if (event.event === 'approval_resolved') {
+        if (!isReplayingSessionActivityEvents) {
+          loadedPendingApprovals.value = loadedPendingApprovals.value.filter(
+            (approval) => approval.request_id !== event.data.request_id,
+          )
+        }
         if (activeSessionRuntime.value) {
           activeSessionRuntime.value.pending_approval_count = Math.max(
             0,
@@ -2220,8 +2362,13 @@ function createWorkspaceApp() {
   function replaySessionActivityEvents(
     activityEvents: SessionTranscriptResponse['activity_events'],
   ) {
-    for (const event of activityEvents) {
-      handleStreamEvent(event as ChatStreamEvent)
+    isReplayingSessionActivityEvents = true
+    try {
+      for (const event of activityEvents) {
+        handleStreamEvent(event as ChatStreamEvent)
+      }
+    } finally {
+      isReplayingSessionActivityEvents = false
     }
   }
 
@@ -3532,6 +3679,7 @@ function createWorkspaceApp() {
     chatMessages,
     activities,
     codexTurnTimings,
+    isHydratingOlderActivity,
     sessionHistory,
     activeCodexWorkMode,
     isCodexCompactLayout,

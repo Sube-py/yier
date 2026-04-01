@@ -1,11 +1,4 @@
-import { h } from 'vue'
 import { createMemoryHistory, createRouter, createWebHistory, type RouterHistory } from 'vue-router'
-
-const RouteAnchor = {
-  render() {
-    return h('div')
-  },
-}
 
 export function createAppRouter(history: RouterHistory = createWebHistory(import.meta.env.BASE_URL)) {
   return createRouter({
@@ -16,19 +9,25 @@ export function createAppRouter(history: RouterHistory = createWebHistory(import
         redirect: '/chat',
       },
       {
-        path: '/chat',
-        name: 'chat',
-        component: RouteAnchor,
-      },
-      {
-        path: '/settings',
-        name: 'settings',
-        component: RouteAnchor,
-      },
-      {
-        path: '/channel',
-        name: 'channel',
-        component: RouteAnchor,
+        path: '/',
+        component: () => import('../views/WorkspaceLayoutView.vue'),
+        children: [
+          {
+            path: 'chat',
+            name: 'chat',
+            component: () => import('../views/ChatView.vue'),
+          },
+          {
+            path: 'settings',
+            name: 'settings',
+            component: () => import('../views/SettingsView.vue'),
+          },
+          {
+            path: 'channel',
+            name: 'channel',
+            component: () => import('../views/ChannelView.vue'),
+          },
+        ],
       },
     ],
   })

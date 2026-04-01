@@ -2017,7 +2017,7 @@ describe('App', () => {
 
     expect(wrapper.text()).toContain('List the project files')
     expect(wrapper.html()).toContain('<strong>project files</strong>')
-    expect(wrapper.html()).toContain('<pre><code class="language-ts">')
+    expect(wrapper.html()).toContain('language-ts')
     expect(wrapper.text()).toContain('Shell command')
     expect(wrapper.text()).toContain('printf "hello"')
     expect(wrapper.text()).toContain('/tmp/project')
@@ -2121,7 +2121,7 @@ describe('App', () => {
     await flushPromises()
 
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith('printf "hello"')
-    expect(copyButton.text()).toBe('Copied')
+    expect(copyButton.attributes('aria-label')).toBe('Copied')
   })
 
   it('merges reasoning updates into one activity card and renders markdown', async () => {
@@ -2804,7 +2804,7 @@ describe('App', () => {
 
     expect(wrapper.findAll('.activity-item')).toHaveLength(1)
     expect(wrapper.text()).toContain('Shell command')
-    expect(wrapper.text()).toContain('$ printf "hello"')
+    expect(wrapper.text()).toContain('printf "hello"')
     expect(wrapper.text()).toContain('hello')
     expect(wrapper.text()).not.toContain('Working directory: /tmp/project')
     expect(wrapper.text()).not.toContain('Exit code: 0')

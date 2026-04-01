@@ -6,7 +6,7 @@ import Aura from '@primeuix/themes/aura'
 import App from './App.vue'
 import router from './router'
 import 'primeicons/primeicons.css'
-import './style.css'
+import './styles/index.css'
 
 const YierPreset = definePreset(Aura, {
   semantic: {

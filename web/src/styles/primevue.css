@@ -1,0 +1,140 @@
+@layer components {
+  .p-button,
+  .p-inputtext,
+  .p-password-input,
+  .p-select,
+  .p-textarea {
+    @apply rounded-2xl;
+  }
+
+  .p-inputtext,
+  .p-password-input,
+  .p-select,
+  .p-textarea {
+    @apply border-[color:var(--app-border)] bg-[rgba(255,252,245,0.92)] text-[color:var(--app-text)] shadow-none;
+  }
+
+  .p-select-label {
+    @apply px-[0.95rem] py-[0.78rem] font-semibold text-[color:var(--app-text)];
+  }
+
+  .p-select-dropdown {
+    @apply w-10 text-[color:var(--app-text-soft)];
+  }
+
+  .p-select-dropdown-icon {
+    @apply text-[0.85rem];
+  }
+
+  .p-select:not(.p-disabled):hover {
+    @apply bg-[rgba(242,235,223,0.98)];
+  }
+
+  .p-select.p-focus,
+  .p-inputtext:focus,
+  .p-password-input:focus,
+  .p-textarea:focus {
+    box-shadow: 0 0 0 2px rgba(172, 130, 83, 0.16);
+  }
+
+  .composer-textarea,
+  .composer-textarea.p-textarea {
+    min-height: 0;
+    max-height: none;
+    resize: none;
+    overflow-x: hidden;
+    border: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    padding: 0;
+    color: var(--app-text);
+    line-height: 1.6;
+  }
+
+  .composer-textarea::placeholder,
+  .composer-textarea.p-textarea::placeholder {
+    color: color-mix(in srgb, var(--app-text-soft) 82%, white 18%);
+  }
+
+  .composer-textarea:focus,
+  .composer-textarea.p-textarea:focus,
+  .composer-textarea.p-textarea.p-focus {
+    border: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    outline: none;
+  }
+
+  .composer-textarea::-webkit-scrollbar,
+  .composer-textarea.p-textarea::-webkit-scrollbar {
+    width: 0.45rem;
+  }
+
+  .composer-textarea::-webkit-scrollbar-thumb,
+  .composer-textarea.p-textarea::-webkit-scrollbar-thumb {
+    border-radius: 999px;
+    background: rgba(21, 94, 99, 0.2);
+  }
+
+  .composer-textarea::-webkit-scrollbar-track,
+  .composer-textarea.p-textarea::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .composer-inline-select.p-select {
+    min-width: 0;
+    border: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+  }
+
+  .composer-inline-select.p-select .p-select-label {
+    padding: 0;
+    color: var(--app-text-soft);
+    font-size: 0.78rem;
+    font-weight: 500;
+    line-height: 1.2;
+  }
+
+  .composer-inline-select.p-select .p-select-dropdown {
+    width: 0.85rem;
+    background: transparent;
+    border: 0;
+    color: var(--app-text-soft);
+  }
+
+  .composer-inline-select.p-select .p-select-dropdown-icon {
+    font-size: 0.6rem;
+  }
+
+  .composer-inline-select.p-select.p-focus,
+  .composer-inline-select.p-select:not(.p-disabled):hover {
+    border: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+  }
+
+  .composer-inline-select-danger.p-select .p-select-label,
+  .composer-inline-select-danger.p-select .p-select-dropdown {
+    color: rgb(146, 64, 14);
+  }
+}
+
+@layer utilities {
+  .p-scrollpanel-content {
+    scrollbar-width: none;
+  }
+
+  .p-scrollpanel-content::-webkit-scrollbar {
+    display: none;
+  }
+
+  .p-scrollpanel-bar {
+    @apply rounded-full bg-[rgba(21,94,99,0.2)] transition-[background-color,opacity] duration-150;
+  }
+
+  .p-scrollpanel:hover .p-scrollpanel-bar,
+  .p-scrollpanel-bar:focus-visible {
+    @apply bg-[rgba(21,94,99,0.34)];
+  }
+}

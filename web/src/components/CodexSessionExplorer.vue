@@ -255,7 +255,7 @@ const selectNewProject = async () => {
         rounded
         text
         icon="pi pi-folder-plus"
-        class="text-[color:var(--app-text-soft)]"
+        class="codex-select-project-action text-[color:var(--app-text-soft)]"
         aria-label="Open thread actions"
         @click="selectNewProject"
       />
@@ -275,7 +275,7 @@ const selectNewProject = async () => {
           <div class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-2xl p-[0.1rem] transition duration-150 hover:bg-white/44 focus-within:bg-white/44">
             <button
               type="button"
-              class="flex w-full items-start gap-[0.65rem] rounded-[0.9rem] px-[0.7rem] py-[0.62rem] text-left transition duration-150 hover:bg-white/36"
+              class="codex-project-toggle flex w-full items-start gap-[0.65rem] rounded-[0.9rem] px-[0.7rem] py-[0.62rem] text-left transition duration-150 hover:bg-white/36"
               :class="{ 'bg-white/36': isProjectExpanded(project.project_path) }"
               :aria-expanded="isProjectExpanded(project.project_path)"
               :title="project.project_path"
@@ -291,7 +291,9 @@ const selectNewProject = async () => {
                 />
               </span>
               <div class="min-w-0">
-                <p class="m-0 text-base leading-[1.3] font-bold">{{ projectLabel(project) }}</p>
+                <p class="codex-project-title m-0 text-base leading-[1.3] font-bold">
+                  {{ projectLabel(project) }}
+                </p>
               </div>
             </button>
 
@@ -300,6 +302,7 @@ const selectNewProject = async () => {
                 rounded
                 text
                 icon="pi pi-pen-to-square"
+                class="codex-project-start-action"
                 :title="`Start a new chat in ${projectLabel(project)}`"
                 @click.stop="startSessionForProject(project.project_path)"
               />
@@ -314,7 +317,7 @@ const selectNewProject = async () => {
               v-for="session in project.sessions"
               :key="session.thread_id"
               type="button"
-              class="block w-full overflow-hidden rounded-[0.95rem] px-[0.5rem] py-[0.5rem] pr-[0.72rem] text-left transition duration-150 hover:bg-white/48 focus-visible:bg-white/48"
+              class="codex-session-item block w-full overflow-hidden rounded-[0.95rem] px-[0.5rem] py-[0.5rem] pr-[0.72rem] text-left transition duration-150 hover:bg-white/48 focus-visible:bg-white/48"
               :class="{
                 'bg-[rgba(232,244,241,0.72)] shadow-[inset_3px_0_0_rgba(21,94,99,0.52)]':
                   session.thread_id === activeSessionId,
@@ -325,7 +328,7 @@ const selectNewProject = async () => {
               <div class="block min-w-0 max-w-full overflow-hidden">
                 <div class="grid w-full min-w-0 max-w-full grid-cols-[minmax(0,1fr)_auto] items-baseline gap-[0.8rem] overflow-hidden">
                   <p
-                    class="block min-w-0 max-w-full overflow-hidden text-ellipsis whitespace-nowrap text-[0.8rem] leading-[1.4]"
+                    class="codex-session-title block min-w-0 max-w-full overflow-hidden text-ellipsis whitespace-nowrap text-[0.8rem] leading-[1.4]"
                     :title="session.title"
                   >
                     {{ session.title }}

@@ -119,6 +119,9 @@ function pairingCapabilitySummary(capabilityNames: string[]) {
       >
         {{ runtime.detail }}
       </p>
+      <p class="m-0 text-[0.78rem] font-semibold uppercase tracking-[0.08em] text-[color:var(--app-text-soft)]">
+        Global sandbox default
+      </p>
 
       <div class="grid gap-3">
         <div class="flex items-start justify-between gap-3 text-sm text-[color:var(--app-text-soft)]">

@@ -1,0 +1,77 @@
+@import 'tailwindcss';
+@plugin "@tailwindcss/typography";
+
+:root {
+  color-scheme: light;
+  --app-bg: #f8f4ea;
+  --app-bg-alt: #efe6d3;
+  --app-panel: rgba(255, 252, 245, 0.82);
+  --app-panel-strong: rgba(255, 249, 239, 0.97);
+  --app-border: rgba(34, 66, 72, 0.12);
+  --app-border-strong: rgba(34, 66, 72, 0.22);
+  --app-text: #183036;
+  --app-text-soft: #557076;
+  --app-accent: #155e63;
+  --app-accent-deep: #0d3f46;
+  --app-shadow: 0 24px 60px rgba(31, 54, 58, 0.12);
+}
+
+@layer base {
+  html,
+  body,
+  #app {
+    min-height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background:
+      radial-gradient(circle at top left, rgba(49, 139, 142, 0.12), transparent 28rem),
+      radial-gradient(circle at bottom right, rgba(150, 110, 67, 0.14), transparent 26rem),
+      linear-gradient(180deg, var(--app-bg), var(--app-bg-alt));
+    color: var(--app-text);
+    font-family: 'Avenir Next', 'Segoe UI', sans-serif;
+  }
+
+  body::before {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background-image:
+      linear-gradient(rgba(24, 48, 54, 0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(24, 48, 54, 0.03) 1px, transparent 1px);
+    background-size: 28px 28px;
+    content: '';
+    mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.26), transparent 82%);
+  }
+
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+  }
+
+  h3,
+  h4 {
+    margin: 0;
+    font-family: 'Iowan Old Style', 'Palatino Linotype', Palatino, serif;
+    font-weight: 600;
+  }
+
+  @media (max-width: 1023px) {
+    body {
+      overflow: auto;
+    }
+  }
+
+  body.yier-sheet-lock {
+    overflow: hidden;
+  }
+}
+
+@layer components {
+  .eyebrow {
+    @apply m-0 text-[0.72rem] font-bold uppercase tracking-[0.16em] text-[color:var(--app-text-soft)];
+  }
+}

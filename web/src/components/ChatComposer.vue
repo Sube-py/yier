@@ -255,6 +255,7 @@ onMounted(async () => {
           </div>
         </div>
         <Button
+          label="Send"
           icon="pi pi-arrow-up"
           aria-label="Send message"
           class="shrink-0 sm:!w-11 sm:!h-11 sm:!px-0"

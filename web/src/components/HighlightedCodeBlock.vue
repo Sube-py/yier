@@ -16,6 +16,7 @@ const props = withDefaults(
     tone?: 'default' | 'danger'
     maxHeight?: 'default' | 'compact'
     copyAriaLabel?: string
+    copyButtonClass?: string
   }>(),
   {
     language: '',
@@ -24,6 +25,7 @@ const props = withDefaults(
     tone: 'default',
     maxHeight: 'default',
     copyAriaLabel: 'Copy code block',
+    copyButtonClass: '',
   },
 )
 
@@ -192,6 +194,7 @@ async function copyContent() {
       <button
         type="button"
         class="code-surface-copy"
+        :class="copyButtonClass"
         :data-state="copied ? 'copied' : undefined"
         :aria-label="copied ? 'Copied' : copyAriaLabel"
         :title="copied ? 'Copied' : copyAriaLabel"

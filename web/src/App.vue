@@ -1080,7 +1080,7 @@ function handleStreamEvent(event: ChatStreamEvent) {
       title: 'Shell command',
       detail: 'Streaming command output.',
       state: 'running',
-      command: event.data.command,
+      command: normalizeShellCommand(event.data.command),
       cwd: event.data.cwd,
       stdout: '',
       stderr: '',
@@ -1090,7 +1090,7 @@ function handleStreamEvent(event: ChatStreamEvent) {
         toolName: event.data.tool_name,
         toolCallId: event.data.tool_call_id,
         request: {
-          command: event.data.command,
+          command: normalizeShellCommand(event.data.command),
           cwd: event.data.cwd,
         },
         process: {
@@ -1104,7 +1104,7 @@ function handleStreamEvent(event: ChatStreamEvent) {
         },
         events: [
           buildShellEvent(0, 'started', {
-            command: event.data.command,
+            command: normalizeShellCommand(event.data.command),
             cwd: event.data.cwd,
           }),
         ],
@@ -1129,7 +1129,7 @@ function handleStreamEvent(event: ChatStreamEvent) {
         ? `Timed out with exit code ${event.data.exit_code}.`
         : `Finished with exit code ${event.data.exit_code}.`,
       state: event.data.exit_code === 0 && !event.data.timed_out ? 'done' : 'error',
-      command: event.data.command,
+      command: normalizeShellCommand(event.data.command),
       cwd: event.data.cwd,
       stdout: '',
       stderr: '',
@@ -1140,7 +1140,7 @@ function handleStreamEvent(event: ChatStreamEvent) {
         tool_call_id: event.data.tool_call_id,
         session_id: null,
         request: {
-          command: event.data.command,
+          command: normalizeShellCommand(event.data.command),
           cwd: event.data.cwd,
         },
         process: {
@@ -1180,7 +1180,7 @@ function handleStreamEvent(event: ChatStreamEvent) {
       title: `Background ${event.data.background_session_id}`,
       detail: 'Background task is running.',
       state: 'running',
-      command: event.data.command,
+      command: normalizeShellCommand(event.data.command),
       cwd: event.data.cwd,
       stdout: '',
       stderr: '',
@@ -1191,7 +1191,7 @@ function handleStreamEvent(event: ChatStreamEvent) {
         toolCallId: event.data.tool_call_id,
         sessionId: event.data.background_session_id,
         request: {
-          command: event.data.command,
+          command: normalizeShellCommand(event.data.command),
           cwd: event.data.cwd,
         },
         process: {
@@ -1234,7 +1234,7 @@ function handleStreamEvent(event: ChatStreamEvent) {
           : event.data.state === 'running'
             ? 'running'
             : 'error',
-      command: event.data.command,
+      command: normalizeShellCommand(event.data.command),
       cwd: event.data.cwd,
       stdout: '',
       stderr: '',
@@ -1245,7 +1245,7 @@ function handleStreamEvent(event: ChatStreamEvent) {
         tool_call_id: '',
         session_id: event.data.background_session_id,
         request: {
-          command: event.data.command,
+          command: normalizeShellCommand(event.data.command),
           cwd: event.data.cwd,
         },
         process: {
@@ -2711,6 +2711,142 @@ function formatTodoCounts(counts: { pending: number; in_progress: number; comple
   return `${counts.completed} completed, ${counts.in_progress} in progress, ${counts.pending} pending`
 }
 
+const SHELL_WRAPPER_NAMES = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
+
+function tokenizeShellWords(command: string) {
+  const words: string[] = []
+  let current = ''
+  let quote: "'" | '"' | null = null
+
+  for (let index = 0; index < command.length; index += 1) {
+    const character = command[index]
+    if (character === undefined) {
+      continue
+    }
+
+    if (quote === "'") {
+      if (character === "'") {
+        quote = null
+      } else {
+        current += character
+      }
+      continue
+    }
+
+    if (quote === '"') {
+      if (character === '"') {
+        quote = null
+        continue
+      }
+      if (character === '\\') {
+        const nextCharacter = command[index + 1]
+        if (nextCharacter !== undefined) {
+          current += nextCharacter
+          index += 1
+          continue
+        }
+      }
+      current += character
+      continue
+    }
+
+    if (/\s/.test(character)) {
+      if (current) {
+        words.push(current)
+        current = ''
+      }
+      continue
+    }
+
+    if (character === "'" || character === '"') {
+      quote = character
+      continue
+    }
+
+    if (character === '\\') {
+      const nextCharacter = command[index + 1]
+      if (nextCharacter !== undefined) {
+        current += nextCharacter
+        index += 1
+        continue
+      }
+    }
+
+    current += character
+  }
+
+  if (quote) {
+    return null
+  }
+
+  if (current) {
+    words.push(current)
+  }
+
+  return words
+}
+
+function unwrapShellWrapper(command: string) {
+  const trimmed = command.trim()
+  if (!trimmed) {
+    return trimmed
+  }
+
+  const words = tokenizeShellWords(trimmed)
+  if (!words || words.length < 3) {
+    return trimmed
+  }
+
+  const shellToken = words[0] ?? ''
+  const shellName = shellToken.split('/').filter(Boolean).pop() ?? shellToken
+  if (!SHELL_WRAPPER_NAMES.has(shellName)) {
+    return trimmed
+  }
+
+  let commandIndex = 1
+  let hasCommandFlag = false
+  while (commandIndex < words.length) {
+    const token = words[commandIndex] ?? ''
+    if (token === '--') {
+      commandIndex += 1
+      break
+    }
+    if (!token.startsWith('-') || token === '-') {
+      break
+    }
+    if (/^-[A-Za-z]+$/.test(token) && token.includes('c')) {
+      hasCommandFlag = true
+    }
+    commandIndex += 1
+  }
+
+  if (!hasCommandFlag || commandIndex >= words.length) {
+    return trimmed
+  }
+
+  return words[commandIndex] ?? trimmed
+}
+
+function normalizeShellCommand(value: unknown, fallback = '') {
+  if (typeof value !== 'string') {
+    return fallback
+  }
+  return unwrapShellWrapper(value)
+}
+
+function normalizeShellRequest(request: Record<string, unknown> | undefined) {
+  if (!request) {
+    return {}
+  }
+  if (typeof request.command !== 'string') {
+    return request
+  }
+  return {
+    ...request,
+    command: normalizeShellCommand(request.command),
+  }
+}
+
 function makeShellState(options: {
   kind: ShellActivityState['kind']
   toolName: string
@@ -2726,7 +2862,7 @@ function makeShellState(options: {
     tool_name: options.toolName,
     tool_call_id: options.toolCallId,
     session_id: options.sessionId ?? null,
-    request: options.request ?? {},
+    request: normalizeShellRequest(options.request),
     process: options.process ?? null,
     events: options.events ?? [],
     latest_event_index: options.latestEventIndex ?? null,
@@ -2768,7 +2904,7 @@ function normalizeShellRaw(
     tool_name: toolName,
     tool_call_id: toolCallId,
     session_id: raw.process.session_id,
-    request: raw.request,
+    request: normalizeShellRequest(raw.request),
     process: raw.process,
     events: sortShellEvents(raw.events),
     latest_event_index: raw.latest_event_index,
@@ -2995,7 +3131,7 @@ function shellTitle(kind: ShellActivityState['kind'], sessionId: string | null) 
 }
 
 function shellCommandFromRequest(request: Record<string, unknown>, fallback: string) {
-  return typeof request.command === 'string' ? request.command : fallback
+  return normalizeShellCommand(request.command, fallback)
 }
 
 function shellCwdFromRequest(request: Record<string, unknown>, fallback: string) {
@@ -3016,7 +3152,7 @@ function handleShellToolStart(
     title: shellTitle(isBackground ? 'background_command' : 'shell_command', sessionId),
     detail: isBackground ? 'Waiting for background output.' : 'Preparing shell command.',
     state: 'running',
-    command: typeof argumentsValue.command === 'string' ? argumentsValue.command : '',
+    command: normalizeShellCommand(argumentsValue.command),
     cwd: typeof argumentsValue.cwd === 'string' ? argumentsValue.cwd : '',
     stdout: '',
     stderr: '',
@@ -3137,7 +3273,7 @@ function handleShellToolEndFallback(
         ),
     command:
       typeof metadata.command === 'string'
-        ? metadata.command
+        ? normalizeShellCommand(metadata.command)
         : (existing?.command ?? shellCommandFromRequest(shell?.request ?? {}, '')),
     cwd:
       typeof metadata.cwd === 'string'
@@ -3152,7 +3288,9 @@ function handleShellToolEndFallback(
       toolCallId,
       request: {
         ...(shell?.request ?? {}),
-        ...(typeof metadata.command === 'string' ? { command: metadata.command } : {}),
+        ...(typeof metadata.command === 'string'
+          ? { command: normalizeShellCommand(metadata.command) }
+          : {}),
         ...(typeof metadata.cwd === 'string' ? { cwd: metadata.cwd } : {}),
       },
       sessionId,

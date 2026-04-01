@@ -145,6 +145,8 @@ function backgroundCommandRaw(overrides: Record<string, unknown> = {}) {
   }
 }
 
+const wrappedShellCommand = `/bin/zsh -lc "nl -ba tests/test_git_ops.py | sed -n '150,240p'"`
+
 function skillLoadRaw(overrides: Record<string, unknown> = {}) {
   return {
     kind: 'skill_load',
@@ -1802,6 +1804,125 @@ describe('App', () => {
     expect(wrapper.text()).toContain('hello')
     expect(wrapper.text()).not.toContain('Command finished successfully.')
     expect(wrapper.findAll('.activity-item')).toHaveLength(1)
+  })
+
+  it('shows the unwrapped shell command instead of the shell launcher wrapper', async () => {
+    localStorage.setItem('yier.active-session-id', 'session-1')
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const path = input.toString()
+        if (path.endsWith('/api/health')) {
+          return jsonResponse({
+            frontend: { ready: true, mode: 'static' },
+            llm: { ready: true },
+            mcp: { ready: true, runtime: {} },
+            allowed_roots: ['/tmp/project'],
+          })
+        }
+        if (path.endsWith('/api/config')) {
+          return jsonResponse({
+            llm: { base_url: 'https://example.test', model: 'demo', has_api_key: true },
+            allowed_roots: ['/tmp/project'],
+            mcp_runtime: {},
+          })
+        }
+        if (path.endsWith('/api/config/mcp')) {
+          return jsonResponse({ mcp_servers: {}, runtime: {} })
+        }
+        if (isSessionListRequest(path, init)) {
+          return jsonResponse({
+            sessions: [
+              {
+                session_id: 'session-1',
+                title: 'inspect tests',
+                preview: 'Done.',
+                updated_at: 123,
+                message_count: 2,
+              },
+            ],
+          })
+        }
+        if (path.includes('/api/chat/sessions/')) {
+          return jsonResponse({
+            session_id: 'session-1',
+            messages: [
+              { role: 'user', content: 'inspect tests' },
+              { role: 'assistant', content: 'Done.' },
+            ],
+            activity_events: [
+              {
+                event: 'tool_call_start',
+                data: {
+                  session_id: 'session-1',
+                  tool_name: 'run_command',
+                  tool_call_id: 'call-1',
+                  arguments: {
+                    command: wrappedShellCommand,
+                    cwd: '/tmp/project',
+                  },
+                  iteration: 1,
+                },
+              },
+              {
+                event: 'command_start',
+                data: {
+                  session_id: 'session-1',
+                  tool_call_id: 'call-1',
+                  tool_name: 'run_command',
+                  command: wrappedShellCommand,
+                  cwd: '/tmp/project',
+                  is_background: false,
+                },
+              },
+              {
+                event: 'tool_call_end',
+                data: {
+                  session_id: 'session-1',
+                  tool_name: 'run_command',
+                  tool_call_id: 'call-1',
+                  result: 'Command finished successfully.',
+                  is_error: false,
+                  iteration: 1,
+                  metadata: {
+                    command: wrappedShellCommand,
+                    cwd: '/tmp/project',
+                    exit_code: 0,
+                    timed_out: false,
+                  },
+                  raw: shellCommandRaw({
+                    request: {
+                      command: wrappedShellCommand,
+                      cwd: '/tmp/project',
+                      allow_shell: true,
+                      shell_program: '/bin/zsh',
+                    },
+                    events: [
+                      {
+                        index: 0,
+                        timestamp: 1,
+                        type: 'started',
+                        command: wrappedShellCommand,
+                        cwd: '/tmp/project',
+                      },
+                    ],
+                    latest_event_index: 0,
+                  }),
+                },
+              },
+            ],
+          })
+        }
+        throw new Error(`Unexpected request: ${path}`)
+      }),
+    )
+
+    const wrapper = await mountApp()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain(`nl -ba tests/test_git_ops.py | sed -n '150,240p'`)
+    expect(wrapper.text()).not.toContain('/bin/zsh -lc')
   })
 
   it('renders a streamed assistant reply after submitting a message', async () => {

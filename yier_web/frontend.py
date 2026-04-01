@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 from litestar import Request
-from litestar.response import File, Response
+from litestar.response import Response
 
 from yier_web.schemas import FrontendHealth
 
@@ -36,17 +36,17 @@ class FrontendService:
             detail="Start Vite dev server or build the frontend bundle first.",
         )
 
-    async def handle_request(self, request: Request[Any, Any, Any], path: str) -> Response | File:
+    async def handle_request(self, request: Request[Any, Any, Any], path: str) -> Response:
         if await self._should_proxy_to_vite():
             return await self._proxy_request(request)
 
         resolved_path = self._resolve_dist_path(path)
         if resolved_path is not None and resolved_path.exists():
-            return File(path=resolved_path)
+            return self._build_static_response(resolved_path)
 
         index_path = self.dist_root / "index.html"
         if index_path.exists():
-            return File(path=index_path)
+            return self._build_static_response(index_path)
 
         return Response(
             content="Frontend is unavailable. Start `pnpm dev` in `web` or build the frontend.",
@@ -92,11 +92,13 @@ class FrontendService:
         )
 
     def _resolve_dist_path(self, path: str) -> Path | None:
-        if not path:
+        normalized_path = path.lstrip("/")
+
+        if not normalized_path:
             candidate = self.dist_root / "index.html"
             return candidate if candidate.exists() else None
 
-        candidate = (self.dist_root / path).resolve()
+        candidate = (self.dist_root / normalized_path).resolve()
         try:
             candidate.relative_to(self.dist_root.resolve())
         except ValueError:
@@ -104,7 +106,7 @@ class FrontendService:
 
         if candidate.exists() and candidate.is_file():
             return candidate
-        if Path(path).suffix:
+        if Path(normalized_path).suffix:
             return None
         return None
 
@@ -115,3 +117,14 @@ class FrontendService:
         except httpx.HTTPError:
             return False
         return response.status_code < 500
+
+    def _build_static_response(self, path: Path) -> Response:
+        media_type, encoding = mimetypes.guess_type(path.name)
+        headers: dict[str, str] = {}
+        if encoding:
+            headers["content-encoding"] = encoding
+        return Response(
+            content=path.read_bytes(),
+            media_type=media_type or "application/octet-stream",
+            headers=headers or None,
+        )

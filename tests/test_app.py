@@ -407,6 +407,50 @@ def test_frontend_service_uses_vite_proxy_when_debug_is_enabled(
     assert status.mode == "proxy"
 
 
+def test_frontend_static_entry_serves_html_inline(tmp_path: Path) -> None:
+    client = build_test_client(tmp_path)
+
+    with client:
+        response = client.get("/")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert "content-disposition" not in response.headers
+    assert response.text == "<html></html>"
+
+
+def test_frontend_static_assets_preserve_asset_content_type(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    dist_root = project_root / "web" / "dist"
+    assets_root = dist_root / "assets"
+    assets_root.mkdir(parents=True)
+    (dist_root / "index.html").write_text("<html></html>", encoding="utf-8")
+    (assets_root / "app.js").write_text("console.log('hello')", encoding="utf-8")
+
+    config_service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
+    frontend_service = FrontendService(project_root=project_root)
+    app = create_app(
+        project_root=project_root,
+        home_dir=tmp_path / "home",
+        services=AppServices(
+            config_service=config_service,
+            chat_service=FakeChatService(),  # type: ignore[arg-type]
+            channel_workspace_service=FakeChannelWorkspaceService(),  # type: ignore[arg-type]
+            event_broker=EventStreamBroker(),
+            frontend_service=frontend_service,
+            directory_picker_service=FakeDirectoryPickerService(),
+        ),
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/assets/app.js")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/javascript")
+    assert "content-disposition" not in response.headers
+    assert response.text == "console.log('hello')"
+
+
 def build_test_client(tmp_path: Path) -> TestClient[Any]:
     project_root = tmp_path / "project"
     (project_root / "web" / "dist").mkdir(parents=True)

@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 
 import Button from 'primevue/button'
 import ScrollPanel from 'primevue/scrollpanel'
+import Tooltip from 'primevue/tooltip'
 
 import { apiPost } from '../lib/api'
 import type { CodexProjectGroup, SelectDirectoryResponse } from '../types/api'
@@ -32,6 +33,7 @@ const emit = defineEmits<{
 
 const expandedProjectPaths = ref<string[]>([])
 const isSheet = computed(() => props.surface === 'sheet')
+const vTooltip = Tooltip
 
 const sortedProjects = computed(() =>
   props.projects
@@ -151,6 +153,10 @@ function pathDisplayName(path: string) {
 
 function projectLabel(project: CodexProjectGroup) {
   return project.project || pathDisplayName(project.project_path) || 'Untitled project'
+}
+
+function projectTooltip(project: CodexProjectGroup) {
+  return projectLabel(project)
 }
 
 function requestClose() {
@@ -278,7 +284,7 @@ const selectNewProject = async () => {
               class="codex-project-toggle flex w-full items-start gap-[0.65rem] rounded-[0.9rem] px-[0.7rem] py-[0.62rem] text-left transition duration-150 hover:bg-white/36"
               :class="{ 'bg-white/36': isProjectExpanded(project.project_path) }"
               :aria-expanded="isProjectExpanded(project.project_path)"
-              :title="project.project_path"
+              v-tooltip.top="projectTooltip(project)"
               @click="toggleProject(project.project_path)"
             >
               <span
@@ -291,7 +297,9 @@ const selectNewProject = async () => {
                 />
               </span>
               <div class="min-w-0">
-                <p class="codex-project-title m-0 text-base leading-[1.3] font-bold">
+                <p
+                  class="codex-project-title m-0 truncate text-base leading-[1.3] font-bold"
+                >
                   {{ projectLabel(project) }}
                 </p>
               </div>

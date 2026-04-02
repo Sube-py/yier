@@ -100,6 +100,8 @@ describe('CodexSessionExplorer', () => {
     expect(
       wrapper.findAll('.codex-project-title').map((node) => node.text()),
     ).toEqual(['alpha-service', 'zeta-service'])
+    expect(wrapper.find('.codex-project-title').classes()).toContain('truncate')
+    expect(wrapper.find('.codex-project-toggle').attributes('data-pd-tooltip')).toBe('true')
   })
 
   it('expands the active project, toggles visibility, and emits actions', async () => {

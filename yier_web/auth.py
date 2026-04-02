@@ -29,6 +29,7 @@ PUBLIC_FRONTEND_PATHS = {
 }
 PUBLIC_FRONTEND_PREFIXES = (
     "/assets/",
+    "/@id/",
     "/@vite/",
     "/src/",
     "/node_modules/",
@@ -104,7 +105,8 @@ class AuthService:
         self._password_hash = os.getenv("YIER_AUTH_PASSWORD_HASH", "").strip()
         self._secret = os.getenv("YIER_AUTH_SECRET", "").strip()
         self._session_ttl_seconds = (
-            _env_positive_int("YIER_AUTH_SESSION_TTL_HOURS", DEFAULT_SESSION_TTL_HOURS) * 3600
+            _env_positive_int("YIER_AUTH_SESSION_TTL_HOURS", DEFAULT_SESSION_TTL_HOURS)
+            * 3600
         )
 
     @property

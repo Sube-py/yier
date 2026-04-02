@@ -27,16 +27,22 @@ class FrontendService:
 
     async def get_status(self) -> FrontendHealth:
         if await self._should_proxy_to_vite():
-            return FrontendHealth(ready=True, mode="proxy", detail=f"Proxying {self.vite_origin}")
+            return FrontendHealth(
+                ready=True, mode="proxy", detail=f"Proxying {self.vite_origin}"
+            )
         if (self.dist_root / "index.html").exists():
-            return FrontendHealth(ready=True, mode="static", detail=f"Serving {self.dist_root}")
+            return FrontendHealth(
+                ready=True, mode="static", detail=f"Serving {self.dist_root}"
+            )
         return FrontendHealth(
             ready=False,
             mode="missing",
             detail="Start Vite dev server or build the frontend bundle first.",
         )
 
-    async def handle_request(self, request: Request[Any, Any, Any], path: str) -> Response:
+    async def handle_request(
+        self, request: Request[Any, Any, Any], path: str
+    ) -> Response:
         if await self._should_proxy_to_vite():
             return await self._proxy_request(request)
 
@@ -60,23 +66,31 @@ class FrontendService:
         return await self._vite_available()
 
     async def _proxy_request(self, request: Request[Any, Any, Any]) -> Response:
-        target_url = f"{self.vite_origin}{request.url.path}"
-        if request.url.query:
-            target_url = f"{target_url}?{request.url.query}"
-
         request_headers = {
             key: value
             for key, value in request.headers.items()
             if key.lower() not in {"host", "connection", "content-length"}
         }
 
-        async with httpx.AsyncClient(follow_redirects=False, timeout=10.0) as client:
-            upstream = await client.request(
-                request.method,
-                target_url,
+        async with self._create_vite_client(
+            timeout=10.0, follow_redirects=False
+        ) as client:
+            upstream = await self._proxy_to_vite(
+                client,
+                request=request,
                 headers=request_headers,
-                content=await request.body(),
+                path=request.url.path,
+                query=request.url.query,
             )
+
+            if self._should_fallback_to_vite_index(request, upstream.status_code):
+                upstream = await self._proxy_to_vite(
+                    client,
+                    request=request,
+                    headers=request_headers,
+                    path="/",
+                    query="",
+                )
 
         response_headers = {
             key: value
@@ -90,6 +104,40 @@ class FrontendService:
             media_type=media_type,
             headers=response_headers,
         )
+
+    async def _proxy_to_vite(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        request: Request[Any, Any, Any],
+        headers: dict[str, str],
+        path: str,
+        query: str,
+    ) -> httpx.Response:
+        target_url = f"{self.vite_origin}{path}"
+        if query:
+            target_url = f"{target_url}?{query}"
+        return await client.request(
+            request.method,
+            target_url,
+            headers=headers,
+            content=await request.body(),
+        )
+
+    def _should_fallback_to_vite_index(
+        self,
+        request: Request[Any, Any, Any],
+        upstream_status_code: int,
+    ) -> bool:
+        if upstream_status_code != 404:
+            return False
+        if request.method.upper() not in {"GET", "HEAD"}:
+            return False
+        if Path(request.url.path).suffix:
+            return False
+
+        accept = request.headers.get("accept", "").lower()
+        return "text/html" in accept or accept in {"", "*/*"}
 
     def _resolve_dist_path(self, path: str) -> Path | None:
         normalized_path = path.lstrip("/")
@@ -112,11 +160,23 @@ class FrontendService:
 
     async def _vite_available(self) -> bool:
         try:
-            async with httpx.AsyncClient(timeout=0.35) as client:
+            async with self._create_vite_client(timeout=0.35) as client:
                 response = await client.get(self.vite_origin)
         except httpx.HTTPError:
             return False
         return response.status_code < 500
+
+    def _create_vite_client(
+        self,
+        *,
+        timeout: float,
+        follow_redirects: bool = False,
+    ) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            follow_redirects=follow_redirects,
+            timeout=timeout,
+            trust_env=False,
+        )
 
     def _build_static_response(self, path: Path) -> Response:
         media_type, encoding = mimetypes.guess_type(path.name)

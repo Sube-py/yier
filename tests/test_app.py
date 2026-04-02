@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pytest
 from litestar.testing import TestClient
 
@@ -17,14 +18,24 @@ from yier_agents import (
     ToolContext,
 )
 from yier_agents.src.skill import SkillCatalog
-from yier_web.agent_backends.codex_backend import CodexAppServerBackend, CodexSessionRuntime
+from yier_web.agent_backends.codex_backend import (
+    CodexAppServerBackend,
+    CodexSessionRuntime,
+)
 from yier_web.auth import AuthService, hash_password, verify_password
 from yier_web.app import AppServices, create_app
 from yier_web.chat import ChatService
 from yier_web.config import AppConfigService, MCPValidationError
 from yier_web.event_stream import EventStreamBroker
 from yier_web.frontend import FrontendService
-from yier_web.schemas import CodexWorkspaceResponse, MCPRuntimeEntry, SaveLLMRequest, StoredLLMSettings
+from yier_web.schemas import (
+    CodexWorkspaceResponse,
+    EtcdReportResponse,
+    MCPRuntimeEntry,
+    SaveAppSettingsRequest,
+    SaveLLMRequest,
+    StoredLLMSettings,
+)
 from yier_web.tool_events import reset_tool_event_emitter, set_tool_event_emitter
 
 
@@ -96,7 +107,9 @@ class FakeChatService:
         self.reloaded += 1
         return self.runtime
 
-    def create_session(self, backend_id: str | None = None, project_path: str | None = None) -> str:
+    def create_session(
+        self, backend_id: str | None = None, project_path: str | None = None
+    ) -> str:
         return "session-created"
 
     def get_session_messages(self, session_id: str) -> list[Message]:
@@ -158,7 +171,9 @@ class FakeChatService:
     ) -> tuple[list[dict[str, Any]], dict[str, int | None]]:
         events = self.get_session_activity_events(session_id)
         total_count = len(events)
-        normalized_before = total_count if before is None else max(0, min(before, total_count))
+        normalized_before = (
+            total_count if before is None else max(0, min(before, total_count))
+        )
         if limit is None or limit <= 0:
             page = events[:normalized_before]
         else:
@@ -194,8 +209,13 @@ class FakeChatService:
             codex_turn_timings=[],
         )
 
-    def load_session_view(self, session_id: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        return (self.build_transcript_messages(session_id), self.get_session_activity_events(session_id))
+    def load_session_view(
+        self, session_id: str
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        return (
+            self.build_transcript_messages(session_id),
+            self.get_session_activity_events(session_id),
+        )
 
     def list_session_summaries(self, source: str | None = None) -> list[dict[str, Any]]:
         if source is None:
@@ -288,10 +308,39 @@ class FakeChannelWorkspaceService:
         class Snapshot:
             def __init__(self) -> None:
                 self.platforms = [
-                    type("Platform", (), {"model_dump": lambda self: {"name": "weixin", "label": "Weixin", "implemented": True, "account_count": 1, "running_count": 0}})()
+                    type(
+                        "Platform",
+                        (),
+                        {
+                            "model_dump": lambda self: {
+                                "name": "weixin",
+                                "label": "Weixin",
+                                "implemented": True,
+                                "account_count": 1,
+                                "running_count": 0,
+                            }
+                        },
+                    )()
                 ]
                 self.accounts = [
-                    type("Account", (), {"model_dump": lambda self: {"platform": "weixin", "account_id": "wx-a", "configured": False, "enabled": True, "running": False, "name": None, "last_inbound_at": None, "last_outbound_at": None, "last_error": None, "login_status": None}})()
+                    type(
+                        "Account",
+                        (),
+                        {
+                            "model_dump": lambda self: {
+                                "platform": "weixin",
+                                "account_id": "wx-a",
+                                "configured": False,
+                                "enabled": True,
+                                "running": False,
+                                "name": None,
+                                "last_inbound_at": None,
+                                "last_outbound_at": None,
+                                "last_error": None,
+                                "login_status": None,
+                            }
+                        },
+                    )()
                 ]
 
         return Snapshot()
@@ -315,17 +364,73 @@ class FakeChannelWorkspaceService:
 
     async def get_accounts(self):
         return [
-            type("Account", (), {"model_dump": lambda self: {"platform": "weixin", "account_id": "wx-a", "configured": False, "enabled": True, "running": False, "name": None, "last_inbound_at": None, "last_outbound_at": None, "last_error": None, "login_status": None}})()
+            type(
+                "Account",
+                (),
+                {
+                    "model_dump": lambda self: {
+                        "platform": "weixin",
+                        "account_id": "wx-a",
+                        "configured": False,
+                        "enabled": True,
+                        "running": False,
+                        "name": None,
+                        "last_inbound_at": None,
+                        "last_outbound_at": None,
+                        "last_error": None,
+                        "login_status": None,
+                    }
+                },
+            )()
         ]
 
     async def login(self, platform: str, account_id: str | None = None):
-        return {"platform": platform, "account_id": account_id or "wx-a", "status": "waiting", "qrcode_url": "https://example.test/qr"}
+        return {
+            "platform": platform,
+            "account_id": account_id or "wx-a",
+            "status": "waiting",
+            "qrcode_url": "https://example.test/qr",
+        }
 
     async def start_account(self, platform: str, account_id: str):
-        return type("Account", (), {"model_dump": lambda self: {"platform": platform, "account_id": account_id, "configured": True, "enabled": True, "running": True, "name": None, "last_inbound_at": None, "last_outbound_at": None, "last_error": None, "login_status": None}})()
+        return type(
+            "Account",
+            (),
+            {
+                "model_dump": lambda self: {
+                    "platform": platform,
+                    "account_id": account_id,
+                    "configured": True,
+                    "enabled": True,
+                    "running": True,
+                    "name": None,
+                    "last_inbound_at": None,
+                    "last_outbound_at": None,
+                    "last_error": None,
+                    "login_status": None,
+                }
+            },
+        )()
 
     async def stop_account(self, platform: str, account_id: str):
-        return type("Account", (), {"model_dump": lambda self: {"platform": platform, "account_id": account_id, "configured": True, "enabled": True, "running": False, "name": None, "last_inbound_at": None, "last_outbound_at": None, "last_error": None, "login_status": None}})()
+        return type(
+            "Account",
+            (),
+            {
+                "model_dump": lambda self: {
+                    "platform": platform,
+                    "account_id": account_id,
+                    "configured": True,
+                    "enabled": True,
+                    "running": False,
+                    "name": None,
+                    "last_inbound_at": None,
+                    "last_outbound_at": None,
+                    "last_error": None,
+                    "login_status": None,
+                }
+            },
+        )()
 
     def get_registered_platforms(self):
         return [{"name": "weixin", "label": "Weixin", "implemented": True}]
@@ -408,6 +513,85 @@ def test_frontend_service_uses_vite_proxy_when_debug_is_enabled(
     assert status.mode == "proxy"
 
 
+def test_frontend_login_route_falls_back_to_vite_index_when_proxy_returns_404(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "project"
+    config_service = AppConfigService(
+        project_root=project_root, home_dir=tmp_path / "home"
+    )
+    frontend_service = FrontendService(project_root=project_root, debug=True)
+
+    async def fake_vite_available() -> bool:
+        return True
+
+    async def fake_request(
+        self,  # type: ignore[no-untyped-def]
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        content: bytes | None = None,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        request = httpx.Request(method, url, headers=headers, content=content)
+        if url.endswith("/login?next=%2F"):
+            return httpx.Response(404, request=request, text="Not found")
+        if url.endswith("/"):
+            return httpx.Response(
+                200,
+                request=request,
+                text="<html><body>vite index</body></html>",
+                headers={"content-type": "text/html; charset=utf-8"},
+            )
+        raise AssertionError(f"Unexpected Vite proxy request: {url}")
+
+    monkeypatch.setattr(frontend_service, "_vite_available", fake_vite_available)
+    monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
+
+    app = create_app(
+        project_root=project_root,
+        home_dir=tmp_path / "home",
+        services=AppServices(
+            config_service=config_service,
+            chat_service=FakeChatService(),  # type: ignore[arg-type]
+            channel_workspace_service=FakeChannelWorkspaceService(),  # type: ignore[arg-type]
+            event_broker=EventStreamBroker(),
+            frontend_service=frontend_service,
+            directory_picker_service=FakeDirectoryPickerService(),
+            auth_service=AuthService(),
+        ),
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/login?next=%2F", headers={"accept": "text/html"})
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert "vite index" in response.text
+
+
+def test_frontend_service_vite_client_ignores_env_proxy(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    frontend_service = FrontendService(project_root=project_root, debug=True)
+
+    client = frontend_service._create_vite_client(timeout=1.5, follow_redirects=True)
+
+    transport = getattr(client, "_transport", None)
+    pool = getattr(transport, "_pool", None)
+    proxy = getattr(pool, "_proxy", None)
+
+    try:
+        assert client.timeout.connect == 1.5
+        assert client.follow_redirects is True
+        assert proxy is None
+    finally:
+        import asyncio
+
+        asyncio.run(client.aclose())
+
+
 def test_frontend_static_entry_serves_html_inline(tmp_path: Path) -> None:
     client = build_test_client(tmp_path)
 
@@ -428,7 +612,9 @@ def test_frontend_static_assets_preserve_asset_content_type(tmp_path: Path) -> N
     (dist_root / "index.html").write_text("<html></html>", encoding="utf-8")
     (assets_root / "app.js").write_text("console.log('hello')", encoding="utf-8")
 
-    config_service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
+    config_service = AppConfigService(
+        project_root=project_root, home_dir=tmp_path / "home"
+    )
     frontend_service = FrontendService(project_root=project_root)
     app = create_app(
         project_root=project_root,
@@ -456,9 +642,13 @@ def test_frontend_static_assets_preserve_asset_content_type(tmp_path: Path) -> N
 def build_test_client(tmp_path: Path) -> TestClient[Any]:
     project_root = tmp_path / "project"
     (project_root / "web" / "dist").mkdir(parents=True)
-    (project_root / "web" / "dist" / "index.html").write_text("<html></html>", encoding="utf-8")
+    (project_root / "web" / "dist" / "index.html").write_text(
+        "<html></html>", encoding="utf-8"
+    )
 
-    config_service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
+    config_service = AppConfigService(
+        project_root=project_root, home_dir=tmp_path / "home"
+    )
     chat_service = FakeChatService()
     frontend_service = FrontendService(project_root=project_root)
     directory_picker_service = FakeDirectoryPickerService()
@@ -479,7 +669,9 @@ def build_test_client(tmp_path: Path) -> TestClient[Any]:
 
 
 def test_config_service_creates_storage_under_home(tmp_path: Path) -> None:
-    service = AppConfigService(project_root=tmp_path / "project", home_dir=tmp_path / "home")
+    service = AppConfigService(
+        project_root=tmp_path / "project", home_dir=tmp_path / "home"
+    )
     assert service.web_root.exists()
     assert service.sessions_path.exists()
     assert service.transcripts_path.exists()
@@ -488,7 +680,9 @@ def test_config_service_creates_storage_under_home(tmp_path: Path) -> None:
 
 
 def test_llm_settings_are_saved_and_masked(tmp_path: Path) -> None:
-    service = AppConfigService(project_root=tmp_path / "project", home_dir=tmp_path / "home")
+    service = AppConfigService(
+        project_root=tmp_path / "project", home_dir=tmp_path / "home"
+    )
     service.save_llm_settings(
         SaveLLMRequest(
             base_url="https://example.test/v1",
@@ -515,8 +709,19 @@ def test_password_hash_round_trip() -> None:
     assert verify_password("wrong-pass", password_hash) is False
 
 
+def test_auth_service_allows_vite_virtual_modules() -> None:
+    auth_service = AuthService()
+
+    assert auth_service.is_public_path("/@id/virtual:vue-inspector-options") is True
+    assert (
+        auth_service.is_public_path("/@id/__x00__virtual:vue-devtools-options") is True
+    )
+
+
 def test_llm_preset_settings_allow_blank_base_url(tmp_path: Path) -> None:
-    service = AppConfigService(project_root=tmp_path / "project", home_dir=tmp_path / "home")
+    service = AppConfigService(
+        project_root=tmp_path / "project", home_dir=tmp_path / "home"
+    )
     service.save_llm_settings(
         SaveLLMRequest(
             provider="zai-coding-plan",
@@ -539,7 +744,9 @@ def test_llm_preset_settings_allow_blank_base_url(tmp_path: Path) -> None:
 
 
 def test_codex_reasoning_cards_default_to_hidden(tmp_path: Path) -> None:
-    service = AppConfigService(project_root=tmp_path / "project", home_dir=tmp_path / "home")
+    service = AppConfigService(
+        project_root=tmp_path / "project", home_dir=tmp_path / "home"
+    )
 
     stored = service.load_web_settings()
     public = service.build_public_config({})
@@ -548,7 +755,9 @@ def test_codex_reasoning_cards_default_to_hidden(tmp_path: Path) -> None:
     assert public.codex.show_reasoning_cards is False
 
 
-def test_llm_settings_infer_legacy_zai_provider_without_rewriting_file(tmp_path: Path) -> None:
+def test_llm_settings_infer_legacy_zai_provider_without_rewriting_file(
+    tmp_path: Path,
+) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir(parents=True)
     service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
@@ -576,7 +785,9 @@ def test_llm_settings_infer_legacy_zai_provider_without_rewriting_file(tmp_path:
 
 
 def test_stored_llm_settings_require_base_url_only_for_custom_provider() -> None:
-    assert StoredLLMSettings(base_url="", api_key="secret", model="demo").is_ready is False
+    assert (
+        StoredLLMSettings(base_url="", api_key="secret", model="demo").is_ready is False
+    )
     assert (
         StoredLLMSettings(
             provider="zai-coding-plan",
@@ -604,7 +815,9 @@ def test_allowed_roots_are_saved_normalized_and_defaulted(tmp_path: Path) -> Non
     assert reset.allowed_roots == service.default_allowed_roots()
 
 
-def test_assistant_settings_enable_shell_and_normalize_allowed_roots(tmp_path: Path) -> None:
+def test_assistant_settings_enable_shell_and_normalize_allowed_roots(
+    tmp_path: Path,
+) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir(parents=True)
     service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
@@ -631,11 +844,16 @@ def test_assistant_settings_enable_shell_and_normalize_allowed_roots(tmp_path: P
     assert assistant_settings.prompt_history_path == service.prompt_history_path
     assert assistant_settings.run_command.allow_shell is True
     assert assistant_settings.run_command.shell_program == "/bin/bash"
-    assert assistant_settings.allowed_roots == (expected_downloads, expected_relative_root)
+    assert assistant_settings.allowed_roots == (
+        expected_downloads,
+        expected_relative_root,
+    )
 
 
 def test_mcp_config_is_validated_and_written(tmp_path: Path) -> None:
-    service = AppConfigService(project_root=tmp_path / "project", home_dir=tmp_path / "home")
+    service = AppConfigService(
+        project_root=tmp_path / "project", home_dir=tmp_path / "home"
+    )
     saved = service.save_mcp_servers(
         {
             "primevue-docs": {
@@ -647,10 +865,86 @@ def test_mcp_config_is_validated_and_written(tmp_path: Path) -> None:
         }
     )
     assert saved["primevue-docs"]["command"] == "npx"
-    assert service.load_mcp_servers()["primevue-docs"]["args"] == ["-y", "@primevue/mcp"]
+    assert service.load_mcp_servers()["primevue-docs"]["args"] == [
+        "-y",
+        "@primevue/mcp",
+    ]
 
     with pytest.raises(MCPValidationError):
         service.save_mcp_servers({"broken": {"type": "stdio", "command": 123}})
+
+
+def test_public_config_includes_etcd_settings_and_prefers_vpn_ips(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = AppConfigService(
+        project_root=tmp_path / "project", home_dir=tmp_path / "home"
+    )
+    service.save_app_settings(
+        SaveAppSettingsRequest(
+            etcd={
+                "subdomain": "demo",
+                "ip": "100.64.0.8",
+                "port": 8080,
+            }
+        )
+    )
+    monkeypatch.setattr(
+        service,
+        "_discover_local_ip_candidates",
+        lambda: [
+            ("en0", "192.168.1.20"),
+            ("utun4", "100.64.0.8"),
+            ("lo0", "127.0.0.1"),
+            ("en0", "192.168.1.20"),
+        ],
+    )
+
+    public = service.build_public_config({})
+
+    assert public.etcd.subdomain == "demo"
+    assert public.etcd.ip == "100.64.0.8"
+    assert public.etcd.port == 8080
+    assert [candidate.address for candidate in public.etcd.local_ip_candidates] == [
+        "100.64.0.8",
+        "192.168.1.20",
+    ]
+    assert public.etcd.local_ip_candidates[0].is_vpn is True
+
+
+def test_report_etcd_writes_ip_and_port_keys(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = AppConfigService(
+        project_root=tmp_path / "project", home_dir=tmp_path / "home"
+    )
+    commands: list[list[str]] = []
+    env_snapshots: list[dict[str, str]] = []
+
+    monkeypatch.setattr(
+        service, "_resolve_command_binary", lambda command: "/usr/local/bin/etcdctl"
+    )
+
+    def fake_run(command: list[str], **kwargs: Any) -> SimpleNamespace:
+        commands.append(command)
+        env_snapshots.append(dict(kwargs["env"]))
+        return SimpleNamespace(returncode=0, stderr="", stdout="ok")
+
+    monkeypatch.setattr("yier_web.config.subprocess.run", fake_run)
+
+    response = service.report_etcd(subdomain="demo", ip="100.64.0.8", port=9999)
+
+    assert response.keys == ["/vc/demo/ip", "/vc/demo/port"]
+    assert commands == [
+        ["/usr/local/bin/etcdctl", "put", "/vc/demo/ip", "100.64.0.8"],
+        ["/usr/local/bin/etcdctl", "put", "/vc/demo/port", "9999"],
+    ]
+    assert env_snapshots[0]["ETCDCTL_ENDPOINTS"] == "100.64.0.1:2379"
+    assert env_snapshots[0]["ETCDCTL_USER"] == "vc"
+    assert env_snapshots[0]["ETCDCTL_PASSWORD"] == "ey%ohae3eirahPei3ied3she"
+    assert env_snapshots[0]["ETCDCTL_API"] == "3"
 
 
 def test_api_endpoints_cover_config_session_and_stream(tmp_path: Path) -> None:
@@ -659,7 +953,9 @@ def test_api_endpoints_cover_config_session_and_stream(tmp_path: Path) -> None:
         assert config_response.status_code == 200
         assert config_response.json()["llm"]["provider"] == ""
         assert config_response.json()["llm"]["has_api_key"] is False
-        assert config_response.json()["session_defaults"]["workspace_surface"] == "yier"
+        assert (
+            config_response.json()["session_defaults"]["workspace_surface"] == "codex"
+        )
 
         save_response = client.put(
             "/api/config/llm",
@@ -705,11 +1001,42 @@ def test_api_endpoints_cover_config_session_and_stream(tmp_path: Path) -> None:
                     "show_reasoning_cards": True,
                     "service_tier": "",
                 },
+                "etcd": {
+                    "subdomain": "demo",
+                    "ip": "100.64.0.8",
+                    "port": 9999,
+                },
             },
         )
         assert app_config_response.status_code == 200
-        assert app_config_response.json()["session_defaults"]["workspace_surface"] == "codex"
+        assert (
+            app_config_response.json()["session_defaults"]["workspace_surface"]
+            == "codex"
+        )
         assert app_config_response.json()["codex"]["show_reasoning_cards"] is True
+        assert app_config_response.json()["etcd"]["subdomain"] == "demo"
+
+        client.app.state.config_service.report_etcd = lambda **kwargs: (
+            EtcdReportResponse(  # type: ignore[method-assign]
+                subdomain=kwargs["subdomain"],
+                ip=kwargs["ip"],
+                port=kwargs["port"],
+                keys=[
+                    f"/vc/{kwargs['subdomain']}/ip",
+                    f"/vc/{kwargs['subdomain']}/port",
+                ],
+            )
+        )
+        report_response = client.post(
+            "/api/config/etcd/report",
+            json={
+                "subdomain": "demo",
+                "ip": "100.64.0.8",
+                "port": 9999,
+            },
+        )
+        assert report_response.status_code == 201
+        assert report_response.json()["keys"] == ["/vc/demo/ip", "/vc/demo/port"]
 
         session_response = client.post("/api/chat/sessions")
         assert session_response.status_code == 201
@@ -732,18 +1059,28 @@ def test_api_endpoints_cover_config_session_and_stream(tmp_path: Path) -> None:
         transcript_response = client.get("/api/chat/sessions/session-a")
         assert transcript_response.status_code == 200
         assert transcript_response.json()["messages"][0]["content"] == "hello"
-        assert transcript_response.json()["activity_events"][0]["event"] == "tool_call_start"
+        assert (
+            transcript_response.json()["activity_events"][0]["event"]
+            == "tool_call_start"
+        )
         assert transcript_response.json()["activity_history"]["total_count"] == 1
 
-        activity_page_response = client.get("/api/chat/sessions/session-a/activity-events?limit=1")
+        activity_page_response = client.get(
+            "/api/chat/sessions/session-a/activity-events?limit=1"
+        )
         assert activity_page_response.status_code == 200
-        assert activity_page_response.json()["activity_events"][0]["event"] == "tool_call_start"
+        assert (
+            activity_page_response.json()["activity_events"][0]["event"]
+            == "tool_call_start"
+        )
 
         codex_workspace_response = client.get("/api/codex/workspace")
         assert codex_workspace_response.status_code == 200
         assert codex_workspace_response.json()["projects"] == []
 
-        open_codex_response = client.post("/api/codex/sessions/open", json={"thread_id": "thread-a"})
+        open_codex_response = client.post(
+            "/api/codex/sessions/open", json={"thread_id": "thread-a"}
+        )
         assert open_codex_response.status_code == 201
         assert open_codex_response.json()["session_id"] == "thread-a"
 
@@ -876,8 +1213,12 @@ def test_chat_service_skips_llm_construction_without_saved_credentials(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog())
-    service = AppConfigService(project_root=tmp_path / "project", home_dir=tmp_path / "home")
+    monkeypatch.setattr(
+        SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog()
+    )
+    service = AppConfigService(
+        project_root=tmp_path / "project", home_dir=tmp_path / "home"
+    )
     chat_service = ChatService(
         project_root=tmp_path / "project",
         config_service=service,
@@ -895,8 +1236,12 @@ def test_chat_service_skips_llm_construction_without_saved_credentials(
     assert chat_service._agent is None
 
 
-def test_chat_service_build_llm_passes_provider_and_optional_base_url(tmp_path: Path) -> None:
-    service = AppConfigService(project_root=tmp_path / "project", home_dir=tmp_path / "home")
+def test_chat_service_build_llm_passes_provider_and_optional_base_url(
+    tmp_path: Path,
+) -> None:
+    service = AppConfigService(
+        project_root=tmp_path / "project", home_dir=tmp_path / "home"
+    )
     chat_service = ChatService(
         project_root=tmp_path / "project",
         config_service=service,
@@ -922,7 +1267,9 @@ def test_chat_service_create_codex_session_uses_native_thread_id(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog())
+    monkeypatch.setattr(
+        SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog()
+    )
 
     project_root = tmp_path / "project"
     project_root.mkdir(parents=True)
@@ -959,7 +1306,9 @@ def test_chat_service_build_codex_ipc_conversation_state_prefers_raw_requests_an
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog())
+    monkeypatch.setattr(
+        SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog()
+    )
 
     project_root = tmp_path / "project"
     project_root.mkdir(parents=True)
@@ -1062,7 +1411,9 @@ def test_chat_service_build_codex_ipc_conversation_state_infers_waiting_on_appro
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog())
+    monkeypatch.setattr(
+        SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog()
+    )
 
     project_root = tmp_path / "project"
     project_root.mkdir(parents=True)
@@ -1131,7 +1482,9 @@ def test_chat_service_build_codex_ipc_conversation_state_keeps_active_status_for
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog())
+    monkeypatch.setattr(
+        SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog()
+    )
 
     project_root = tmp_path / "project"
     project_root.mkdir(parents=True)
@@ -1198,7 +1551,9 @@ def test_chat_service_build_codex_ipc_conversation_state_keeps_active_status_for
             }
         ],
     )
-    monkeypatch.setattr(codex_backend, "pending_conversation_requests", lambda context: [])
+    monkeypatch.setattr(
+        codex_backend, "pending_conversation_requests", lambda context: []
+    )
 
     payload = chat_service.build_codex_ipc_conversation_state(session_id)
 
@@ -1212,7 +1567,9 @@ def test_chat_service_build_codex_ipc_conversation_state_uses_native_turn_count_
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog())
+    monkeypatch.setattr(
+        SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog()
+    )
 
     project_root = tmp_path / "project"
     project_root.mkdir(parents=True)
@@ -1240,9 +1597,15 @@ def test_chat_service_build_codex_ipc_conversation_state_uses_native_turn_count_
         session_id,
         {"status": "active", "active_flags": []},
     )
-    chat_service._append_transcript_message(session_id, Message(role="user", content="one"))
-    chat_service._append_transcript_message(session_id, Message(role="assistant", content="two"))
-    chat_service._append_transcript_message(session_id, Message(role="user", content="three"))
+    chat_service._append_transcript_message(
+        session_id, Message(role="user", content="one")
+    )
+    chat_service._append_transcript_message(
+        session_id, Message(role="assistant", content="two")
+    )
+    chat_service._append_transcript_message(
+        session_id, Message(role="user", content="three")
+    )
 
     monkeypatch.setattr(
         codex_backend,
@@ -1274,7 +1637,9 @@ def test_chat_service_build_codex_ipc_conversation_state_uses_native_turn_count_
         },
     )
     monkeypatch.setattr(codex_backend, "build_ipc_turns", lambda context, turns: turns)
-    monkeypatch.setattr(codex_backend, "pending_conversation_requests", lambda context: [])
+    monkeypatch.setattr(
+        codex_backend, "pending_conversation_requests", lambda context: []
+    )
 
     payload = chat_service.build_codex_ipc_conversation_state(session_id)
 
@@ -1287,7 +1652,9 @@ def test_chat_service_background_codex_turn_replays_events_to_ipc_and_broker(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog())
+    monkeypatch.setattr(
+        SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog()
+    )
 
     project_root = tmp_path / "project"
     project_root.mkdir(parents=True)
@@ -1353,12 +1720,16 @@ def test_chat_service_background_codex_turn_replays_events_to_ipc_and_broker(
     monkeypatch.setattr(codex_backend, "start_turn", fake_start_turn)
     monkeypatch.setattr(codex_backend, "consume_turn_stream", fake_consume_turn_stream)
     monkeypatch.setattr(chat_service.event_broker, "publish", fake_publish)
-    monkeypatch.setattr(chat_service.codex_ipc_bridge, "notify_stream_event", fake_notify_stream_event)
+    monkeypatch.setattr(
+        chat_service.codex_ipc_bridge, "notify_stream_event", fake_notify_stream_event
+    )
 
     import asyncio
 
     async def scenario() -> None:
-        response = await chat_service.start_codex_turn_in_background(session_id, "good night")
+        response = await chat_service.start_codex_turn_in_background(
+            session_id, "good night"
+        )
         assert response["turn"]["id"] == "turn-21"
 
         task = chat_service._ipc_stream_tasks[session_id]
@@ -1395,7 +1766,10 @@ def test_chat_service_background_codex_turn_replays_events_to_ipc_and_broker(
     ]
     assert notified_events == published_events
     assert session_id not in chat_service._ipc_stream_tasks
-    assert [message.model_dump(mode="json") for message in chat_service.build_transcript_messages(session_id)] == [
+    assert [
+        message.model_dump(mode="json")
+        for message in chat_service.build_transcript_messages(session_id)
+    ] == [
         {
             "role": "user",
             "content": "good night",
@@ -1412,7 +1786,9 @@ def test_chat_service_load_session_view_uses_local_snapshot_for_active_codex_ses
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog())
+    monkeypatch.setattr(
+        SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog()
+    )
 
     project_root = tmp_path / "project"
     project_root.mkdir(parents=True)
@@ -1437,8 +1813,12 @@ def test_chat_service_load_session_view_uses_local_snapshot_for_active_codex_ses
     )
     session_id = chat_service.create_session(backend_id="codex")
     chat_service.update_session_backend_state(session_id, {"status": "active"})
-    chat_service._append_transcript_message(session_id, Message(role="user", content="hello"))
-    chat_service._append_transcript_message(session_id, Message(role="assistant", content="hi"))
+    chat_service._append_transcript_message(
+        session_id, Message(role="user", content="hello")
+    )
+    chat_service._append_transcript_message(
+        session_id, Message(role="assistant", content="hi")
+    )
     chat_service.session_ui_store.append_activity_event(
         session_id,
         "reasoning",
@@ -1455,8 +1835,12 @@ def test_chat_service_load_session_view_uses_local_snapshot_for_active_codex_ses
         status="active",
     )
 
-    def fail_load_thread_view(context: Any, *, activity_limit: int | None = None) -> dict[str, Any]:
-        raise AssertionError("load_thread_view should not run for active Codex sessions")
+    def fail_load_thread_view(
+        context: Any, *, activity_limit: int | None = None
+    ) -> dict[str, Any]:
+        raise AssertionError(
+            "load_thread_view should not run for active Codex sessions"
+        )
 
     monkeypatch.setattr(codex_backend, "load_thread_view", fail_load_thread_view)
 
@@ -1499,7 +1883,9 @@ def test_chat_service_load_session_view_prefers_native_thread_view_without_local
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog())
+    monkeypatch.setattr(
+        SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog()
+    )
 
     project_root = tmp_path / "project"
     project_root.mkdir(parents=True)
@@ -1524,7 +1910,9 @@ def test_chat_service_load_session_view_prefers_native_thread_view_without_local
     )
     session_id = chat_service.create_session(backend_id="codex")
     chat_service.update_session_backend_state(session_id, {"status": "active"})
-    chat_service._append_transcript_message(session_id, Message(role="user", content="local-user"))
+    chat_service._append_transcript_message(
+        session_id, Message(role="user", content="local-user")
+    )
     chat_service._append_transcript_message(
         session_id,
         Message(role="assistant", content="local-assistant"),
@@ -1574,7 +1962,9 @@ def test_chat_service_load_session_view_prefers_cached_ipc_state_for_remote_code
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog())
+    monkeypatch.setattr(
+        SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog()
+    )
 
     project_root = tmp_path / "project"
     project_root.mkdir(parents=True)
@@ -1639,7 +2029,11 @@ def test_chat_service_load_session_view_prefers_cached_ipc_state_for_remote_code
                             "params": {
                                 "threadId": session_id,
                                 "input": [
-                                    {"type": "text", "text": "hello", "text_elements": []}
+                                    {
+                                        "type": "text",
+                                        "text": "hello",
+                                        "text_elements": [],
+                                    }
                                 ],
                             },
                         }
@@ -1701,7 +2095,9 @@ def test_chat_service_run_command_tool_supports_shell_pipes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog())
+    monkeypatch.setattr(
+        SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog()
+    )
 
     project_root = tmp_path / "project"
     project_root.mkdir(parents=True)
@@ -1713,7 +2109,9 @@ def test_chat_service_run_command_tool_supports_shell_pipes(
     )
     assistant_settings = service.build_assistant_settings()
     run_command_tool = next(
-        tool for tool in chat_service._build_workspace_tools(assistant_settings) if tool.name == "run_command"
+        tool
+        for tool in chat_service._build_workspace_tools(assistant_settings)
+        if tool.name == "run_command"
     )
 
     import asyncio
@@ -1724,7 +2122,9 @@ def test_chat_service_run_command_tool_supports_shell_pipes(
                 command="printf 'hello' | wc -c",
                 cwd=".",
             ),
-            ToolContext(session_id="session-1", message_id="message-1", call_id="call-1"),
+            ToolContext(
+                session_id="session-1", message_id="message-1", call_id="call-1"
+            ),
         )
     )
 
@@ -1739,7 +2139,9 @@ def test_chat_service_workspace_tools_include_background_tools(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog())
+    monkeypatch.setattr(
+        SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog()
+    )
 
     project_root = tmp_path / "project"
     project_root.mkdir(parents=True)
@@ -1752,8 +2154,7 @@ def test_chat_service_workspace_tools_include_background_tools(
 
     assistant_settings = service.build_assistant_settings()
     tool_names = {
-        tool.name
-        for tool in chat_service._build_workspace_tools(assistant_settings)
+        tool.name for tool in chat_service._build_workspace_tools(assistant_settings)
     }
 
     assert "start_background_command" in tool_names
@@ -1765,7 +2166,9 @@ def test_chat_service_run_command_tool_emits_stream_events(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog())
+    monkeypatch.setattr(
+        SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog()
+    )
 
     project_root = tmp_path / "project"
     project_root.mkdir(parents=True)
@@ -1798,7 +2201,9 @@ def test_chat_service_run_command_tool_emits_stream_events(
                     command="printf 'hello'; printf 'oops' >&2",
                     cwd=".",
                 ),
-                ToolContext(session_id="session-1", message_id="message-1", call_id="call-2"),
+                ToolContext(
+                    session_id="session-1", message_id="message-1", call_id="call-2"
+                ),
             )
         )
     finally:
@@ -1824,7 +2229,9 @@ def test_chat_service_stream_chat_includes_tool_metadata_and_raw_payloads(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog())
+    monkeypatch.setattr(
+        SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog()
+    )
 
     project_root = tmp_path / "project"
     project_root.mkdir(parents=True)
@@ -1924,10 +2331,14 @@ def test_chat_service_stream_chat_includes_tool_metadata_and_raw_payloads(
     import asyncio
 
     async def collect_events() -> list[dict[str, Any]]:
-        return [event async for event in chat_service.stream_chat("session-1", "run it")]
+        return [
+            event async for event in chat_service.stream_chat("session-1", "run it")
+        ]
 
     streamed_events = asyncio.run(collect_events())
-    tool_end_event = next(event for event in streamed_events if event["event"] == "tool_call_end")
+    tool_end_event = next(
+        event for event in streamed_events if event["event"] == "tool_call_end"
+    )
 
     assert tool_end_event["data"]["metadata"]["exit_code"] == 0
     assert tool_end_event["data"]["raw"]["kind"] == "shell_command"
@@ -1938,7 +2349,9 @@ def test_chat_service_transcript_preserves_full_chat_history_for_refresh(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog())
+    monkeypatch.setattr(
+        SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog()
+    )
 
     project_root = tmp_path / "project"
     project_root.mkdir(parents=True)
@@ -1995,7 +2408,9 @@ def test_chat_service_persists_activity_events_under_session_id_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog())
+    monkeypatch.setattr(
+        SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog()
+    )
 
     project_root = tmp_path / "project"
     project_root.mkdir(parents=True)
@@ -2040,14 +2455,19 @@ def test_chat_service_persists_activity_events_under_session_id_file(
 
     session_ui_file = service.session_ui_path / "session-1.json"
     assert session_ui_file.exists()
-    assert chat_service.get_session_activity_events("session-1")[0]["event"] == "tool_call_start"
+    assert (
+        chat_service.get_session_activity_events("session-1")[0]["event"]
+        == "tool_call_start"
+    )
 
 
 def test_chat_service_load_session_transcript_limits_activity_events(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog())
+    monkeypatch.setattr(
+        SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog()
+    )
 
     project_root = tmp_path / "project"
     project_root.mkdir(parents=True)
@@ -2086,7 +2506,9 @@ def test_chat_service_get_session_activity_page_uses_before_cursor(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog())
+    monkeypatch.setattr(
+        SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog()
+    )
 
     project_root = tmp_path / "project"
     project_root.mkdir(parents=True)
@@ -2129,7 +2551,9 @@ def test_chat_service_get_session_metadata_migrates_legacy_conversation_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog())
+    monkeypatch.setattr(
+        SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog()
+    )
 
     project_root = tmp_path / "project"
     project_root.mkdir(parents=True)

@@ -31,7 +31,7 @@ def build_server(
 ) -> Granian:
     os.environ["YIER_DEBUG"] = "1" if debug else "0"
     return Granian(
-        f"{__name__}:app",
+        f"{__name__}:build_app",
         address=host,
         port=port,
         interface=Interfaces.ASGI,

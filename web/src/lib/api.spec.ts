@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { streamChat } from './api'
+import { ApiError, apiGet, streamChat } from './api'
 import type { ChatStreamEvent, ChatStreamRequest } from '../types/api'
 
 describe('streamChat', () => {
@@ -60,5 +60,24 @@ describe('streamChat', () => {
       },
     ])
     expect(cancelSpy).toHaveBeenCalledOnce()
+  })
+})
+
+describe('api auth handling', () => {
+  it('surfaces the backend auth error message on a 401 response', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(JSON.stringify({ detail: 'Authentication required.' }), {
+          status: 401,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    )
+
+    await expect(apiGet('/api/config')).rejects.toMatchObject({
+      message: 'Authentication required.',
+      status: 401,
+    })
   })
 })

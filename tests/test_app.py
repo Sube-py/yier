@@ -18,6 +18,7 @@ from yier_agents import (
 )
 from yier_agents.src.skill import SkillCatalog
 from yier_web.agent_backends.codex_backend import CodexAppServerBackend, CodexSessionRuntime
+from yier_web.auth import AuthService, hash_password, verify_password
 from yier_web.app import AppServices, create_app
 from yier_web.chat import ChatService
 from yier_web.config import AppConfigService, MCPValidationError
@@ -439,6 +440,7 @@ def test_frontend_static_assets_preserve_asset_content_type(tmp_path: Path) -> N
             event_broker=EventStreamBroker(),
             frontend_service=frontend_service,
             directory_picker_service=FakeDirectoryPickerService(),
+            auth_service=AuthService(),
         ),
     )
 
@@ -470,6 +472,7 @@ def build_test_client(tmp_path: Path) -> TestClient[Any]:
             event_broker=EventStreamBroker(),
             frontend_service=frontend_service,
             directory_picker_service=directory_picker_service,
+            auth_service=AuthService(),
         ),
     )
     return TestClient(app)
@@ -503,6 +506,13 @@ def test_llm_settings_are_saved_and_masked(tmp_path: Path) -> None:
     assert public.llm.model == "demo-model"
     assert public.llm.has_api_key is True
     assert "api_key" not in public.model_dump()["llm"]
+
+
+def test_password_hash_round_trip() -> None:
+    password_hash = hash_password("secret-pass")
+
+    assert verify_password("secret-pass", password_hash) is True
+    assert verify_password("wrong-pass", password_hash) is False
 
 
 def test_llm_preset_settings_allow_blank_base_url(tmp_path: Path) -> None:
@@ -797,6 +807,69 @@ def test_api_endpoints_cover_config_session_and_stream(tmp_path: Path) -> None:
         )
         assert channel_login_response.status_code == 201
         assert channel_login_response.json()["status"] == "waiting"
+
+
+def test_auth_redirects_frontend_and_blocks_api_when_password_is_configured(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("YIER_AUTH_PASSWORD", "deploy-secret")
+
+    with build_test_client(tmp_path) as client:
+        frontend_response = client.get("/", follow_redirects=False)
+        assert frontend_response.status_code == 302
+        assert frontend_response.headers["location"] == "/login?next=%2F"
+
+        api_response = client.get("/api/config")
+        assert api_response.status_code == 401
+        assert api_response.json()["detail"] == "Authentication required."
+
+
+def test_auth_login_logout_and_hashed_password_flow(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("YIER_AUTH_PASSWORD", raising=False)
+    monkeypatch.setenv("YIER_AUTH_PASSWORD_HASH", hash_password("deploy-secret"))
+
+    with build_test_client(tmp_path) as client:
+        session_response = client.get("/api/auth/session")
+        assert session_response.status_code == 200
+        assert session_response.json() == {
+            "enabled": True,
+            "authenticated": False,
+        }
+
+        invalid_login_response = client.post(
+            "/api/auth/login",
+            json={"password": "wrong-secret"},
+        )
+        assert invalid_login_response.status_code == 401
+        assert invalid_login_response.json()["detail"] == "Invalid password."
+
+        login_response = client.post(
+            "/api/auth/login",
+            json={"password": "deploy-secret"},
+        )
+        assert login_response.status_code == 201
+        assert login_response.json() == {
+            "enabled": True,
+            "authenticated": True,
+        }
+        assert "yier_auth_session" in login_response.cookies
+
+        authorized_response = client.get("/api/config")
+        assert authorized_response.status_code == 200
+
+        logout_response = client.post("/api/auth/logout", json={})
+        assert logout_response.status_code == 201
+        assert logout_response.json() == {
+            "enabled": True,
+            "authenticated": False,
+        }
+
+        blocked_response = client.get("/api/config")
+        assert blocked_response.status_code == 401
 
 
 def test_chat_service_skips_llm_construction_without_saved_credentials(

@@ -35,6 +35,15 @@ export interface HealthResponse {
   allowed_roots: string[]
 }
 
+export interface AuthSessionResponse {
+  enabled: boolean
+  authenticated: boolean
+}
+
+export interface AuthLoginRequest {
+  password: string
+}
+
 export interface ConfigResponse {
   llm: {
     provider: LlmProvider

@@ -12,7 +12,8 @@
             "args": [
                 "--interface",
                 "asgi",
-                "main:app",
+                "main:build_app",
+                "--factory",
                 "--host",
                 "0.0.0.0",
                 "--port",

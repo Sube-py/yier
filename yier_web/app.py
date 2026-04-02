@@ -16,6 +16,7 @@ from litestar.response import Response, ServerSentEvent
 from litestar.response.sse import ServerSentEventMessage
 from litestar.status_codes import HTTP_400_BAD_REQUEST, HTTP_404_NOT_FOUND
 
+from yier_web.auth import AuthService
 from yier_web.chat import ChatService
 from yier_web.channel_workspace import IntegratedChannelWorkspaceService
 from yier_web.config import AppConfigService, MCPValidationError
@@ -24,6 +25,8 @@ from yier_web.event_stream import EventStreamBroker, EventStreamItem
 from yier_web.frontend import FrontendService
 from yier_web.schemas import (
     ApprovalResponseRequest,
+    AuthLoginRequest,
+    AuthSessionResponse,
     ChatStreamRequest,
     ChannelAccountActionResponse,
     ChannelAccountsResponse,
@@ -64,6 +67,7 @@ class AppServices:
     event_broker: EventStreamBroker
     frontend_service: FrontendService
     directory_picker_service: LocalDirectoryPickerService
+    auth_service: AuthService
 
 
 EVENT_STREAM_PING_INTERVAL_SECONDS = 15.0
@@ -197,6 +201,7 @@ def build_services(
             debug=_env_flag("YIER_DEBUG"),
         ),
         directory_picker_service=LocalDirectoryPickerService(),
+        auth_service=AuthService(),
     )
 
 
@@ -208,7 +213,31 @@ def get_services(state: State) -> AppServices:
         event_broker=state.event_broker,
         frontend_service=state.frontend_service,
         directory_picker_service=state.directory_picker_service,
+        auth_service=state.auth_service,
     )
+
+
+@get("/auth/session")
+async def get_auth_session(request: Request[Any, Any, Any], state: State) -> AuthSessionResponse:
+    payload = get_services(state).auth_service.session_payload(request)
+    return AuthSessionResponse(**payload)
+
+
+@post("/auth/login")
+async def login(
+    data: AuthLoginRequest,
+    request: Request[Any, Any, Any],
+    state: State,
+) -> Response:
+    auth_service = get_services(state).auth_service
+    if not auth_service.verify_login_password(data.password):
+        raise HTTPException(status_code=401, detail="Invalid password.")
+    return auth_service.build_login_response(request)
+
+
+@post("/auth/logout")
+async def logout(request: Request[Any, Any, Any], state: State) -> Response:
+    return get_services(state).auth_service.build_logout_response(request)
 
 
 @get("/health")
@@ -597,6 +626,9 @@ api_router = Router(
     route_handlers=[
         health,
         get_config,
+        get_auth_session,
+        login,
+        logout,
         save_llm_config,
         save_allowed_roots_config,
         save_app_config,
@@ -645,6 +677,20 @@ def create_app(
     resolved_root = (project_root or Path.cwd()).resolve()
     app_services = services or build_services(project_root=resolved_root, home_dir=home_dir)
 
+    async def before_request(request: Request[Any, Any, Any]) -> Response | None:
+        auth_service = app_services.auth_service
+        if not auth_service.enabled:
+            return None
+
+        request_path = request.url.path
+        if auth_service.is_public_path(request_path):
+            return None
+        if auth_service.is_authenticated(request):
+            return None
+        if request_path.startswith("/api/"):
+            return auth_service.build_unauthorized_api_response()
+        return auth_service.build_login_redirect(request)
+
     @asynccontextmanager
     async def lifespan(app: Litestar) -> AsyncIterator[None]:
         shutdown_event = asyncio.Event()
@@ -656,6 +702,7 @@ def create_app(
         app.state.event_broker = app_services.event_broker
         app.state.frontend_service = app_services.frontend_service
         app.state.directory_picker_service = app_services.directory_picker_service
+        app.state.auth_service = app_services.auth_service
         await app_services.chat_service.start()
         await app_services.channel_workspace_service.start()
         try:
@@ -667,6 +714,7 @@ def create_app(
 
     return Litestar(
         route_handlers=[api_router, frontend_entry],
+        before_request=before_request,
         lifespan=[lifespan],
     )
 

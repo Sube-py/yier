@@ -148,6 +148,20 @@ class ConfigResponse(BaseModel):
     mcp_runtime: dict[str, MCPRuntimeEntry] = Field(default_factory=dict)
 
 
+class AuthSessionResponse(BaseModel):
+    enabled: bool = False
+    authenticated: bool = True
+
+
+class AuthLoginRequest(BaseModel):
+    password: str = ""
+
+    @field_validator("password")
+    @classmethod
+    def strip_password(cls, value: str) -> str:
+        return value.strip()
+
+
 class SaveLLMRequest(BaseModel):
     provider: LLMProvider = ""
     base_url: str

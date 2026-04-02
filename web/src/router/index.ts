@@ -9,6 +9,11 @@ export function createAppRouter(history: RouterHistory = createWebHistory(import
         redirect: '/chat',
       },
       {
+        path: '/login',
+        name: 'login',
+        component: () => import('../views/LoginView.vue'),
+      },
+      {
         path: '/',
         component: () => import('../views/WorkspaceLayoutView.vue'),
         children: [

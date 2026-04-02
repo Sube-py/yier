@@ -160,6 +160,7 @@ async function parseJsonResponse<T>(response: Response): Promise<T> {
 }
 
 async function toApiError(response: Response) {
+  redirectToLoginIfNeeded(response.status)
   const text = await response.text()
   let message = text || `Request failed with status ${response.status}`
 
@@ -173,6 +174,20 @@ async function toApiError(response: Response) {
   }
 
   return new ApiError(message, response.status)
+}
+
+function redirectToLoginIfNeeded(status: number) {
+  if (status !== 401 || typeof window === 'undefined') {
+    return
+  }
+
+  if (window.location.pathname === '/login') {
+    return
+  }
+
+  const next = `${window.location.pathname}${window.location.search}${window.location.hash}`
+  const searchParams = new URLSearchParams({ next })
+  window.location.assign(`/login?${searchParams.toString()}`)
 }
 
 function parseEventFrame(frame: string): ChatStreamEvent | null {

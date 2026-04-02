@@ -356,9 +356,9 @@ function createWorkspaceApp() {
   const composerPlaceholder = computed(() =>
     activeBackendId.value === 'codex'
       ? activeCodexWorkMode.value === 'plan'
-        ? 'Ask Codex anything'
-        : 'Ask for follow-up changes'
-      : 'Ask yier to inspect code, read files, or operate...',
+        ? 'Ask Codex anything or use /codex list to browse projects'
+        : 'Ask for follow-up changes or use /codex list to browse projects'
+      : 'Ask yier to inspect code, read files, or use /codex list to jump into Codex...',
   )
 
   function updateCodexCompactLayout(matches: boolean) {
@@ -613,6 +613,7 @@ function createWorkspaceApp() {
     if (navigateToChat && !isChatRoute.value) {
       await router.push({ name: 'chat' })
     }
+    return payload.session_id
   }
 
   async function startNewSession(navigateToChat = true) {
@@ -621,6 +622,61 @@ function createWorkspaceApp() {
 
   function handleNewChatClick() {
     void startNewSession()
+  }
+
+  async function runChatMessage(
+    sessionId: string,
+    content: string,
+    options: { finalOnly?: boolean } = {},
+  ) {
+    latestSessionLoadRequestId += 1
+    isHydratingOlderActivity.value = false
+    activities.value = activities.value.filter(
+      (item) => item.kind === 'background' && item.state === 'running',
+    )
+    composerText.value = ''
+    composerSelectionStart.value = 0
+    composerSelectionEnd.value = 0
+    composerSelectionVersion.value += 1
+    chatMessages.value.push(makeUiMessage('user', content))
+
+    const body: ChatStreamRequest = {
+      session_id: sessionId,
+      message: content,
+    }
+
+    if (options.finalOnly) {
+      let latestAssistantMessage = ''
+      let assistantDeltaBuffer = ''
+
+      await streamChat(body, (event) => {
+        if (event.event === 'assistant_delta') {
+          assistantDeltaBuffer += event.data.delta
+          return
+        }
+        if (event.event === 'assistant_message') {
+          latestAssistantMessage = event.data.content
+          return
+        }
+        if (event.event === 'turn_aborted') {
+          throw new Error(event.data.reason || 'Codex turn was interrupted.')
+        }
+        if (event.event === 'stream_error' || event.event === 'error') {
+          throw new Error(event.data.message)
+        }
+      })
+
+      const finalContent = latestAssistantMessage || assistantDeltaBuffer
+      if (finalContent.trim()) {
+        chatMessages.value.push(makeUiMessage('assistant', finalContent))
+      }
+      successMessage.value = 'Final answer ready.'
+      await refreshSessionHistory()
+      return
+    }
+
+    await streamChat(body, handleStreamEvent)
+    await refreshSessionHistory()
   }
 
   function latestChatSessionIdForBackend(backendId: BackendId) {
@@ -726,34 +782,315 @@ function createWorkspaceApp() {
     }
   }
 
+  type CodexSlashProjectRef = {
+    projectIndex: number
+    project: CodexWorkspaceResponse['projects'][number]
+  }
+
+  type CodexSlashSessionRef = CodexSlashProjectRef & {
+    sessionIndex: number
+    session: CodexWorkspaceResponse['projects'][number]['sessions'][number]
+  }
+
+  type CodexSlashParsedCommand =
+    | { kind: 'project_list' }
+    | { kind: 'session_list'; projectIndex: number }
+    | { kind: 'open_latest'; projectIndex: number }
+    | { kind: 'open_session'; projectIndex: number; sessionIndex: number; prompt: string }
+    | { kind: 'new_session'; projectIndex: number; prompt: string }
+
+  function normalizeSlashCommandInput(value: string) {
+    return value.trim()
+  }
+
+  async function loadCodexWorkspaceSnapshot() {
+    const payload = await safeApiGet<CodexWorkspaceResponse>('/api/codex/workspace', {
+      projects: [],
+      paired_editors: [],
+    })
+    codexWorkspace.value = payload
+    return payload
+  }
+
+  function buildCodexSlashProjectRefs(workspace: CodexWorkspaceResponse): CodexSlashProjectRef[] {
+    return workspace.projects.map((project, index) => ({
+      projectIndex: index + 1,
+      project,
+    }))
+  }
+
+  function buildCodexSlashSessionRefs(workspace: CodexWorkspaceResponse): CodexSlashSessionRef[] {
+    return buildCodexSlashProjectRefs(workspace).flatMap((entry) =>
+      entry.project.sessions.map((session, sessionIndex) => ({
+        ...entry,
+        sessionIndex: sessionIndex + 1,
+        session,
+      })),
+    )
+  }
+
+  function formatCodexProjectListing(workspace: CodexWorkspaceResponse) {
+    const projects = buildCodexSlashProjectRefs(workspace)
+    if (!projects.length) {
+      return [
+        '## Codex Projects',
+        '',
+        'No active Codex projects were found.',
+        '',
+        '### Quick Start',
+        '',
+        '- `/codex list` show all projects',
+        '- `/codex 1 list` show sessions in project 1',
+        '- `/codex 1` continue the latest session in project 1',
+        '- `/codex 1 new` start a fresh session in project 1',
+        '- `/codex 1 new fix the failing tests` start a fresh session and send the first prompt',
+        '- `/codex 1 2 summarize the current state` continue a session and return only the final answer',
+      ].join('\n')
+    }
+
+    const lines = [
+      '## Codex Projects',
+      '',
+      '### Quick Start',
+      '',
+      '- `/codex list` show all projects',
+      '- `/codex 1 list` show sessions in project 1',
+      '- `/codex 1` continue the latest session in project 1',
+      '- `/codex 1 new` start a fresh session in project 1',
+      '- `/codex 1 new fix the failing tests` start a fresh session and send the first prompt',
+      '- `/codex 1 2 summarize the current state` continue a session and return only the final answer',
+      '',
+      '### Projects',
+      '',
+      '| ID | Project | Sessions | Path | Sessions Command | New Session |',
+      '| --- | --- | --- | --- | --- | --- |',
+    ]
+
+    for (const entry of projects) {
+      lines.push(
+        `| ${entry.projectIndex} | ${entry.project.project} | ${entry.project.session_count} | \`${entry.project.project_path}\` | \`/codex ${entry.projectIndex} list\` | \`/codex ${entry.projectIndex} new\` |`,
+      )
+    }
+
+    return lines.join('\n')
+  }
+
+  function formatCodexProjectSessions(projectRef: CodexSlashProjectRef) {
+    const lines = [
+      `## Project ${projectRef.projectIndex}: ${projectRef.project.project}`,
+      '',
+      `- Path: \`${projectRef.project.project_path}\``,
+      `- Sessions: ${projectRef.project.session_count}`,
+      `- Continue latest: \`/codex ${projectRef.projectIndex}\``,
+      `- Start new: \`/codex ${projectRef.projectIndex} new\``,
+      `- Start new with prompt: \`/codex ${projectRef.projectIndex} new your prompt\``,
+      `- Continue a session with prompt: \`/codex ${projectRef.projectIndex} 1 your prompt\``,
+      '',
+      '### Sessions',
+    ]
+
+    if (!projectRef.project.sessions.length) {
+      lines.push('', 'No active sessions in this project yet.')
+      return lines.join('\n')
+    }
+
+    lines.push('', '| Command | Session |', '| --- | --- |')
+    projectRef.project.sessions.forEach((session, sessionIndex) => {
+      const title = session.title.trim() || session.preview.trim() || session.thread_id
+      lines.push(
+        `| \`/codex ${projectRef.projectIndex} ${sessionIndex + 1}\` | ${title} |`,
+      )
+    })
+    return lines.join('\n')
+  }
+
+  function parseCodexSlashCommand(content: string): CodexSlashParsedCommand | null {
+    if (content === '/' || content === '/codex' || content === '/codex list' || content === '/codex ls') {
+      return { kind: 'project_list' }
+    }
+
+    const projectListMatch = /^\/codex\s+(?<project>\d+)\s+(?:list|ls)$/i.exec(content)
+    if (projectListMatch) {
+      return {
+        kind: 'session_list',
+        projectIndex: Number.parseInt(projectListMatch.groups?.project ?? '', 10),
+      }
+    }
+
+    const newSessionMatch = /^\/codex\s+(?<project>\d+)\s+new(?:\s+(?<prompt>.+))?$/i.exec(content)
+    if (newSessionMatch) {
+      return {
+        kind: 'new_session',
+        projectIndex: Number.parseInt(newSessionMatch.groups?.project ?? '', 10),
+        prompt: (newSessionMatch.groups?.prompt ?? '').trim(),
+      }
+    }
+
+    const openSessionMatch = /^\/codex\s+(?<project>\d+)\s+(?<session>\d+)(?:\s+(?<prompt>.+))?$/i.exec(
+      content,
+    )
+    if (openSessionMatch) {
+      return {
+        kind: 'open_session',
+        projectIndex: Number.parseInt(openSessionMatch.groups?.project ?? '', 10),
+        sessionIndex: Number.parseInt(openSessionMatch.groups?.session ?? '', 10),
+        prompt: (openSessionMatch.groups?.prompt ?? '').trim(),
+      }
+    }
+
+    const latestMatch = /^\/codex\s+(?<project>\d+)$/i.exec(content)
+    if (latestMatch) {
+      return {
+        kind: 'open_latest',
+        projectIndex: Number.parseInt(latestMatch.groups?.project ?? '', 10),
+      }
+    }
+
+    return null
+  }
+
+  function resolveCodexSlashProject(
+    workspace: CodexWorkspaceResponse,
+    projectIndex: number,
+  ): CodexSlashProjectRef | null {
+    return (
+      buildCodexSlashProjectRefs(workspace).find((entry) => entry.projectIndex === projectIndex) ??
+      null
+    )
+  }
+
+  function resolveCodexSlashSession(
+    workspace: CodexWorkspaceResponse,
+    projectIndex: number,
+    sessionIndex: number,
+  ): CodexSlashSessionRef | null {
+    return (
+      buildCodexSlashSessionRefs(workspace).find(
+        (entry) => entry.projectIndex === projectIndex && entry.sessionIndex === sessionIndex,
+      ) ?? null
+    )
+  }
+
+  function pushLocalAssistantMessage(content: string) {
+    chatMessages.value.push(makeUiMessage('assistant', content))
+  }
+
+  async function handleCodexSlashCommand(rawContent: string) {
+    const content = normalizeSlashCommandInput(rawContent)
+    if (!content.startsWith('/')) {
+      return false
+    }
+
+    const command = parseCodexSlashCommand(content)
+    if (!command) {
+      return false
+    }
+
+    errorMessage.value = ''
+    successMessage.value = ''
+
+    try {
+      const workspace = await loadCodexWorkspaceSnapshot()
+      if (command.kind === 'project_list') {
+        composerText.value = ''
+        composerSelectionStart.value = 0
+        composerSelectionEnd.value = 0
+        composerSelectionVersion.value += 1
+        pushLocalAssistantMessage(formatCodexProjectListing(workspace))
+        return true
+      }
+
+      const projectRef = resolveCodexSlashProject(workspace, command.projectIndex)
+      if (!projectRef) {
+        pushLocalAssistantMessage(
+          `Project ${command.projectIndex} was not found. Use \`/codex list\` to refresh the project list.`,
+        )
+        return true
+      }
+
+      composerText.value = ''
+      composerSelectionStart.value = 0
+      composerSelectionEnd.value = 0
+      composerSelectionVersion.value += 1
+
+      if (command.kind === 'session_list') {
+        pushLocalAssistantMessage(formatCodexProjectSessions(projectRef))
+        return true
+      }
+
+      if (command.kind === 'new_session') {
+        const sessionId = await createSession('codex', projectRef.project.project_path, true)
+        if (command.prompt) {
+          await runChatMessage(sessionId, command.prompt, { finalOnly: true })
+          successMessage.value = `Started a fresh Codex session in ${projectRef.project.project} and returned the final answer.`
+          return true
+        }
+        successMessage.value = `Started a fresh Codex session in ${projectRef.project.project}.`
+        return true
+      }
+
+      if (command.kind === 'open_session') {
+        if (!Number.isInteger(command.sessionIndex) || command.sessionIndex <= 0) {
+          pushLocalAssistantMessage(
+            `Invalid session number. Use \`/codex ${command.projectIndex} list\` to inspect this project.`,
+          )
+          return true
+        }
+        const sessionRef = resolveCodexSlashSession(workspace, command.projectIndex, command.sessionIndex)
+        if (!sessionRef) {
+          pushLocalAssistantMessage(
+            `Session ${command.projectIndex}.${command.sessionIndex} was not found. Use \`/codex ${command.projectIndex} list\` to refresh this project.`,
+          )
+          return true
+        }
+        const opened = await openCodexNativeSession(sessionRef.session.thread_id)
+        if (!opened) {
+          return true
+        }
+        if (command.prompt) {
+          await runChatMessage(sessionRef.session.thread_id, command.prompt, { finalOnly: true })
+          successMessage.value = `Opened Codex session ${command.projectIndex}.${command.sessionIndex} and returned the final answer.`
+          return true
+        }
+        successMessage.value = `Opened Codex session ${command.projectIndex}.${command.sessionIndex}.`
+        return true
+      }
+
+      const latestSession = projectRef.project.sessions[0]
+      if (!latestSession) {
+        pushLocalAssistantMessage(
+          `Project ${command.projectIndex} has no active sessions yet. Use \`/codex ${command.projectIndex} new\` to start one.`,
+        )
+        return true
+      }
+
+      const opened = await openCodexNativeSession(latestSession.thread_id)
+      if (!opened) {
+        return true
+      }
+      successMessage.value = `Opened the latest Codex session in ${projectRef.project.project}.`
+      return true
+    } catch (error) {
+      errorMessage.value = toErrorMessage(error)
+      return true
+    }
+  }
+
   async function submitMessage() {
     const content = composerText.value.trim()
     if (!content || !canSendToSession.value) {
       return
     }
 
-    latestSessionLoadRequestId += 1
-    isHydratingOlderActivity.value = false
+    isSending.value = true
     errorMessage.value = ''
     successMessage.value = ''
-    isSending.value = true
-    activities.value = activities.value.filter(
-      (item) => item.kind === 'background' && item.state === 'running',
-    )
-    composerText.value = ''
-    composerSelectionStart.value = 0
-    composerSelectionEnd.value = 0
-    composerSelectionVersion.value += 1
-    chatMessages.value.push(makeUiMessage('user', content))
-
-    const body: ChatStreamRequest = {
-      session_id: activeSessionId.value,
-      message: content,
-    }
 
     try {
-      await streamChat(body, handleStreamEvent)
-      await refreshSessionHistory()
+      if (await handleCodexSlashCommand(content)) {
+        return
+      }
+      await runChatMessage(activeSessionId.value, content)
     } catch (error) {
       errorMessage.value = toErrorMessage(error)
       activities.value.push(
@@ -906,7 +1243,7 @@ function createWorkspaceApp() {
 
   async function openCodexNativeSession(threadId: string) {
     if (!threadId) {
-      return
+      return false
     }
 
     closeSidebarDrawer()
@@ -918,8 +1255,10 @@ function createWorkspaceApp() {
       })
       await refreshSessionHistory()
       await openSessionFromHistory(payload.session_id)
+      return true
     } catch (error) {
       errorMessage.value = toErrorMessage(error)
+      return false
     }
   }
 

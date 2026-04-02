@@ -1039,6 +1039,835 @@ describe('App', () => {
     expect(wrapper.text()).toContain('second transcript body')
   })
 
+  it('shows project-first Codex slash commands in the composer without starting a chat stream', async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = input.toString()
+      if (path.endsWith('/api/health')) {
+        return jsonResponse({
+          frontend: { ready: true, mode: 'static' },
+          llm: { ready: true },
+          mcp: { ready: true, runtime: {} },
+          backends: {
+            yier: { ready: true, label: 'Yier Agent' },
+            codex: { ready: true, label: 'Codex App Server' },
+          },
+          allowed_roots: ['/tmp/project', '/tmp/other'],
+        })
+      }
+      if (path.endsWith('/api/config')) {
+        return jsonResponse({
+          llm: { base_url: 'https://example.test', model: 'demo', has_api_key: true },
+          allowed_roots: ['/tmp/project', '/tmp/other'],
+          mcp_runtime: {},
+          backends: [
+            { id: 'yier', label: 'Yier Agent' },
+            { id: 'codex', label: 'Codex App Server' },
+          ],
+          session_defaults: {
+            default_backend_id: 'yier',
+            default_project_path: '/tmp/project',
+            channel_backend_id: 'yier',
+            channel_project_path: '/tmp/project',
+            channel_auto_approve_codex_requests: true,
+            workspace_surface: 'yier',
+          },
+          codex: {
+            launcher_command: 'codex app-server --listen stdio://',
+            model: 'gpt-5-codex',
+            sandbox: 'workspace-write',
+            approval_policy: 'on-request',
+            approvals_reviewer: 'user',
+            personality: 'friendly',
+            reasoning_effort: 'medium',
+            show_reasoning_cards: false,
+            service_tier: '',
+          },
+        })
+      }
+      if (path.endsWith('/api/config/mcp')) {
+        return jsonResponse({ mcp_servers: {}, runtime: {} })
+      }
+      if (isSessionListRequest(path, init)) {
+        return jsonResponse({
+          sessions: [
+            {
+              session_id: 'session-1',
+              title: 'Workspace session',
+              preview: 'preview',
+              updated_at: 100,
+              message_count: 1,
+              source: 'chat',
+              backend_id: 'yier',
+              project_path: '/tmp/project',
+              channel_meta: null,
+            },
+          ],
+        })
+      }
+      if (path.endsWith('/api/codex/workspace')) {
+        return jsonResponse({
+          projects: [
+            {
+              project: 'yier',
+              project_path: '/tmp/project',
+              session_count: 2,
+              sessions: [
+                {
+                  thread_id: 'codex-thread-b',
+                  title: 'Second native session',
+                  preview: 'second preview',
+                  updated_at: 200,
+                  started_at: 180,
+                  cwd: '/tmp/project',
+                  project: 'yier',
+                  project_path: '/tmp/project',
+                  source: 'active',
+                },
+                {
+                  thread_id: 'codex-thread-a',
+                  title: 'First native session',
+                  preview: 'first preview',
+                  updated_at: 100,
+                  started_at: 90,
+                  cwd: '/tmp/project',
+                  project: 'yier',
+                  project_path: '/tmp/project',
+                  source: 'active',
+                },
+              ],
+            },
+            {
+              project: 'docs',
+              project_path: '/tmp/other',
+              session_count: 1,
+              sessions: [
+                {
+                  thread_id: 'codex-thread-c',
+                  title: 'Docs session',
+                  preview: 'docs preview',
+                  updated_at: 50,
+                  started_at: 40,
+                  cwd: '/tmp/other',
+                  project: 'docs',
+                  project_path: '/tmp/other',
+                  source: 'active',
+                },
+              ],
+            },
+          ],
+        })
+      }
+      if (isSessionTranscriptRequest(path, 'session-1', init)) {
+        return jsonResponse({
+          session_id: 'session-1',
+          source: 'chat',
+          backend_id: 'yier',
+          project_path: '/tmp/project',
+          backend_runtime: {
+            backend_id: 'yier',
+            label: 'Yier Agent',
+            ready: true,
+            status: 'idle',
+            active_flags: [],
+            detail: null,
+            pending_approval_count: 0,
+          },
+          pending_approvals: [],
+          messages: [{ role: 'assistant', content: 'workspace transcript' }],
+          activity_events: [],
+        })
+      }
+      if (path.endsWith('/api/chat/stream')) {
+        throw new Error('slash listing should not open the chat stream')
+      }
+      if (path.endsWith('/api/channel/workspace')) {
+        return jsonResponse({ platforms: [], accounts: [] })
+      }
+      if (path.endsWith('/api/channel/platforms')) {
+        return jsonResponse({ platforms: [] })
+      }
+      if (path.endsWith('/api/channel/config')) {
+        return jsonResponse({ enabled_platforms: [], weixin: {} })
+      }
+      if (path.endsWith('/api/channel/monitor/sessions')) {
+        return jsonResponse({ sessions: [] })
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const wrapper = await mountApp()
+    await flushPromises()
+
+    const textarea = wrapper.get('textarea')
+    await textarea.setValue('/codex list')
+    const sendButton = wrapper.find('[aria-label="Send message"]')
+    await sendButton.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Codex Projects')
+    expect(wrapper.text()).toContain('/codex 1 list')
+    expect(wrapper.text()).toContain('/codex 1 new')
+    expect(wrapper.text()).toContain('/codex 2 list')
+    expect(wrapper.text()).not.toContain('Second native session')
+    expect((wrapper.get('textarea').element as HTMLTextAreaElement).value).toBe('')
+  })
+
+  it('lists project sessions, opens them, and creates fresh Codex sessions from slash commands', async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = input.toString()
+      if (path.endsWith('/api/health')) {
+        return jsonResponse({
+          frontend: { ready: true, mode: 'static' },
+          llm: { ready: true },
+          mcp: { ready: true, runtime: {} },
+          backends: {
+            yier: { ready: true, label: 'Yier Agent' },
+            codex: { ready: true, label: 'Codex App Server' },
+          },
+          allowed_roots: ['/tmp/project'],
+        })
+      }
+      if (path.endsWith('/api/config')) {
+        return jsonResponse({
+          llm: { base_url: 'https://example.test', model: 'demo', has_api_key: true },
+          allowed_roots: ['/tmp/project'],
+          mcp_runtime: {},
+          backends: [
+            { id: 'yier', label: 'Yier Agent' },
+            { id: 'codex', label: 'Codex App Server' },
+          ],
+          session_defaults: {
+            default_backend_id: 'yier',
+            default_project_path: '/tmp/project',
+            channel_backend_id: 'yier',
+            channel_project_path: '/tmp/project',
+            channel_auto_approve_codex_requests: true,
+            workspace_surface: 'yier',
+          },
+          codex: {
+            launcher_command: 'codex app-server --listen stdio://',
+            model: 'gpt-5-codex',
+            sandbox: 'workspace-write',
+            approval_policy: 'on-request',
+            approvals_reviewer: 'user',
+            personality: 'friendly',
+            reasoning_effort: 'medium',
+            show_reasoning_cards: false,
+            service_tier: '',
+          },
+        })
+      }
+      if (path.endsWith('/api/config/mcp')) {
+        return jsonResponse({ mcp_servers: {}, runtime: {} })
+      }
+      if (isSessionListRequest(path, init)) {
+        return jsonResponse({
+          sessions: [
+            {
+              session_id: 'session-1',
+              title: 'Workspace session',
+              preview: 'preview',
+              updated_at: 100,
+              message_count: 1,
+              source: 'chat',
+              backend_id: 'yier',
+              project_path: '/tmp/project',
+              channel_meta: null,
+            },
+            {
+              session_id: 'codex-thread-b',
+              title: 'Second native session',
+              preview: 'second preview',
+              updated_at: 200,
+              message_count: 2,
+              source: 'chat',
+              backend_id: 'codex',
+              project_path: '/tmp/project',
+              channel_meta: null,
+              codex_work_mode: 'build',
+            },
+            {
+              session_id: 'new-codex-session',
+              title: 'Fresh session',
+              preview: 'fresh preview',
+              updated_at: 250,
+              message_count: 0,
+              source: 'chat',
+              backend_id: 'codex',
+              project_path: '/tmp/project',
+              channel_meta: null,
+              codex_work_mode: 'build',
+            },
+          ],
+        })
+      }
+      if (path.endsWith('/api/codex/workspace')) {
+        return jsonResponse({
+          projects: [
+            {
+              project: 'yier',
+              project_path: '/tmp/project',
+              session_count: 2,
+              sessions: [
+                {
+                  thread_id: 'codex-thread-b',
+                  title: 'Second native session',
+                  preview: 'second preview',
+                  updated_at: 200,
+                  started_at: 180,
+                  cwd: '/tmp/project',
+                  project: 'yier',
+                  project_path: '/tmp/project',
+                  source: 'active',
+                },
+                {
+                  thread_id: 'codex-thread-a',
+                  title: 'First native session',
+                  preview: 'first preview',
+                  updated_at: 100,
+                  started_at: 90,
+                  cwd: '/tmp/project',
+                  project: 'yier',
+                  project_path: '/tmp/project',
+                  source: 'active',
+                },
+              ],
+            },
+          ],
+        })
+      }
+      if (isSessionTranscriptRequest(path, 'session-1', init)) {
+        return jsonResponse({
+          session_id: 'session-1',
+          source: 'chat',
+          backend_id: 'yier',
+          project_path: '/tmp/project',
+          backend_runtime: {
+            backend_id: 'yier',
+            label: 'Yier Agent',
+            ready: true,
+            status: 'idle',
+            active_flags: [],
+            detail: null,
+            pending_approval_count: 0,
+          },
+          pending_approvals: [],
+          messages: [{ role: 'assistant', content: 'workspace transcript' }],
+          activity_events: [],
+        })
+      }
+      if (isSessionTranscriptRequest(path, 'codex-thread-b', init)) {
+        return jsonResponse({
+          session_id: 'codex-thread-b',
+          source: 'chat',
+          backend_id: 'codex',
+          project_path: '/tmp/project',
+          codex_work_mode: 'build',
+          backend_runtime: {
+            backend_id: 'codex',
+            label: 'Codex App Server',
+            ready: true,
+            status: 'idle',
+            thread_id: 'codex-thread-b',
+            active_flags: [],
+            detail: null,
+            pending_approval_count: 0,
+          },
+          pending_approvals: [],
+          messages: [{ role: 'assistant', content: 'opened existing codex session' }],
+          activity_events: [],
+        })
+      }
+      if (isSessionTranscriptRequest(path, 'new-codex-session', init)) {
+        return jsonResponse({
+          session_id: 'new-codex-session',
+          source: 'chat',
+          backend_id: 'codex',
+          project_path: '/tmp/project',
+          codex_work_mode: 'build',
+          backend_runtime: {
+            backend_id: 'codex',
+            label: 'Codex App Server',
+            ready: true,
+            status: 'idle',
+            thread_id: 'new-codex-session',
+            active_flags: [],
+            detail: null,
+            pending_approval_count: 0,
+          },
+          pending_approvals: [],
+          messages: [{ role: 'assistant', content: 'opened fresh codex session' }],
+          activity_events: [],
+        })
+      }
+      if (path.endsWith('/api/codex/sessions/open') && init?.method === 'POST') {
+        expect(JSON.parse(String(init.body))).toEqual({ thread_id: 'codex-thread-b' })
+        return jsonResponse({ session_id: 'codex-thread-b' }, 201)
+      }
+      if (isSessionCreateRequest(path, init)) {
+        expect(JSON.parse(String(init?.body))).toEqual({
+          backend_id: 'codex',
+          project_path: '/tmp/project',
+        })
+        return jsonResponse({ session_id: 'new-codex-session' }, 201)
+      }
+      if (path.endsWith('/api/chat/stream')) {
+        throw new Error('slash actions should not open the chat stream')
+      }
+      if (path.endsWith('/api/channel/workspace')) {
+        return jsonResponse({ platforms: [], accounts: [] })
+      }
+      if (path.endsWith('/api/channel/platforms')) {
+        return jsonResponse({ platforms: [] })
+      }
+      if (path.endsWith('/api/channel/config')) {
+        return jsonResponse({ enabled_platforms: [], weixin: {} })
+      }
+      if (path.endsWith('/api/channel/monitor/sessions')) {
+        return jsonResponse({ sessions: [] })
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const wrapper = await mountApp()
+    await flushPromises()
+
+    const textarea = wrapper.get('textarea')
+    const sendButton = wrapper.find('[aria-label="Send message"]')
+
+    await textarea.setValue('/codex 1 list')
+    await sendButton.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Project 1: yier')
+    expect(wrapper.text()).toContain('/codex 1 1')
+    expect(wrapper.text()).toContain('Second native session')
+
+    await textarea.setValue('/codex 1')
+    await sendButton.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('opened existing codex session')
+    expect(wrapper.text()).toContain('Opened the latest Codex session in yier.')
+
+    await textarea.setValue('/codex 1 new')
+    await sendButton.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Started a fresh Codex session in yier.')
+  })
+
+  it('starts a fresh Codex session and sends the first prompt from the slash command', async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = input.toString()
+      if (path.endsWith('/api/health')) {
+        return jsonResponse({
+          frontend: { ready: true, mode: 'static' },
+          llm: { ready: true },
+          mcp: { ready: true, runtime: {} },
+          backends: {
+            yier: { ready: true, label: 'Yier Agent' },
+            codex: { ready: true, label: 'Codex App Server' },
+          },
+          allowed_roots: ['/tmp/project'],
+        })
+      }
+      if (path.endsWith('/api/config')) {
+        return jsonResponse({
+          llm: { base_url: 'https://example.test', model: 'demo', has_api_key: true },
+          allowed_roots: ['/tmp/project'],
+          mcp_runtime: {},
+          backends: [
+            { id: 'yier', label: 'Yier Agent' },
+            { id: 'codex', label: 'Codex App Server' },
+          ],
+          session_defaults: {
+            default_backend_id: 'yier',
+            default_project_path: '/tmp/project',
+            channel_backend_id: 'yier',
+            channel_project_path: '/tmp/project',
+            channel_auto_approve_codex_requests: true,
+            workspace_surface: 'yier',
+          },
+          codex: {
+            launcher_command: 'codex app-server --listen stdio://',
+            model: 'gpt-5-codex',
+            sandbox: 'workspace-write',
+            approval_policy: 'on-request',
+            approvals_reviewer: 'user',
+            personality: 'friendly',
+            reasoning_effort: 'medium',
+            show_reasoning_cards: false,
+            service_tier: '',
+          },
+        })
+      }
+      if (path.endsWith('/api/config/mcp')) {
+        return jsonResponse({ mcp_servers: {}, runtime: {} })
+      }
+      if (isSessionListRequest(path, init)) {
+        return jsonResponse({
+          sessions: [
+            {
+              session_id: 'session-1',
+              title: 'Workspace session',
+              preview: 'preview',
+              updated_at: 100,
+              message_count: 1,
+              source: 'chat',
+              backend_id: 'yier',
+              project_path: '/tmp/project',
+              channel_meta: null,
+            },
+            {
+              session_id: 'new-codex-session',
+              title: 'Fresh session',
+              preview: 'fresh preview',
+              updated_at: 250,
+              message_count: 1,
+              source: 'chat',
+              backend_id: 'codex',
+              project_path: '/tmp/project',
+              channel_meta: null,
+              codex_work_mode: 'build',
+            },
+          ],
+        })
+      }
+      if (path.endsWith('/api/codex/workspace')) {
+        return jsonResponse({
+          projects: [
+            {
+              project: 'yier',
+              project_path: '/tmp/project',
+              session_count: 1,
+              sessions: [
+                {
+                  thread_id: 'codex-thread-a',
+                  title: 'First native session',
+                  preview: 'first preview',
+                  updated_at: 100,
+                  started_at: 90,
+                  cwd: '/tmp/project',
+                  project: 'yier',
+                  project_path: '/tmp/project',
+                  source: 'active',
+                },
+              ],
+            },
+          ],
+        })
+      }
+      if (isSessionTranscriptRequest(path, 'session-1', init)) {
+        return jsonResponse({
+          session_id: 'session-1',
+          source: 'chat',
+          backend_id: 'yier',
+          project_path: '/tmp/project',
+          backend_runtime: {
+            backend_id: 'yier',
+            label: 'Yier Agent',
+            ready: true,
+            status: 'idle',
+            active_flags: [],
+            detail: null,
+            pending_approval_count: 0,
+          },
+          pending_approvals: [],
+          messages: [{ role: 'assistant', content: 'workspace transcript' }],
+          activity_events: [],
+        })
+      }
+      if (isSessionTranscriptRequest(path, 'new-codex-session', init)) {
+        return jsonResponse({
+          session_id: 'new-codex-session',
+          source: 'chat',
+          backend_id: 'codex',
+          project_path: '/tmp/project',
+          codex_work_mode: 'build',
+          backend_runtime: {
+            backend_id: 'codex',
+            label: 'Codex App Server',
+            ready: true,
+            status: 'idle',
+            thread_id: 'new-codex-session',
+            active_flags: [],
+            detail: null,
+            pending_approval_count: 0,
+          },
+          pending_approvals: [],
+          messages: [{ role: 'assistant', content: 'opened fresh codex session' }],
+          activity_events: [],
+        })
+      }
+      if (isSessionCreateRequest(path, init)) {
+        expect(JSON.parse(String(init?.body))).toEqual({
+          backend_id: 'codex',
+          project_path: '/tmp/project',
+        })
+        return jsonResponse({ session_id: 'new-codex-session' }, 201)
+      }
+      if (path.endsWith('/api/chat/stream')) {
+        expect(JSON.parse(String(init?.body))).toEqual({
+          session_id: 'new-codex-session',
+          message: 'inspect the repo and summarize it',
+        })
+        return sseResponse(
+          [
+            'event: assistant_message',
+            'data: {"session_id":"new-codex-session","content":"summary ready","iteration":1}',
+            '',
+            'event: done',
+            'data: {"session_id":"new-codex-session","finish_reason":"stop"}',
+            '',
+          ].join('\r\n'),
+        )
+      }
+      if (path.endsWith('/api/channel/workspace')) {
+        return jsonResponse({ platforms: [], accounts: [] })
+      }
+      if (path.endsWith('/api/channel/platforms')) {
+        return jsonResponse({ platforms: [] })
+      }
+      if (path.endsWith('/api/channel/config')) {
+        return jsonResponse({ enabled_platforms: [], weixin: {} })
+      }
+      if (path.endsWith('/api/channel/monitor/sessions')) {
+        return jsonResponse({ sessions: [] })
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const wrapper = await mountApp()
+    await flushPromises()
+
+    const textarea = wrapper.get('textarea')
+    const sendButton = wrapper.find('[aria-label="Send message"]')
+
+    await textarea.setValue('/codex 1 new inspect the repo and summarize it')
+    await sendButton.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('inspect the repo and summarize it')
+    expect(wrapper.text()).toContain('summary ready')
+    expect(wrapper.text()).toContain(
+      'Started a fresh Codex session in yier and returned the final answer.',
+    )
+  })
+
+  it('continues an existing Codex session with a prompt and returns only the final answer', async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = input.toString()
+      if (path.endsWith('/api/health')) {
+        return jsonResponse({
+          frontend: { ready: true, mode: 'static' },
+          llm: { ready: true },
+          mcp: { ready: true, runtime: {} },
+          backends: {
+            yier: { ready: true, label: 'Yier Agent' },
+            codex: { ready: true, label: 'Codex App Server' },
+          },
+          allowed_roots: ['/tmp/project'],
+        })
+      }
+      if (path.endsWith('/api/config')) {
+        return jsonResponse({
+          llm: { base_url: 'https://example.test', model: 'demo', has_api_key: true },
+          allowed_roots: ['/tmp/project'],
+          mcp_runtime: {},
+          backends: [
+            { id: 'yier', label: 'Yier Agent' },
+            { id: 'codex', label: 'Codex App Server' },
+          ],
+          session_defaults: {
+            default_backend_id: 'yier',
+            default_project_path: '/tmp/project',
+            channel_backend_id: 'yier',
+            channel_project_path: '/tmp/project',
+            channel_auto_approve_codex_requests: true,
+            workspace_surface: 'yier',
+          },
+          codex: {
+            launcher_command: 'codex app-server --listen stdio://',
+            model: 'gpt-5-codex',
+            sandbox: 'workspace-write',
+            approval_policy: 'on-request',
+            approvals_reviewer: 'user',
+            personality: 'friendly',
+            reasoning_effort: 'medium',
+            show_reasoning_cards: false,
+            service_tier: '',
+          },
+        })
+      }
+      if (path.endsWith('/api/config/mcp')) {
+        return jsonResponse({ mcp_servers: {}, runtime: {} })
+      }
+      if (isSessionListRequest(path, init)) {
+        return jsonResponse({
+          sessions: [
+            {
+              session_id: 'session-1',
+              title: 'Workspace session',
+              preview: 'preview',
+              updated_at: 100,
+              message_count: 1,
+              source: 'chat',
+              backend_id: 'yier',
+              project_path: '/tmp/project',
+              channel_meta: null,
+            },
+            {
+              session_id: 'codex-thread-b',
+              title: 'Second native session',
+              preview: 'second preview',
+              updated_at: 200,
+              message_count: 2,
+              source: 'chat',
+              backend_id: 'codex',
+              project_path: '/tmp/project',
+              channel_meta: null,
+              codex_work_mode: 'build',
+            },
+          ],
+        })
+      }
+      if (path.endsWith('/api/codex/workspace')) {
+        return jsonResponse({
+          projects: [
+            {
+              project: 'yier',
+              project_path: '/tmp/project',
+              session_count: 2,
+              sessions: [
+                {
+                  thread_id: 'codex-thread-b',
+                  title: 'Second native session',
+                  preview: 'second preview',
+                  updated_at: 200,
+                  started_at: 180,
+                  cwd: '/tmp/project',
+                  project: 'yier',
+                  project_path: '/tmp/project',
+                  source: 'active',
+                },
+                {
+                  thread_id: 'codex-thread-a',
+                  title: 'First native session',
+                  preview: 'first preview',
+                  updated_at: 100,
+                  started_at: 90,
+                  cwd: '/tmp/project',
+                  project: 'yier',
+                  project_path: '/tmp/project',
+                  source: 'active',
+                },
+              ],
+            },
+          ],
+        })
+      }
+      if (isSessionTranscriptRequest(path, 'session-1', init)) {
+        return jsonResponse({
+          session_id: 'session-1',
+          source: 'chat',
+          backend_id: 'yier',
+          project_path: '/tmp/project',
+          backend_runtime: {
+            backend_id: 'yier',
+            label: 'Yier Agent',
+            ready: true,
+            status: 'idle',
+            active_flags: [],
+            detail: null,
+            pending_approval_count: 0,
+          },
+          pending_approvals: [],
+          messages: [{ role: 'assistant', content: 'workspace transcript' }],
+          activity_events: [],
+        })
+      }
+      if (isSessionTranscriptRequest(path, 'codex-thread-b', init)) {
+        return jsonResponse({
+          session_id: 'codex-thread-b',
+          source: 'chat',
+          backend_id: 'codex',
+          project_path: '/tmp/project',
+          codex_work_mode: 'build',
+          backend_runtime: {
+            backend_id: 'codex',
+            label: 'Codex App Server',
+            ready: true,
+            status: 'idle',
+            thread_id: 'codex-thread-b',
+            active_flags: [],
+            detail: null,
+            pending_approval_count: 0,
+          },
+          pending_approvals: [],
+          messages: [{ role: 'assistant', content: 'opened existing codex session' }],
+          activity_events: [],
+        })
+      }
+      if (path.endsWith('/api/codex/sessions/open') && init?.method === 'POST') {
+        expect(JSON.parse(String(init.body))).toEqual({ thread_id: 'codex-thread-b' })
+        return jsonResponse({ session_id: 'codex-thread-b' }, 201)
+      }
+      if (path.endsWith('/api/chat/stream')) {
+        expect(JSON.parse(String(init?.body))).toEqual({
+          session_id: 'codex-thread-b',
+          message: 'summarize the current state',
+        })
+        return sseResponse(
+          [
+            'event: assistant_delta',
+            'data: {"session_id":"codex-thread-b","item_id":"draft-1","delta":"summary "}',
+            '',
+            'event: assistant_delta',
+            'data: {"session_id":"codex-thread-b","item_id":"draft-1","delta":"ready"}',
+            '',
+            'event: done',
+            'data: {"session_id":"codex-thread-b","finish_reason":"stop"}',
+            '',
+          ].join('\r\n'),
+        )
+      }
+      if (path.endsWith('/api/channel/workspace')) {
+        return jsonResponse({ platforms: [], accounts: [] })
+      }
+      if (path.endsWith('/api/channel/platforms')) {
+        return jsonResponse({ platforms: [] })
+      }
+      if (path.endsWith('/api/channel/config')) {
+        return jsonResponse({ enabled_platforms: [], weixin: {} })
+      }
+      if (path.endsWith('/api/channel/monitor/sessions')) {
+        return jsonResponse({ sessions: [] })
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const wrapper = await mountApp()
+    await flushPromises()
+
+    const textarea = wrapper.get('textarea')
+    const sendButton = wrapper.find('[aria-label="Send message"]')
+
+    await textarea.setValue('/codex 1 1 summarize the current state')
+    await sendButton.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('summarize the current state')
+    expect(wrapper.text()).toContain('summary ready')
+    expect(wrapper.text()).toContain(
+      'Opened Codex session 1.1 and returned the final answer.',
+    )
+  })
+
   it('starts a project-scoped codex session from the sidebar action', async () => {
     localStorage.setItem('yier.active-session-id', 'codex-thread-a')
 

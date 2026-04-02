@@ -711,7 +711,7 @@ describe('App', () => {
     expect(wrapper.text()).toContain('/tmp/Visual Studio Code-yier.sock')
     expect(wrapper.text()).toContain('Current build mode.')
     expect(wrapper.find('.codex-session-title').text()).toContain('Codex session')
-    expect(wrapper.find('.rail-actions').exists()).toBe(false)
+    expect(wrapper.find('.rail-actions').exists()).toBe(true)
     expect(wrapper.find('.codex-toolbar-primary').exists()).toBe(true)
     expect(wrapper.find('.brand-panel').exists()).toBe(true)
     expect(wrapper.find('.side-card--status').exists()).toBe(false)

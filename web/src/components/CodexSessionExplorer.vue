@@ -207,7 +207,7 @@ const selectNewProject = async () => {
     :class="
       isSheet
         ? 'flex min-h-0 flex-1 flex-col gap-4 overflow-hidden'
-        : 'flex min-h-0 flex-1 flex-col gap-[0.85rem] overflow-hidden rounded-[1.3rem] border border-[color:var(--app-border)] bg-[linear-gradient(180deg,rgba(255,252,247,0.95),rgba(245,239,228,0.82)),rgba(255,252,245,0.84)] p-4 shadow-[var(--app-shadow)] backdrop-blur-[14px]'
+        : 'flex min-h-0 flex-1 flex-col gap-[0.85rem] overflow-hidden rounded-[1.3rem] border border-[color:var(--app-border)] bg-[color:var(--app-panel)] p-4 shadow-[var(--app-shadow)] backdrop-blur-[14px]'
     "
   >
     <div
@@ -230,27 +230,6 @@ const selectNewProject = async () => {
           @click="requestClose"
         />
       </div>
-    </div>
-
-    <div class="flex items-stretch gap-[0.85rem]">
-      <Button
-        label="New thread"
-        icon="pi pi-pen-to-square"
-        class="w-full"
-        :pt="{
-          root: {
-            class:
-              'justify-start gap-2.5 border border-transparent bg-white/52 px-[0.82rem] py-[0.72rem] text-[color:var(--app-text)] shadow-none',
-          },
-          label: {
-            class: 'flex-1 text-left font-semibold',
-          },
-          icon: {
-            class: 'm-0',
-          },
-        }"
-        @click="startSessionForProject()"
-      />
     </div>
 
     <div class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-2xl bg-white/32 px-[0.8rem] py-[0.1rem] pr-[0.1rem]">

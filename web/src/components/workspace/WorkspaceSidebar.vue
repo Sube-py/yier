@@ -30,6 +30,30 @@ const workspace = useWorkspaceAppContext()
       />
     </div>
 
+    <div
+      v-if="!workspace.isBooting && workspace.isCodexWorkspace"
+      class="rail-actions grid gap-3"
+    >
+      <Button
+        label="New thread"
+        icon="pi pi-pen-to-square"
+        fluid
+        :pt="{
+          root: {
+            class:
+              'justify-center gap-2.5 border border-transparent bg-white/52 px-[0.82rem] py-[0.72rem] text-[color:var(--app-text)] shadow-none',
+          },
+          label: {
+            class: 'text-center font-semibold',
+          },
+          icon: {
+            class: 'm-0',
+          },
+        }"
+        @click="workspace.handleCodexSessionStart(workspace.activeProjectPath)"
+      />
+    </div>
+
     <CodexSessionExplorer
       v-if="!workspace.isBooting && workspace.isCodexWorkspace && !workspace.isCodexCompactLayout"
       :projects="workspace.activeCodexProjects"

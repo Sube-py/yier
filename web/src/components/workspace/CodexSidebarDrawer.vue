@@ -44,6 +44,25 @@ const workspace = useWorkspaceAppContext()
         <div class="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
           <WorkspaceBrandPanel variant="codex" />
 
+          <Button
+            label="New thread"
+            icon="pi pi-pen-to-square"
+            fluid
+            :pt="{
+              root: {
+                class:
+                  'justify-center gap-2.5 border border-transparent bg-white/52 px-[0.82rem] py-[0.72rem] text-[color:var(--app-text)] shadow-none',
+              },
+              label: {
+                class: 'text-center font-semibold',
+              },
+              icon: {
+                class: 'm-0',
+              },
+            }"
+            @click="workspace.handleCodexSessionStart(workspace.activeProjectPath)"
+          />
+
           <CodexSessionExplorer
             :projects="workspace.activeCodexProjects"
             :active-session-id="workspace.activeSessionId"

@@ -21,6 +21,8 @@
                 "--reload",
                 "--reload-ignore-dirs",
                 "tmp",
+                "--reload-ignore-dirs",
+                ".playwright-cli"
             ],
             "jinja": false,
             "justMyCode": false

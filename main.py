@@ -19,9 +19,6 @@ def build_app():
     return create_app(project_root=Path(__file__).resolve().parent)
 
 
-app = build_app()
-
-
 def build_server(
     *,
     host: str = "0.0.0.0",

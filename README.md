@@ -2,6 +2,9 @@
 
 Local-first chat workspace with a Python backend and a Vue frontend.
 
+## Resume
+[一二Resume](https://baike.baidu.com/item/%E4%B8%80%E4%BA%8C/23434669)
+
 ## Requirements
 
 - Python 3.12+

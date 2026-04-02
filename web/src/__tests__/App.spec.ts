@@ -323,6 +323,10 @@ describe('App', () => {
       }
       if (isSessionCreateRequest(path, init)) {
         sessionCounter += 1
+        expect(JSON.parse(String(init?.body))).toEqual({
+          backend_id: 'yier',
+          project_path: '/tmp/project',
+        })
         return jsonResponse({ session_id: `session-${sessionCounter}` }, 201)
       }
       if (path.includes('/api/chat/sessions/')) {
@@ -2985,7 +2989,6 @@ describe('App', () => {
     expect(wrapper.html()).toContain('language-ts')
     expect(wrapper.text()).toContain('Shell command')
     expect(wrapper.text()).toContain('printf "hello"')
-    expect(wrapper.text()).toContain('/tmp/project')
     expect(wrapper.text()).toContain('hello')
     expect(wrapper.text()).toContain('1s')
     expect(wrapper.text()).not.toContain('Iteration 1')
@@ -4530,7 +4533,6 @@ describe('App', () => {
 
     expect(wrapper.findAll('.activity-item')).toHaveLength(1)
     expect(wrapper.text()).toContain('Background bg-1')
-    expect(wrapper.text()).toContain('/tmp/project')
     expect(wrapper.text()).toContain('ready on http://localhost:3000')
     expect(wrapper.text()).toContain('5s')
     expect(wrapper.text()).not.toContain('Iteration 1')

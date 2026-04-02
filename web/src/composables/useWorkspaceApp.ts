@@ -626,8 +626,17 @@ function createWorkspaceApp() {
     await createSession(newSessionDraft.backendId, newSessionDraft.projectPath, navigateToChat)
   }
 
+  function nextYierChatProjectPath() {
+    return (
+      appForm.defaultProjectPath.trim() ||
+      defaultAllowedRoots.value[0] ||
+      activeSession.value?.project_path ||
+      newSessionDraft.projectPath
+    )
+  }
+
   function handleNewChatClick() {
-    void startNewSession()
+    void createSession('yier', nextYierChatProjectPath(), true)
   }
 
   async function runChatMessage(

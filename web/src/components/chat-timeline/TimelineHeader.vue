@@ -70,12 +70,6 @@ defineProps<{
       >
         {{ sessionRuntime.detail }}
       </p>
-      <p
-        v-if="projectPath"
-        class="m-0 text-[0.84rem] text-[color:var(--app-text-soft)]"
-      >
-        {{ projectPath }}
-      </p>
     </div>
     <div
       v-if="isSending"

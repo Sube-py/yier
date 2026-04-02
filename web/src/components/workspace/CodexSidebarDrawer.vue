@@ -3,6 +3,7 @@ import Button from 'primevue/button'
 import Select from 'primevue/select'
 
 import CodexSessionExplorer from '../CodexSessionExplorer.vue'
+import WorkspaceBrandPanel from './WorkspaceBrandPanel.vue'
 import { useWorkspaceAppContext } from '../../composables/useWorkspaceApp'
 
 const workspace = useWorkspaceAppContext()
@@ -41,6 +42,8 @@ const workspace = useWorkspaceAppContext()
         </div>
 
         <div class="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
+          <WorkspaceBrandPanel variant="codex" />
+
           <CodexSessionExplorer
             :projects="workspace.activeCodexProjects"
             :active-session-id="workspace.activeSessionId"

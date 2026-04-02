@@ -713,7 +713,7 @@ describe('App', () => {
     expect(wrapper.find('.codex-session-title').text()).toContain('Codex session')
     expect(wrapper.find('.rail-actions').exists()).toBe(false)
     expect(wrapper.find('.codex-toolbar-primary').exists()).toBe(true)
-    expect(wrapper.find('.brand-panel').exists()).toBe(false)
+    expect(wrapper.find('.brand-panel').exists()).toBe(true)
     expect(wrapper.find('.side-card--status').exists()).toBe(false)
     expect(wrapper.find('.side-card--nav').exists()).toBe(false)
     expect(wrapper.find('.side-card--muted').exists()).toBe(false)

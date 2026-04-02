@@ -5,6 +5,7 @@ import Select from 'primevue/select'
 import Tag from 'primevue/tag'
 
 import CodexSessionExplorer from '../CodexSessionExplorer.vue'
+import WorkspaceBrandPanel from './WorkspaceBrandPanel.vue'
 import { useWorkspaceAppContext } from '../../composables/useWorkspaceApp'
 
 const workspace = useWorkspaceAppContext()
@@ -15,22 +16,18 @@ const workspace = useWorkspaceAppContext()
     v-if="!workspace.showCodexMobileChrome"
     class="flex min-h-0 flex-col gap-4 overflow-hidden max-[1023px]:order-2 max-[1023px]:gap-3 max-[1023px]:overflow-visible"
   >
-    <div
-      v-if="!workspace.isCodexWorkspace"
-      class="brand-panel relative overflow-hidden rounded-[1.6rem] border border-[color:var(--app-border)] bg-[color:var(--app-panel)] p-[1.4rem] shadow-[var(--app-shadow)] backdrop-blur-[14px] after:pointer-events-none after:absolute after:top-[-3rem] after:right-[-3rem] after:h-40 after:w-40 after:rounded-full after:bg-[radial-gradient(circle,rgba(21,94,99,0.16),transparent_70%)] after:content-['']"
-    >
-      <p class="eyebrow">Local-first assistant</p>
-      <h1 class="m-0 font-['Iowan_Old_Style','Palatino_Linotype',Palatino,serif] text-[2.8rem] leading-none font-semibold">
-        yier
-      </h1>
-      <p class="mt-3 mb-0 leading-[1.6] text-[color:var(--app-text-soft)]">
-        Chat with your local agent, manage MCP connections, and keep everything anchored to your
-        own machine.
-      </p>
-    </div>
+    <WorkspaceBrandPanel :variant="workspace.isCodexWorkspace ? 'codex' : 'yier'" />
 
-    <div v-if="!workspace.isBooting && !workspace.isCodexWorkspace" class="rail-actions grid gap-3">
-      <Button label="New Chat" icon="pi pi-plus" fluid @click="workspace.handleNewChatClick" />
+    <div
+      v-if="!workspace.isBooting && !workspace.isCodexWorkspace"
+      class="rail-actions grid gap-3"
+    >
+      <Button
+        label="New Chat"
+        icon="pi pi-plus"
+        fluid
+        @click="workspace.handleNewChatClick"
+      />
     </div>
 
     <CodexSessionExplorer
@@ -48,10 +45,17 @@ const workspace = useWorkspaceAppContext()
     >
       <div class="flex items-center justify-between gap-4">
         <p class="m-0 text-[0.92rem] text-[color:var(--app-text-soft)]">Recent sessions</p>
-        <Tag :value="String(workspace.sidebarSessionHistoryCount)" severity="secondary" rounded />
+        <Tag
+          :value="String(workspace.sidebarSessionHistoryCount)"
+          severity="secondary"
+          rounded
+        />
       </div>
 
-      <ScrollPanel v-if="workspace.sidebarSessionHistory.length" class="min-h-0 flex-1">
+      <ScrollPanel
+        v-if="workspace.sidebarSessionHistory.length"
+        class="min-h-0 flex-1"
+      >
         <div class="grid gap-[0.65rem] pr-[0.35rem]">
           <div
             v-for="session in workspace.sidebarSessionHistory"
@@ -73,11 +77,9 @@ const workspace = useWorkspaceAppContext()
                   <template v-if="session.source === 'channel'">
                     <span>channel</span>
                     <span v-if="session.channel_meta?.platform">
-                      · {{ session.channel_meta.platform }}</span
-                    >
+                      · {{ session.channel_meta.platform }}</span>
                     <span v-if="session.channel_meta?.peer_id">
-                      ({{ session.channel_meta.peer_id }})</span
-                    >
+                      ({{ session.channel_meta.peer_id }})</span>
                   </template>
                   <template v-else>
                     <span>{{ session.source }}</span>
@@ -102,7 +104,10 @@ const workspace = useWorkspaceAppContext()
         </div>
       </ScrollPanel>
 
-      <p v-else class="m-0 leading-[1.6] text-[color:var(--app-text-soft)]">
+      <p
+        v-else
+        class="m-0 leading-[1.6] text-[color:var(--app-text-soft)]"
+      >
         No saved sessions yet.
       </p>
     </div>

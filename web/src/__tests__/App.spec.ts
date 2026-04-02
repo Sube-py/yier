@@ -293,7 +293,7 @@ describe('App', () => {
     expect(wrapper.text()).toContain(
       'Add a provider or `base_url`, plus `api_key` and `model`, in Settings.',
     )
-    expect(wrapper.text()).toContain('session-1'.slice(0, 8))
+    expect(wrapper.text()).toContain('Started a fresh session.')
   })
 
   it('starts a fresh session when clicking New Chat', async () => {
@@ -431,6 +431,134 @@ describe('App', () => {
 
     expect(wrapper.text()).toContain('second transcript body')
     expect(wrapper.find('.session-history-item--active').text()).toContain('Second session')
+  })
+
+  it('hides codex sessions from the yier workspace sidebar', async () => {
+    localStorage.setItem('yier.active-session-id', 'session-1')
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const path = input.toString()
+        if (path.endsWith('/api/health')) {
+          return jsonResponse({
+            frontend: { ready: true, mode: 'static' },
+            llm: { ready: true },
+            mcp: { ready: true, runtime: {} },
+            backends: {
+              yier: { ready: true, label: 'Yier Agent' },
+              codex: { ready: true, label: 'Codex App Server' },
+            },
+            allowed_roots: ['/tmp/project'],
+          })
+        }
+        if (path.endsWith('/api/config')) {
+          return jsonResponse({
+            llm: { base_url: 'https://example.test', model: 'demo', has_api_key: true },
+            allowed_roots: ['/tmp/project'],
+            mcp_runtime: {},
+            backends: [
+              { id: 'yier', label: 'Yier Agent' },
+              { id: 'codex', label: 'Codex App Server' },
+            ],
+            session_defaults: {
+              default_backend_id: 'yier',
+              default_project_path: '/tmp/project',
+              channel_backend_id: 'yier',
+              channel_project_path: '/tmp/project',
+              channel_auto_approve_codex_requests: true,
+              workspace_surface: 'yier',
+            },
+            codex: {
+              launcher_command: 'codex app-server --listen stdio://',
+              model: 'gpt-5-codex',
+              sandbox: 'workspace-write',
+              approval_policy: 'on-request',
+              approvals_reviewer: 'user',
+              personality: 'friendly',
+              reasoning_effort: 'medium',
+              show_reasoning_cards: false,
+              service_tier: '',
+            },
+          })
+        }
+        if (path.endsWith('/api/config/mcp')) {
+          return jsonResponse({ mcp_servers: {}, runtime: {} })
+        }
+        if (path.endsWith('/api/codex/workspace')) {
+          return jsonResponse({ projects: [], paired_editors: [] })
+        }
+        if (isSessionListRequest(path, init)) {
+          return jsonResponse({
+            sessions: [
+              {
+                session_id: 'session-1',
+                title: 'First yier session',
+                preview: 'first preview',
+                updated_at: 100,
+                message_count: 2,
+                source: 'chat',
+                backend_id: 'yier',
+                project_path: '/tmp/project',
+                channel_meta: null,
+              },
+              {
+                session_id: 'codex-thread-1',
+                title: 'Codex hidden session',
+                preview: 'codex preview',
+                updated_at: 90,
+                message_count: 1,
+                source: 'chat',
+                backend_id: 'codex',
+                project_path: '/tmp/project',
+                channel_meta: null,
+                codex_work_mode: 'build',
+              },
+            ],
+          })
+        }
+        if (isSessionTranscriptRequest(path, 'session-1', init)) {
+          return jsonResponse({
+            session_id: 'session-1',
+            source: 'chat',
+            backend_id: 'yier',
+            project_path: '/tmp/project',
+            backend_runtime: {
+              backend_id: 'yier',
+              label: 'Yier Agent',
+              ready: true,
+              status: 'idle',
+              active_flags: [],
+              detail: null,
+              pending_approval_count: 0,
+            },
+            pending_approvals: [],
+            messages: [{ role: 'assistant', content: 'yier transcript body' }],
+            activity_events: [],
+          })
+        }
+        if (path.endsWith('/api/channel/workspace')) {
+          return jsonResponse({ platforms: [], accounts: [] })
+        }
+        if (path.endsWith('/api/channel/platforms')) {
+          return jsonResponse({ platforms: [] })
+        }
+        if (path.endsWith('/api/channel/config')) {
+          return jsonResponse({ enabled_platforms: [], weixin: {} })
+        }
+        if (path.endsWith('/api/channel/monitor/sessions')) {
+          return jsonResponse({ sessions: [] })
+        }
+        throw new Error(`Unexpected request: ${path}`)
+      }),
+    )
+
+    const wrapper = await mountApp()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('First yier session')
+    expect(wrapper.text()).not.toContain('Codex hidden session')
+    expect(wrapper.text()).toContain('Recent sessions1')
   })
 
   it('renders the codex workspace shell and updates the session mode', async () => {

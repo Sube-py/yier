@@ -14,19 +14,33 @@ import TabPanel from 'primevue/tabpanel'
 import TabPanels from 'primevue/tabpanels'
 import Textarea from 'primevue/textarea'
 
+import ChannelWorkspacePanel from './ChannelWorkspacePanel.vue'
 import type {
   BackendId,
+  ChannelConfigResponse,
+  ChannelPlatformsResponse,
+  ChannelWorkspaceResponse,
   ConfigResponse,
   EditableAllowedRoot,
   EditableMcpServer,
   HealthResponse,
   McpConfigResponse,
+  SessionSummary,
 } from '../types/api'
 
 const props = defineProps<{
   health: HealthResponse | null
   config: ConfigResponse | null
   mcpConfig: McpConfigResponse | null
+  channelWorkspace: ChannelWorkspaceResponse | null
+  channelPlatforms: ChannelPlatformsResponse | null
+  channelConfig: ChannelConfigResponse | null
+  channelMonitorSessions: SessionSummary[]
+  channelLoginState: {
+    qrcodeUrl: string
+    accountId: string
+    status: string
+  }
   backendOptions: Array<{ id: BackendId; label: string }>
   llmForm: {
     provider: '' | 'zai' | 'zai-coding-plan'
@@ -84,6 +98,10 @@ const providerOptions = [
 ]
 
 const emit = defineEmits<{
+  loginWeixin: []
+  startAccount: [accountId: string]
+  stopAccount: [accountId: string]
+  openChannelSession: [sessionId: string]
   saveLlm: []
   saveApp: []
   saveRoots: []
@@ -120,6 +138,7 @@ const emit = defineEmits<{
           <TabList>
             <Tab value="llm">LLM</Tab>
             <Tab value="backends">Backends</Tab>
+            <Tab value="channel">Channel</Tab>
             <Tab value="workspace">Workspace</Tab>
             <Tab value="mcp">MCP</Tab>
             <Tab value="runtime">Runtime</Tab>
@@ -341,6 +360,22 @@ const emit = defineEmits<{
                   @click="emit('saveApp')"
                 />
               </section>
+            </TabPanel>
+
+            <TabPanel value="channel">
+              <div class="pt-4">
+                <ChannelWorkspacePanel
+                  :workspace="props.channelWorkspace"
+                  :platforms="props.channelPlatforms"
+                  :config="props.channelConfig"
+                  :monitor-sessions="props.channelMonitorSessions"
+                  :login-state="props.channelLoginState"
+                  @login-weixin="emit('loginWeixin')"
+                  @start-account="emit('startAccount', $event)"
+                  @stop-account="emit('stopAccount', $event)"
+                  @open-session="emit('openChannelSession', $event)"
+                />
+              </div>
             </TabPanel>
 
             <TabPanel value="workspace">

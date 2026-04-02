@@ -302,9 +302,15 @@ function createWorkspaceApp() {
         ? 'Multi-platform runtime, account status, and live channel sessions'
         : isCodexWorkspace.value
           ? 'Project-aware Codex sessions with mode and permission control'
-          : 'One calm surface for code, files, and config',
+        : 'One calm surface for code, files, and config',
   )
   const sessionHistoryCount = computed(() => sessionHistory.value.length)
+  const sidebarSessionHistory = computed(() =>
+    isCodexWorkspace.value
+      ? sessionHistory.value
+      : sessionHistory.value.filter((session) => session.backend_id !== 'codex'),
+  )
+  const sidebarSessionHistoryCount = computed(() => sidebarSessionHistory.value.length)
   const isCodexWorkspace = computed(
     () => isChatRoute.value && activeBackendId.value === 'codex',
   )
@@ -4052,6 +4058,8 @@ function createWorkspaceApp() {
     workspaceEyebrow,
     workspaceTitle,
     sessionHistoryCount,
+    sidebarSessionHistory,
+    sidebarSessionHistoryCount,
     isCodexWorkspace,
     activeCodexProjects,
     activeCodexPairedEditors,

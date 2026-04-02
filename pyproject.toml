@@ -30,8 +30,8 @@ build-backend = "setuptools.build_meta"
 include = ["yier_web*"]
 
 [tool.uv.workspace]
-members = ["packages/yier-channel"]
+members = ["packages/yier-channel", "packages/codex-app-server-sdk"]
 
 [tool.uv.sources]
 yier-channel = { workspace = true }
-codex-app-server-sdk = { path = "../codex/sdk/python" }
+codex-app-server-sdk = { workspace = true }

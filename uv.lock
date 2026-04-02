@@ -4,6 +4,7 @@ requires-python = ">=3.12"
 
 [manifest]
 members = [
+    "codex-app-server-sdk",
     "yier",
     "yier-channel",
 ]
@@ -120,19 +121,13 @@ wheels = [
 [[package]]
 name = "codex-app-server-sdk"
 version = "0.2.0"
-source = { directory = "../codex/sdk/python" }
+source = { editable = "packages/codex-app-server-sdk" }
 dependencies = [
     { name = "pydantic" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "datamodel-code-generator", marker = "extra == 'dev'", specifier = "==0.31.2" },
-    { name = "pydantic", specifier = ">=2.12" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.11" },
-]
-provides-extras = ["dev"]
+requires-dist = [{ name = "pydantic", specifier = ">=2.12" }]
 
 [[package]]
 name = "colorama"
@@ -1215,7 +1210,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "codex-app-server-sdk", directory = "../codex/sdk/python" },
+    { name = "codex-app-server-sdk", editable = "packages/codex-app-server-sdk" },
     { name = "granian", extras = ["reload"], specifier = ">=2.7.2" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "litestar", specifier = ">=2.21.1" },

@@ -42,7 +42,12 @@ from yier_agents import (
 from yier_agents.src.config import AssistantSettings
 
 from yier_web.agent_backends import ChatSessionContext, CodexAppServerBackend, YierAgentBackend
-from yier_web.background_followups import FollowupQueueManager, create_queue_background_followup_tool
+from yier_web.background_followups import (
+    FollowupQueueManager,
+    create_queue_background_followup_tool,
+    create_resume_codex_background_session_tool,
+    create_start_codex_background_session_tool,
+)
 from yier_web.codex_workspace import CodexWorkspaceService
 from yier_web.config import AppConfigService
 from yier_web.codex_ipc import CodexThreadFollowerBridge
@@ -466,6 +471,147 @@ class ChatService:
             preview=metadata["preview"],
             updated_at=metadata["updated_at"],
         )
+
+    def _resolve_codex_tool_project_path(
+        self,
+        caller_session_id: str,
+        project_path: str | None,
+    ) -> Path:
+        caller_metadata = self.get_session_metadata(caller_session_id)
+        resolved_project_path = self.config_service.resolve_project_path(
+            project_path or caller_metadata["project_path"]
+        )
+        return Path(resolved_project_path).resolve()
+
+    async def start_codex_background_session_from_tool(
+        self,
+        *,
+        caller_session_id: str,
+        prompt: str,
+        project_path: str | None = None,
+    ) -> dict[str, Any]:
+        normalized_prompt = prompt.strip()
+        if not normalized_prompt:
+            raise ValueError("Prompt must not be empty.")
+
+        caller_metadata = self.get_session_metadata(caller_session_id)
+        resolved_project_path = self._resolve_codex_tool_project_path(
+            caller_session_id,
+            project_path,
+        )
+        backend = self.backends.get("codex")
+        if not isinstance(backend, CodexAppServerBackend):
+            raise RuntimeError("Codex backend is not available.")
+
+        bootstrap = backend.bootstrap_session(
+            resolved_project_path,
+            source=caller_metadata["source"],
+            channel_meta=caller_metadata["channel_meta"],
+        )
+        session_id = str(bootstrap["thread_id"])
+        self.ensure_session_metadata(
+            session_id,
+            source=caller_metadata["source"],
+            channel_meta=caller_metadata["channel_meta"],
+            backend_id="codex",
+            project_path=str(resolved_project_path),
+            backend_state={
+                "thread_id": bootstrap["thread_id"],
+                "status": bootstrap["status"],
+                "active_flags": bootstrap["active_flags"],
+                "detail": bootstrap["detail"],
+            },
+            codex_work_mode="build",
+        )
+        start_response = await self.start_codex_turn_in_background(session_id, normalized_prompt)
+        turn = start_response.get("turn")
+        if not isinstance(turn, dict):
+            raise RuntimeError("Codex start turn response did not include a turn payload.")
+        turn_id = turn.get("id")
+        if not isinstance(turn_id, str) or not turn_id:
+            raise RuntimeError("Codex start turn response did not include a turn id.")
+
+        metadata = self.get_session_metadata(session_id)
+        return {
+            "session_id": session_id,
+            "thread_id": str(metadata["backend_state"].get("thread_id") or session_id),
+            "turn_id": turn_id,
+            "project_path": metadata["project_path"],
+            "status": str(metadata["backend_state"].get("status") or "active"),
+        }
+
+    async def resume_codex_background_session_from_tool(
+        self,
+        *,
+        caller_session_id: str,
+        thread_id: str,
+        prompt: str,
+        project_path: str | None = None,
+    ) -> dict[str, Any]:
+        normalized_thread_id = thread_id.strip()
+        if not normalized_thread_id:
+            raise ValueError("Thread id must not be empty.")
+        normalized_prompt = prompt.strip()
+        if not normalized_prompt:
+            raise ValueError("Prompt must not be empty.")
+
+        caller_metadata = self.get_session_metadata(caller_session_id)
+        resolved_project_path = self._resolve_codex_tool_project_path(
+            caller_session_id,
+            project_path,
+        )
+        existing_metadata = self.session_metadata_store.load(normalized_thread_id)
+        if isinstance(existing_metadata, dict):
+            normalized = self.get_session_metadata(normalized_thread_id)
+            if normalized["backend_id"] != "codex":
+                raise RuntimeError("Existing session id is not backed by Codex.")
+            self.ensure_session_metadata(
+                normalized_thread_id,
+                source=caller_metadata["source"],
+                channel_meta=caller_metadata["channel_meta"],
+                backend_id="codex",
+                project_path=str(resolved_project_path),
+                backend_state={
+                    **normalized["backend_state"],
+                    "thread_id": normalized_thread_id,
+                },
+                codex_work_mode="build",
+                title=normalized["title"],
+                preview=normalized["preview"],
+                updated_at=normalized["updated_at"],
+            )
+        else:
+            self.ensure_session_metadata(
+                normalized_thread_id,
+                source=caller_metadata["source"],
+                channel_meta=caller_metadata["channel_meta"],
+                backend_id="codex",
+                project_path=str(resolved_project_path),
+                backend_state={"thread_id": normalized_thread_id},
+                codex_work_mode="build",
+            )
+
+        start_response = await self.start_codex_turn_in_background(
+            normalized_thread_id,
+            normalized_prompt,
+        )
+        turn = start_response.get("turn")
+        if not isinstance(turn, dict):
+            raise RuntimeError("Codex start turn response did not include a turn payload.")
+        turn_id = turn.get("id")
+        if not isinstance(turn_id, str) or not turn_id:
+            raise RuntimeError("Codex start turn response did not include a turn id.")
+
+        metadata = self.get_session_metadata(normalized_thread_id)
+        return {
+            "session_id": normalized_thread_id,
+            "thread_id": str(
+                metadata["backend_state"].get("thread_id") or normalized_thread_id
+            ),
+            "turn_id": turn_id,
+            "project_path": metadata["project_path"],
+            "status": str(metadata["backend_state"].get("status") or "active"),
+        }
 
     def can_handle_codex_conversation(self, conversation_id: str) -> bool:
         normalized_conversation_id = conversation_id.strip()
@@ -2160,6 +2306,8 @@ class ChatService:
             create_stop_background_command_tool(self.background_manager),
             create_send_background_command_input_tool(self.background_manager),
             create_queue_background_followup_tool(self.background_manager, self.followup_queue),
+            create_start_codex_background_session_tool(self, self.background_manager),
+            create_resume_codex_background_session_tool(self, self.background_manager),
             create_write_file_tool(normalized_roots, default_root=workspace_root),
             create_search_files_tool(normalized_roots, default_root=workspace_root),
         ]

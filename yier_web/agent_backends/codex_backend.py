@@ -12,6 +12,7 @@ import sys
 import threading
 from time import time
 from typing import TYPE_CHECKING, Any
+from pydantic import BaseModel
 
 from codex_app_server import (
     AppServerClient,
@@ -2569,19 +2570,19 @@ class CodexAppServerBackend(ChatBackend):
         return value
 
     def _summarize_file_change(self, item: Any) -> str:
-        changes = item.get("changes") or []
+        changes = self._thread_item_value(item, "changes", []) or []
         count = len(changes)
-        status = item.get("status", "completed")
+        status = self._thread_item_value(item, "status", "completed")
         return f"{count} file change{'s' if count != 1 else ''} with status {status}."
 
     def _summarize_tool_result(self, item: Any) -> str:
-        status = item.get("status", "completed")
-        error = item.get("error", None)
+        status = self._thread_item_value(item, "status", "completed")
+        error = self._thread_item_value(item, "error", None)
         if error is not None:
             return getattr(error, "message", f"Finished with status {status}.")
         return f"Finished with status {status}."
 
     def _summarize_collab_result(self, item: Any) -> str:
         receivers = self._thread_item_value(item, "receiverThreadIds", []) or []
-        status = item.get("status", "completed")
+        status = self._thread_item_value(item, "status", "completed")
         return f"{len(receivers)} agent target{'s' if len(receivers) != 1 else ''}, status {status}."

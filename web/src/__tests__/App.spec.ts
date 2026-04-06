@@ -4539,6 +4539,157 @@ describe('App', () => {
     expect(wrapper.text()).not.toContain('#2 stdin rs')
   })
 
+  it('shows concise codex resume background activity states', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const path = input.toString()
+        if (path.endsWith('/api/health')) {
+          return jsonResponse({
+            frontend: { ready: true, mode: 'static' },
+            llm: { ready: true },
+            mcp: { ready: true, runtime: {} },
+            allowed_roots: ['/tmp/project'],
+          })
+        }
+        if (path.endsWith('/api/config')) {
+          return jsonResponse({
+            llm: { base_url: 'https://example.test', model: 'demo', has_api_key: true },
+            allowed_roots: ['/tmp/project'],
+            mcp_runtime: {},
+          })
+        }
+        if (path.endsWith('/api/config/mcp')) {
+          return jsonResponse({ mcp_servers: {}, runtime: {} })
+        }
+        if (isSessionListRequest(path, init)) {
+          return jsonResponse({ sessions: [] })
+        }
+        if (isSessionCreateRequest(path, init)) {
+          return jsonResponse({ session_id: 'session-1' }, 201)
+        }
+        if (path.includes('/api/chat/sessions/')) {
+          return jsonResponse({ session_id: 'session-1', messages: [] })
+        }
+        throw new Error(`Unexpected request: ${path}`)
+      }),
+    )
+
+    const wrapper = await mountApp()
+    await flushPromises()
+
+    const eventSource = MockEventSource.instances[0]
+    expect(eventSource).toBeTruthy()
+    if (!eventSource) {
+      throw new Error('Expected persistent EventSource connection.')
+    }
+
+    eventSource.emit('background_command_started', {
+      session_id: 'session-1',
+      background_session_id: 'bg-1',
+      tool_call_id: 'call-resume',
+      tool_name: 'resume_codex_background_session',
+      command: 'uv run python -m yier_web.codex_background_runner',
+      cwd: '/tmp/project',
+      state: 'running',
+    })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Resume bg-1')
+    expect(wrapper.text()).toContain('思考中')
+
+    eventSource.emit('background_command_output', {
+      session_id: 'session-1',
+      background_session_id: 'bg-1',
+      command: 'uv run python -m yier_web.codex_background_runner',
+      cwd: '/tmp/project',
+      stream: 'stdout',
+      content:
+        '{"event":"codex_background_started","session_id":"thread-1"}\n' +
+        '{"event":"codex_background_result","ok":true,"result":{"latest_assistant_message":"已经处理好了"}}\n',
+    })
+    eventSource.emit('background_command_end', {
+      session_id: 'session-1',
+      background_session_id: 'bg-1',
+      command: 'uv run python -m yier_web.codex_background_runner',
+      cwd: '/tmp/project',
+      state: 'completed',
+      exit_code: 0,
+    })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Resume bg-1')
+    expect(wrapper.text()).toContain('已经处理好了')
+  })
+
+  it('shows concise codex start background failure state', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const path = input.toString()
+        if (path.endsWith('/api/health')) {
+          return jsonResponse({
+            frontend: { ready: true, mode: 'static' },
+            llm: { ready: true },
+            mcp: { ready: true, runtime: {} },
+            allowed_roots: ['/tmp/project'],
+          })
+        }
+        if (path.endsWith('/api/config')) {
+          return jsonResponse({
+            llm: { base_url: 'https://example.test', model: 'demo', has_api_key: true },
+            allowed_roots: ['/tmp/project'],
+            mcp_runtime: {},
+          })
+        }
+        if (path.endsWith('/api/config/mcp')) {
+          return jsonResponse({ mcp_servers: {}, runtime: {} })
+        }
+        if (isSessionListRequest(path, init)) {
+          return jsonResponse({ sessions: [] })
+        }
+        if (isSessionCreateRequest(path, init)) {
+          return jsonResponse({ session_id: 'session-1' }, 201)
+        }
+        if (path.includes('/api/chat/sessions/')) {
+          return jsonResponse({ session_id: 'session-1', messages: [] })
+        }
+        throw new Error(`Unexpected request: ${path}`)
+      }),
+    )
+
+    const wrapper = await mountApp()
+    await flushPromises()
+
+    const eventSource = MockEventSource.instances[0]
+    expect(eventSource).toBeTruthy()
+    if (!eventSource) {
+      throw new Error('Expected persistent EventSource connection.')
+    }
+
+    eventSource.emit('background_command_started', {
+      session_id: 'session-1',
+      background_session_id: 'bg-2',
+      tool_call_id: 'call-start',
+      tool_name: 'start_codex_background_session',
+      command: 'uv run python -m yier_web.codex_background_runner',
+      cwd: '/tmp/project',
+      state: 'running',
+    })
+    eventSource.emit('background_command_end', {
+      session_id: 'session-1',
+      background_session_id: 'bg-2',
+      command: 'uv run python -m yier_web.codex_background_runner',
+      cwd: '/tmp/project',
+      state: 'failed',
+      exit_code: 1,
+    })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Start bg-2')
+    expect(wrapper.text()).toContain('失败了')
+  })
+
   it('saves allowed roots from the settings workspace', async () => {
     let savedRoots: string[] = ['/tmp/project', '/tmp/docs']
 

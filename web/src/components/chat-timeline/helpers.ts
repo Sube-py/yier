@@ -9,17 +9,26 @@ import type { ActivityDisplayItem, TurnGroupEntry } from './types'
 
 const HIDDEN_TOOL_TITLES = new Set([
   'start_background_command',
+  'start_codex_background_session',
   'list_background_commands',
   'read_background_command',
+  'resume_codex_background_session',
   'wait_background_command',
   'stop_background_command',
   'send_background_command_input',
   'start background command',
+  'start codex background session',
   'list background commands',
   'read background command',
+  'resume codex background session',
   'wait background command',
   'stop background command',
   'send background command input',
+])
+
+const CODEX_BACKGROUND_TOOL_NAMES = new Set([
+  'start_codex_background_session',
+  'resume_codex_background_session',
 ])
 
 export function runtimeStatusLabel(status: string | null | undefined) {
@@ -105,6 +114,33 @@ export function activityUsesMarkdown(activity: ChatActivity) {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function codexBackgroundToolName(activity: ChatActivity) {
+  const toolName =
+    activity.shell && typeof activity.shell.request.background_tool_name === 'string'
+      ? activity.shell.request.background_tool_name
+      : null
+  if (toolName && CODEX_BACKGROUND_TOOL_NAMES.has(toolName)) {
+    return toolName
+  }
+  return null
+}
+
+function isCodexBackgroundActivity(activity: ChatActivity) {
+  return Boolean(codexBackgroundToolName(activity))
+}
+
+function codexBackgroundSummary(activity: ChatActivity) {
+  const toolName = codexBackgroundToolName(activity)
+  const sessionId = activity.shell?.process?.session_id || activity.shell?.session_id || ''
+  const action = toolName === 'resume_codex_background_session' ? 'Resume' : 'Start'
+  const detail = activity.detail.trim()
+  return {
+    verb: sessionId ? `${action} ${sessionId}` : action,
+    text: detail || (activity.state === 'error' ? '失败了' : '思考中'),
+    verbClass: activityToneClass(activity),
+  }
 }
 
 export function isFileChangeRecord(value: unknown): value is FileChangeRecord {
@@ -277,6 +313,10 @@ export function activitySummaryParts(display: ActivityDisplayItem, isSending = f
   }
 
   if (isShellActivity(activity)) {
+    if (isCodexBackgroundActivity(activity)) {
+      return codexBackgroundSummary(activity)
+    }
+
     const command = shellCommand(activity) || activity.title || 'command'
     const isBackground = activity.shell?.kind === 'background_command' || activity.kind === 'background'
 

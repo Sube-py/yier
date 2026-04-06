@@ -59,7 +59,7 @@ class SessionDefaultsSettings(BaseModel):
     channel_backend_id: BackendId = "yier"
     channel_project_path: str = ""
     channel_auto_approve_codex_requests: bool = True
-    workspace_surface: WorkspaceSurface = "yier"
+    workspace_surface: WorkspaceSurface = "codex"
 
 
 class StoredCodexSettings(BaseModel):

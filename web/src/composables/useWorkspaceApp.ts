@@ -146,6 +146,11 @@ const BACKGROUND_SHELL_TOOL_NAMES = new Set([
   'send_background_command_input',
 ])
 
+const CODEX_BACKGROUND_TOOL_NAMES = new Set([
+  'start_codex_background_session',
+  'resume_codex_background_session',
+])
+
 function createWorkspaceApp() {
   const route = useRoute()
   const router = useRouter()
@@ -1701,11 +1706,21 @@ function createWorkspaceApp() {
         const activityId = getBackgroundActivityId(event.data.background_session_id)
         backgroundActivityIdsByToolCallId.set(event.data.tool_call_id, activityId)
         rekeyActivity(event.data.tool_call_id, activityId)
+        const backgroundToolName =
+          typeof event.data.tool_name === 'string' ? event.data.tool_name : null
         upsertShellActivity(activityId, {
           id: activityId,
           kind: 'background',
-          title: `Background ${event.data.background_session_id}`,
-          detail: 'Background task is running.',
+          title: shellTitle(
+            'background_command',
+            event.data.background_session_id,
+            { background_tool_name: backgroundToolName },
+            backgroundToolName,
+          ),
+          detail:
+            backgroundToolName && CODEX_BACKGROUND_TOOL_NAMES.has(backgroundToolName)
+              ? '思考中'
+              : 'Background task is running.',
           state: 'running',
           command: normalizeShellCommand(event.data.command),
           cwd: event.data.cwd,
@@ -1720,6 +1735,7 @@ function createWorkspaceApp() {
             request: {
               command: normalizeShellCommand(event.data.command),
               cwd: event.data.cwd,
+              background_tool_name: backgroundToolName,
             },
             process: {
               session_id: event.data.background_session_id,
@@ -1747,14 +1763,36 @@ function createWorkspaceApp() {
 
       if (event.event === 'background_command_end') {
         const activityId = getBackgroundActivityId(event.data.background_session_id)
+        const existing = activities.value.find((item) => item.id === activityId)
+        const backgroundToolName = codexBackgroundToolName(
+          existing?.shell?.request,
+          existing?.shell?.tool_name,
+        )
         upsertShellActivity(activityId, {
           id: activityId,
           kind: 'background',
-          title: `Background ${event.data.background_session_id}`,
-          detail:
+          title: shellTitle(
+            'background_command',
+            event.data.background_session_id,
+            existing?.shell?.request,
+            backgroundToolName,
+          ),
+          detail: codexBackgroundDetail(
+            {
+              session_id: event.data.background_session_id,
+              state: event.data.state,
+              exit_code: event.data.exit_code,
+              started_at: existing?.shell?.process?.started_at ?? 0,
+              finished_at: Date.now() / 1000,
+              runtime_seconds: existing?.shell?.process?.runtime_seconds ?? 0,
+              timed_out: false,
+            },
+            existing?.stdout ?? '',
+            backgroundToolName,
             event.data.exit_code === null
               ? `Finished with state ${event.data.state}.`
               : `Finished with state ${event.data.state} and exit code ${event.data.exit_code}.`,
+          ),
           state:
             event.data.state === 'completed'
               ? 'done'
@@ -3736,7 +3774,106 @@ function createWorkspaceApp() {
     return `Failed with exit code ${process.exit_code}.`
   }
 
-  function shellTitle(kind: ShellActivityState['kind'], sessionId: string | null) {
+  function codexBackgroundToolName(
+    request: Record<string, unknown> | undefined,
+    fallbackToolName?: string | null,
+  ) {
+    const requestToolName =
+      typeof request?.background_tool_name === 'string' ? request.background_tool_name : null
+    if (requestToolName && CODEX_BACKGROUND_TOOL_NAMES.has(requestToolName)) {
+      return requestToolName
+    }
+    if (fallbackToolName && CODEX_BACKGROUND_TOOL_NAMES.has(fallbackToolName)) {
+      return fallbackToolName
+    }
+    return null
+  }
+
+  function parseJsonLines(text: string) {
+    const items: Record<string, unknown>[] = []
+    for (const line of text.split('\n')) {
+      const trimmed = line.trim()
+      if (!trimmed) {
+        continue
+      }
+      try {
+        const parsed = JSON.parse(trimmed)
+        if (isRecord(parsed)) {
+          items.push(parsed)
+        }
+      } catch {
+        continue
+      }
+    }
+    return items
+  }
+
+  function latestCodexBackgroundResult(stdoutText: string) {
+    const events = parseJsonLines(stdoutText)
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index]
+      if (!event || event.event !== 'codex_background_result' || !isRecord(event.result)) {
+        continue
+      }
+      return event
+    }
+    return null
+  }
+
+  function codexBackgroundTitle(
+    sessionId: string | null,
+    backgroundToolName: string | null,
+  ) {
+    const action = backgroundToolName === 'resume_codex_background_session' ? 'Resume' : 'Start'
+    return sessionId ? `${action} ${sessionId}` : action
+  }
+
+  function codexBackgroundDetail(
+    process: ShellProcessSnapshot | null,
+    stdoutText: string,
+    backgroundToolName: string | null,
+    fallback: string,
+  ) {
+    if (!backgroundToolName) {
+      return fallback
+    }
+
+    if (!process || process.state === 'running' || process.state === 'stopping') {
+      return '思考中'
+    }
+
+    const resultEvent = latestCodexBackgroundResult(stdoutText)
+    const resultPayload = resultEvent?.result
+    const latestAssistantMessage =
+      isRecord(resultPayload) && typeof resultPayload.latest_assistant_message === 'string'
+        ? resultPayload.latest_assistant_message.trim()
+        : ''
+
+    if (resultEvent?.ok === false || process.exit_code !== 0 || process.state === 'failed') {
+      return '失败了'
+    }
+
+    if (latestAssistantMessage) {
+      return latestAssistantMessage
+    }
+
+    if (process.exit_code === 0 || process.state === 'completed') {
+      return '已完成'
+    }
+
+    return fallback
+  }
+
+  function shellTitle(
+    kind: ShellActivityState['kind'],
+    sessionId: string | null,
+    request?: Record<string, unknown>,
+    fallbackToolName?: string | null,
+  ) {
+    const backgroundToolName = codexBackgroundToolName(request, fallbackToolName)
+    if (kind === 'background_command' && backgroundToolName) {
+      return codexBackgroundTitle(sessionId, backgroundToolName)
+    }
     if (kind === 'background_command') {
       return sessionId ? `Background ${sessionId}` : 'Background command'
     }
@@ -3760,11 +3897,34 @@ function createWorkspaceApp() {
     const isBackground = BACKGROUND_SHELL_TOOL_NAMES.has(toolName)
     const sessionId =
       typeof argumentsValue.session_id === 'string' ? argumentsValue.session_id : null
+    const existing =
+      sessionId && isBackground
+        ? activities.value.find((item) => item.id === getBackgroundActivityId(sessionId))
+        : null
+    const backgroundToolName = codexBackgroundToolName(
+      existing?.shell?.request,
+      existing?.shell?.tool_name,
+    )
     upsertShellActivity(activityId, {
       id: activityId,
       kind: isBackground ? 'background' : 'command',
-      title: shellTitle(isBackground ? 'background_command' : 'shell_command', sessionId),
-      detail: isBackground ? 'Waiting for background output.' : 'Preparing shell command.',
+      title: shellTitle(
+        isBackground ? 'background_command' : 'shell_command',
+        sessionId,
+        existing?.shell?.request,
+        backgroundToolName,
+      ),
+      detail:
+        isBackground && backgroundToolName
+          ? codexBackgroundDetail(
+              existing?.shell?.process ?? null,
+              existing?.stdout ?? '',
+              backgroundToolName,
+              '思考中',
+            )
+          : isBackground
+            ? 'Waiting for background output.'
+            : 'Preparing shell command.',
       state: 'running',
       command: normalizeShellCommand(argumentsValue.command),
       cwd: typeof argumentsValue.cwd === 'string' ? argumentsValue.cwd : '',
@@ -3801,6 +3961,17 @@ function createWorkspaceApp() {
       rekeyActivity(toolCallId, activityId)
     }
 
+    const existing = activities.value.find((item) => item.id === activityId)
+    const mergedRequest = {
+      ...(existing?.shell?.request ?? {}),
+      ...raw.request,
+    }
+    const backgroundToolName = codexBackgroundToolName(
+      mergedRequest,
+      existing?.shell?.tool_name,
+    )
+    const stdoutText = raw.streams.stdout.text || existing?.stdout || ''
+
     const meta: string[] = []
     if (metadata.truncated === true) {
       meta.push('Truncated')
@@ -3809,8 +3980,13 @@ function createWorkspaceApp() {
     upsertShellActivity(activityId, {
       id: activityId,
       kind: raw.kind === 'background_command' ? 'background' : 'command',
-      title: shellTitle(raw.kind, raw.process.session_id),
-      detail: shellDetailFromProcess(shell.process, result),
+      title: shellTitle(raw.kind, raw.process.session_id, mergedRequest, backgroundToolName),
+      detail: codexBackgroundDetail(
+        shell.process,
+        stdoutText,
+        backgroundToolName,
+        shellDetailFromProcess(shell.process, result),
+      ),
       state: activityStateFromShell(shell.process, isError),
       command: shellCommandFromRequest(raw.request, ''),
       cwd: shellCwdFromRequest(raw.request, ''),
@@ -3852,6 +4028,7 @@ function createWorkspaceApp() {
             : exitCode === null
               ? (shell?.process?.state ?? 'running')
               : 'failed'
+    const backgroundToolName = codexBackgroundToolName(shell?.request, shell?.tool_name)
 
     const nextEvents: ShellEventEntry[] = []
     if (state !== 'running' && shell) {
@@ -3869,8 +4046,26 @@ function createWorkspaceApp() {
     upsertShellActivity(activityId, {
       id: activityId,
       kind: kind === 'background_command' ? 'background' : 'command',
-      title: shellTitle(kind, sessionId),
-      detail: isError ? result : '',
+      title: shellTitle(kind, sessionId, shell?.request, backgroundToolName),
+      detail:
+        kind === 'background_command' && backgroundToolName
+          ? codexBackgroundDetail(
+              {
+                session_id: sessionId,
+                state,
+                exit_code: exitCode,
+                started_at: shell?.process?.started_at ?? 0,
+                finished_at: state === 'running' ? null : Date.now() / 1000,
+                runtime_seconds: shell?.process?.runtime_seconds ?? 0,
+                timed_out: timedOut,
+              },
+              existing?.stdout ?? '',
+              backgroundToolName,
+              isError ? result : '',
+            )
+          : isError
+            ? result
+            : '',
       state: isError
         ? 'error'
         : activityStateFromShell(

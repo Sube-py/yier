@@ -30,7 +30,6 @@ from yier_web.event_stream import EventStreamBroker
 from yier_web.frontend import FrontendService
 from yier_web.schemas import (
     CodexWorkspaceResponse,
-    EtcdReportResponse,
     MCPRuntimeEntry,
     SaveAppSettingsRequest,
     SaveLLMRequest,
@@ -873,80 +872,6 @@ def test_mcp_config_is_validated_and_written(tmp_path: Path) -> None:
     with pytest.raises(MCPValidationError):
         service.save_mcp_servers({"broken": {"type": "stdio", "command": 123}})
 
-
-def test_public_config_includes_etcd_settings_and_prefers_vpn_ips(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    service = AppConfigService(
-        project_root=tmp_path / "project", home_dir=tmp_path / "home"
-    )
-    service.save_app_settings(
-        SaveAppSettingsRequest(
-            etcd={
-                "subdomain": "demo",
-                "ip": "100.64.0.8",
-                "port": 8080,
-            }
-        )
-    )
-    monkeypatch.setattr(
-        service,
-        "_discover_local_ip_candidates",
-        lambda: [
-            ("en0", "192.168.1.20"),
-            ("utun4", "100.64.0.8"),
-            ("lo0", "127.0.0.1"),
-            ("en0", "192.168.1.20"),
-        ],
-    )
-
-    public = service.build_public_config({})
-
-    assert public.etcd.subdomain == "demo"
-    assert public.etcd.ip == "100.64.0.8"
-    assert public.etcd.port == 8080
-    assert [candidate.address for candidate in public.etcd.local_ip_candidates] == [
-        "100.64.0.8",
-        "192.168.1.20",
-    ]
-    assert public.etcd.local_ip_candidates[0].is_vpn is True
-
-
-def test_report_etcd_writes_ip_and_port_keys(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    service = AppConfigService(
-        project_root=tmp_path / "project", home_dir=tmp_path / "home"
-    )
-    commands: list[list[str]] = []
-    env_snapshots: list[dict[str, str]] = []
-
-    monkeypatch.setattr(
-        service, "_resolve_command_binary", lambda command: "/usr/local/bin/etcdctl"
-    )
-
-    def fake_run(command: list[str], **kwargs: Any) -> SimpleNamespace:
-        commands.append(command)
-        env_snapshots.append(dict(kwargs["env"]))
-        return SimpleNamespace(returncode=0, stderr="", stdout="ok")
-
-    monkeypatch.setattr("yier_web.config.subprocess.run", fake_run)
-
-    response = service.report_etcd(subdomain="demo", ip="100.64.0.8", port=9999)
-
-    assert response.keys == ["/vc/demo/ip", "/vc/demo/port"]
-    assert commands == [
-        ["/usr/local/bin/etcdctl", "put", "/vc/demo/ip", "100.64.0.8"],
-        ["/usr/local/bin/etcdctl", "put", "/vc/demo/port", "9999"],
-    ]
-    assert env_snapshots[0]["ETCDCTL_ENDPOINTS"] == "100.64.0.1:2379"
-    assert env_snapshots[0]["ETCDCTL_USER"] == "vc"
-    assert env_snapshots[0]["ETCDCTL_PASSWORD"] == "ey%ohae3eirahPei3ied3she"
-    assert env_snapshots[0]["ETCDCTL_API"] == "3"
-
-
 def test_api_endpoints_cover_config_session_and_stream(tmp_path: Path) -> None:
     with build_test_client(tmp_path) as client:
         config_response = client.get("/api/config")
@@ -1001,11 +926,6 @@ def test_api_endpoints_cover_config_session_and_stream(tmp_path: Path) -> None:
                     "show_reasoning_cards": True,
                     "service_tier": "",
                 },
-                "etcd": {
-                    "subdomain": "demo",
-                    "ip": "100.64.0.8",
-                    "port": 9999,
-                },
             },
         )
         assert app_config_response.status_code == 200
@@ -1014,29 +934,6 @@ def test_api_endpoints_cover_config_session_and_stream(tmp_path: Path) -> None:
             == "codex"
         )
         assert app_config_response.json()["codex"]["show_reasoning_cards"] is True
-        assert app_config_response.json()["etcd"]["subdomain"] == "demo"
-
-        client.app.state.config_service.report_etcd = lambda **kwargs: (
-            EtcdReportResponse(  # type: ignore[method-assign]
-                subdomain=kwargs["subdomain"],
-                ip=kwargs["ip"],
-                port=kwargs["port"],
-                keys=[
-                    f"/vc/{kwargs['subdomain']}/ip",
-                    f"/vc/{kwargs['subdomain']}/port",
-                ],
-            )
-        )
-        report_response = client.post(
-            "/api/config/etcd/report",
-            json={
-                "subdomain": "demo",
-                "ip": "100.64.0.8",
-                "port": 9999,
-            },
-        )
-        assert report_response.status_code == 201
-        assert report_response.json()["keys"] == ["/vc/demo/ip", "/vc/demo/port"]
 
         session_response = client.post("/api/chat/sessions")
         assert session_response.status_code == 201
@@ -2160,6 +2057,8 @@ def test_chat_service_workspace_tools_include_background_tools(
     assert "start_background_command" in tool_names
     assert "list_background_commands" in tool_names
     assert "queue_background_followup" in tool_names
+    assert "start_codex_background_session" in tool_names
+    assert "resume_codex_background_session" in tool_names
 
 
 def test_chat_service_run_command_tool_emits_stream_events(

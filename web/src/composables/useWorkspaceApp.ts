@@ -302,7 +302,7 @@ function createWorkspaceApp() {
   )
   const workspaceTitle = computed(() =>
     isSettingsRoute.value
-      ? 'Adjust the assistant without leaving the main console'
+      ? 'Workspace settings'
       : isChannelRoute.value
         ? 'Multi-platform runtime, account status, and live channel sessions'
         : isCodexWorkspace.value
@@ -326,14 +326,17 @@ function createWorkspaceApp() {
   const assistantLabel = computed(() =>
     activeBackendId.value === 'codex' ? 'Codex' : 'Yier',
   )
-  const showCodexMobileChrome = computed(
-    () => isCodexWorkspace.value && isCodexCompactLayout.value,
-  )
-  const isMobileChatPage = computed(
+  const showMobileWorkspaceChrome = computed(
     () => isChatRoute.value && isCodexCompactLayout.value,
   )
+  const showCodexMobileChrome = computed(
+    () => isCodexWorkspace.value && showMobileWorkspaceChrome.value,
+  )
+  const isMobileChatPage = computed(
+    () => showMobileWorkspaceChrome.value,
+  )
   const showSidebarDrawer = computed(
-    () => showCodexMobileChrome.value && isSidebarDrawerOpen.value,
+    () => showMobileWorkspaceChrome.value && isSidebarDrawerOpen.value,
   )
   const showRuntimeSheet = computed(
     () => showCodexMobileChrome.value && isRuntimeSheetOpen.value,
@@ -483,7 +486,7 @@ function createWorkspaceApp() {
     { flush: 'sync' },
   )
 
-  watch(showCodexMobileChrome, (visible) => {
+  watch(showMobileWorkspaceChrome, (visible) => {
     if (!visible) {
       closeCodexSheets()
     }
@@ -607,6 +610,7 @@ function createWorkspaceApp() {
     projectPath: string,
     navigateToChat = true,
   ) {
+    closeCodexSheets()
     const payload = await apiPost<{ session_id: string }>('/api/chat/sessions', {
       backend_id: backendId,
       project_path: projectPath,
@@ -4268,6 +4272,7 @@ function createWorkspaceApp() {
     activeCodexProjects,
     activeCodexPairedEditors,
     assistantLabel,
+    showMobileWorkspaceChrome,
     showCodexMobileChrome,
     isMobileChatPage,
     showSidebarDrawer,

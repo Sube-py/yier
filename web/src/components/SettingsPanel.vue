@@ -119,15 +119,7 @@ const emit = defineEmits<{
   <section class="flex min-h-0 flex-1 flex-col overflow-hidden">
     <ScrollPanel class="min-h-0 flex-1">
       <div class="pr-[0.35rem]">
-        <div class="flex items-start justify-between gap-4 border-b border-[color:var(--app-border)] pb-4 max-md:flex-col max-md:items-stretch">
-          <div>
-            <p class="eyebrow">Configuration</p>
-            <h3>Local console settings</h3>
-            <p class="mt-[0.65rem] mb-0 max-w-[42rem] leading-[1.6] text-[color:var(--app-text-soft)]">
-              Tune the local model connection, maintain MCP servers, and inspect runtime status
-              without leaving the main workspace.
-            </p>
-          </div>
+        <div class="flex items-start justify-end gap-4 border-b border-[color:var(--app-border)] pb-4 max-md:flex-col max-md:items-stretch">
           <Tag
             :value="health?.llm.ready ? 'Configured' : 'Needs setup'"
             :severity="health?.llm.ready ? 'success' : 'warn'"
@@ -170,13 +162,6 @@ const emit = defineEmits<{
                       : 'https://api.example.com/v1'
                   "
                 />
-                <p class="m-0 text-[0.92rem] leading-[1.6] text-[color:var(--app-text-soft)]">
-                  {{
-                    isPresetProvider
-                      ? 'Preset providers prefill the official endpoint and model. Edit them only if you need an override.'
-                      : 'Required for custom OpenAI-compatible providers.'
-                  }}
-                </p>
 
                 <label class="text-[0.88rem] font-bold text-[color:var(--app-text-soft)]" for="model">Model</label>
                 <InputText id="model" v-model="llmForm.model" fluid placeholder="gpt-4.1-mini" />
@@ -383,7 +368,6 @@ const emit = defineEmits<{
                 <div class="flex items-center justify-between gap-3">
                   <div>
                     <p class="eyebrow">Allowed roots</p>
-                    <h4>Choose which directories chat tools can access.</h4>
                   </div>
                   <Button
                     label="Add Directory"
@@ -412,11 +396,6 @@ const emit = defineEmits<{
                   />
                 </article>
 
-                <p class="m-0 text-[0.92rem] leading-[1.6] text-[color:var(--app-text-soft)]">
-                  Relative paths are resolved from the project root. `~` expands to the current home
-                  directory.
-                </p>
-
                 <div class="flex justify-end gap-3">
                   <Button
                     label="Save Directories"
@@ -440,7 +419,6 @@ const emit = defineEmits<{
                 <div class="flex items-center justify-between gap-3">
                   <div>
                     <p class="eyebrow">MCP servers</p>
-                    <h4>Edit the same `~/.yier/.yier.json` registry.</h4>
                   </div>
                   <Button
                     label="Add Server"
@@ -553,14 +531,14 @@ const emit = defineEmits<{
                 >
                   <p class="eyebrow">Frontend</p>
                   <h4>{{ health?.frontend.mode ?? 'unknown' }}</h4>
-                  <p>{{ health?.frontend.detail ?? 'No frontend details yet.' }}</p>
+                  <p v-if="health?.frontend.detail">{{ health.frontend.detail }}</p>
                 </article>
                 <article
                   class="rounded-[1.2rem] border border-[color:var(--app-border)] bg-[color:var(--app-panel)] p-4 shadow-[var(--app-shadow)] backdrop-blur-[14px]"
                 >
                   <p class="eyebrow">LLM</p>
                   <h4>{{ health?.llm.ready ? 'Ready' : 'Needs setup' }}</h4>
-                  <p>{{ health?.llm.detail ?? 'Saved in ~/.yier/web/settings.json.' }}</p>
+                  <p v-if="health?.llm.detail">{{ health.llm.detail }}</p>
                 </article>
                 <article
                   class="rounded-[1.2rem] border border-[color:var(--app-border)] bg-[color:var(--app-panel)] p-4 shadow-[var(--app-shadow)] backdrop-blur-[14px]"

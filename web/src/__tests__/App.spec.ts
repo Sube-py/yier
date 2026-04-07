@@ -728,6 +728,143 @@ describe('App', () => {
     expect(wrapper.text()).toContain('Codex mode switched to plan.')
   })
 
+  it('renders the yier workspace mobile drawer in compact chat layout', async () => {
+    localStorage.setItem('yier.active-session-id', 'yier-thread-a')
+
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn().mockImplementation((query: string) => ({
+        matches: query === '(max-width: 1023px)',
+        media: query,
+        onchange: null,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    )
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const path = input.toString()
+        if (path.endsWith('/api/health')) {
+          return jsonResponse({
+            frontend: { ready: true, mode: 'static' },
+            llm: { ready: true },
+            mcp: { ready: true, runtime: {} },
+            backends: {
+              yier: { ready: true },
+              codex: { ready: true },
+            },
+            allowed_roots: ['/tmp/project'],
+          })
+        }
+        if (path.endsWith('/api/config')) {
+          return jsonResponse({
+            llm: { provider: '', base_url: 'https://example.test', model: 'demo', has_api_key: true },
+            allowed_roots: ['/tmp/project'],
+            mcp_runtime: {},
+            session_defaults: {
+              default_backend_id: 'yier',
+              default_project_path: '/tmp/project',
+              channel_backend_id: 'yier',
+              channel_project_path: '/tmp/project',
+              channel_auto_approve_codex_requests: true,
+              workspace_surface: 'yier',
+            },
+            codex: {
+              launcher_command: 'codex app-server --listen stdio://',
+              model: 'gpt-5.4',
+              sandbox: 'workspace-write',
+              approval_policy: 'on-request',
+              approvals_reviewer: 'user',
+              personality: 'friendly',
+              reasoning_effort: 'medium',
+              service_tier: '',
+            },
+          })
+        }
+        if (path.endsWith('/api/config/mcp')) {
+          return jsonResponse({ mcp_servers: {}, runtime: {} })
+        }
+        if (path.endsWith('/api/codex/workspace')) {
+          return jsonResponse({ projects: [], paired_editors: [] })
+        }
+        if (path.endsWith('/api/channel/workspace')) {
+          return jsonResponse({ platforms: [], accounts: [] })
+        }
+        if (path.endsWith('/api/channel/platforms')) {
+          return jsonResponse({ platforms: [] })
+        }
+        if (path.endsWith('/api/channel/config')) {
+          return jsonResponse({ enabled_platforms: [], weixin: {} })
+        }
+        if (path.endsWith('/api/channel/monitor/sessions')) {
+          return jsonResponse({ sessions: [] })
+        }
+        if (isSessionListRequest(path, init)) {
+          return jsonResponse({
+            sessions: [
+              {
+                session_id: 'yier-thread-a',
+                title: 'Yier session',
+                preview: 'yier preview',
+                updated_at: 100,
+                message_count: 2,
+                source: 'chat',
+                backend_id: 'yier',
+                project_path: '/tmp/project',
+                channel_meta: null,
+                codex_work_mode: 'build',
+              },
+            ],
+          })
+        }
+        if (isSessionTranscriptRequest(path, 'yier-thread-a', init)) {
+          return jsonResponse({
+            session_id: 'yier-thread-a',
+            source: 'chat',
+            backend_id: 'yier',
+            project_path: '/tmp/project',
+            backend_runtime: {
+              backend_id: 'yier',
+              label: 'Yier',
+              ready: true,
+              status: 'idle',
+              thread_id: null,
+              active_flags: [],
+              detail: null,
+              pending_approval_count: 0,
+            },
+            pending_approvals: [],
+            messages: [{ role: 'assistant', content: 'Current yier mode.' }],
+            activity_events: [],
+          })
+        }
+        throw new Error(`Unexpected request: ${path}`)
+      }),
+    )
+
+    const wrapper = await mountApp()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Yier')
+    expect(wrapper.find('.rail-actions').exists()).toBe(false)
+    expect(document.body.textContent ?? '').not.toContain('Recent sessions')
+
+    const menuButton = wrapper.find('button[aria-label="Open workspace menu"]')
+    expect(menuButton.exists()).toBe(true)
+
+    await menuButton.trigger('click')
+    await flushPromises()
+
+    expect(document.body.textContent ?? '').toContain('Yier workspace')
+    expect(document.body.textContent ?? '').toContain('Recent sessions')
+    expect(document.body.textContent ?? '').toContain('Yier session')
+  })
+
   it('updates paired editors from persistent codex pairing events', async () => {
     localStorage.setItem('yier.active-session-id', 'codex-thread')
 
@@ -4010,9 +4147,63 @@ describe('App', () => {
     const wrapper = await mountApp('/settings')
     await flushPromises()
 
-    expect(wrapper.text()).toContain('Local console settings')
     expect(wrapper.text()).toContain('Save LLM Settings')
-    expect(wrapper.text()).toContain('Adjust the assistant without leaving the main console')
+    expect(wrapper.text()).toContain('Workspace settings')
+  })
+
+  it('keeps the workspace sidebar hidden on mobile settings screens', async () => {
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn().mockImplementation((query: string) => ({
+        matches: query === '(max-width: 1023px)',
+        media: query,
+        onchange: null,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    )
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const path = input.toString()
+        if (path.endsWith('/api/health')) {
+          return jsonResponse({
+            frontend: { ready: true, mode: 'static' },
+            llm: { ready: true },
+            mcp: { ready: true, runtime: {} },
+            allowed_roots: ['/tmp/project'],
+          })
+        }
+        if (path.endsWith('/api/config')) {
+          return jsonResponse({
+            llm: { base_url: 'https://example.test', model: 'demo', has_api_key: true },
+            allowed_roots: ['/tmp/project'],
+            mcp_runtime: {},
+          })
+        }
+        if (path.endsWith('/api/config/mcp')) {
+          return jsonResponse({ mcp_servers: {}, runtime: {} })
+        }
+        if (isSessionListRequest(path, init)) {
+          return jsonResponse({ sessions: [] })
+        }
+        if (isSessionCreateRequest(path, init)) {
+          return jsonResponse({ session_id: 'session-1' }, 201)
+        }
+        throw new Error(`Unexpected request: ${path}`)
+      }),
+    )
+
+    const wrapper = await mountApp('/settings')
+    await flushPromises()
+
+    expect(wrapper.find('.rail-actions').exists()).toBe(false)
+    expect(wrapper.find('.brand-panel').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('Recent sessions')
   })
 
   it('hydrates the provider selector from config', async () => {
@@ -4065,8 +4256,8 @@ describe('App', () => {
       'https://api.z.ai/api/coding/paas/v4',
     )
     expect((wrapper.find('input#model').element as HTMLInputElement).value).toBe('glm-4.7-flash')
-    expect(wrapper.text()).toContain(
-      'Preset providers prefill the official endpoint and model. Edit them only if you need an override.',
+    expect((wrapper.find('input#base-url').element as HTMLInputElement).placeholder).toBe(
+      'Optional override for the preset endpoint',
     )
   })
 

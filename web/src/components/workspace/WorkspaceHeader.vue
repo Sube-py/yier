@@ -12,10 +12,9 @@ const workspace = useWorkspaceAppContext()
     class="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2.5 rounded-[1.15rem] border border-[rgba(34,66,72,0.08)] bg-[rgba(255,252,245,0.72)] px-2.5 py-2 shadow-[0_14px_28px_rgba(31,54,58,0.08)] backdrop-blur-[14px]"
   >
     <button
-      v-if="workspace.showCodexMobileChrome"
       type="button"
       class="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[0.95rem] border border-[rgba(34,66,72,0.08)] bg-[rgba(255,255,255,0.72)] text-[color:var(--app-text)] shadow-[inset_0_1px_0_rgba(255,255,255,0.48)] transition hover:bg-white"
-      aria-label="Open project menu"
+      aria-label="Open workspace menu"
       @click="workspace.openSidebarDrawer"
     >
       <i class="pi pi-bars text-[0.98rem]"></i>
@@ -27,7 +26,7 @@ const workspace = useWorkspaceAppContext()
       <div class="mt-1 inline-flex max-w-full items-center gap-2 rounded-full bg-[rgba(21,94,99,0.08)] px-3 py-1.25 text-[color:var(--app-accent-deep)] shadow-[inset_0_1px_0_rgba(255,255,255,0.38)]">
         <span class="h-2 w-2 shrink-0 rounded-full bg-[color:var(--app-accent)]"></span>
         <span class="truncate font-['Iowan_Old_Style','Palatino_Linotype',Palatino,serif] text-[1.05rem] font-semibold leading-none">
-          Codex
+          {{ workspace.assistantLabel }}
         </span>
       </div>
     </div>

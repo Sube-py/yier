@@ -21,11 +21,15 @@ export function useTimelineFeed(options: UseTimelineFeedOptions) {
   const turnGroupOpenOverrides = ref<Record<string, boolean>>({})
 
   const feedEntries = computed<FeedEntry[]>(() => {
-    const explicitSequences = [...options.messages.value, ...visibleActivities.value]
-      .map((item) => item.sequence)
-      .filter((value): value is number => typeof value === 'number' && Number.isFinite(value))
+    const sequenceValues = [...options.messages.value, ...visibleActivities.value].map(
+      (item) => item.sequence,
+    )
+    const explicitSequences = sequenceValues.filter(
+      (value): value is number => typeof value === 'number' && Number.isFinite(value),
+    )
+    const hasMissingSequences = explicitSequences.length !== sequenceValues.length
 
-    if (!explicitSequences.length) {
+    if (!explicitSequences.length || hasMissingSequences) {
       let sortOrder = 0
       const lastMessage = options.messages.value[options.messages.value.length - 1]
       const trailingAssistantMessage =

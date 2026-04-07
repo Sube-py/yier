@@ -1224,7 +1224,7 @@ class CodexAppServerBackend(ChatBackend):
                     snapshot.assistant_item_id = item.id
                     snapshot.assistant_text = content
             if content.strip():
-                self.chat_service._append_transcript_message(
+                message_sequence = self.chat_service._append_transcript_message(
                     context.session_id,
                     Message(role="assistant", content=content),
                 )
@@ -1236,6 +1236,7 @@ class CodexAppServerBackend(ChatBackend):
                         "item_id": item.id,
                         "content": content,
                         "iteration": 0,
+                        "sequence": message_sequence,
                     },
                 )
             return

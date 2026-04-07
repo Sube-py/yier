@@ -106,6 +106,29 @@ describe('ChatTimeline', () => {
     expect(text.indexOf('Worked through 1 update')).toBeLessThan(text.indexOf('Done'))
   })
 
+  it('keeps activity updates before the final assistant message when activity sequences are missing', async () => {
+    const wrapper = mountTimeline({
+      messages: [
+        createMessage({ id: 'user-1', role: 'user', content: 'Inspect the file', sequence: 10 }),
+        createMessage({ id: 'assistant-1', role: 'assistant', content: 'Done', sequence: 20 }),
+      ],
+      activities: [
+        createActivity({
+          id: 'activity-1',
+          sequence: undefined,
+          title: 'Read file',
+          detail: 'Read README.md',
+        }),
+      ],
+    })
+
+    await flushPromises()
+
+    const text = wrapper.text()
+    expect(text.indexOf('Inspect the file')).toBeLessThan(text.indexOf('Worked through 1 update'))
+    expect(text.indexOf('Worked through 1 update')).toBeLessThan(text.indexOf('Done'))
+  })
+
   it('shows the final message separator when the prior turn group is expanded', async () => {
     const wrapper = mountTimeline({
       messages: [

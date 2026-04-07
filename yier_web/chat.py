@@ -156,6 +156,7 @@ class ChatService:
         self._background_owner_sessions: dict[str, str] = {}
         self._background_cursors: dict[str, dict[str, Any]] = {}
         self._ipc_stream_tasks: dict[str, asyncio.Task[None]] = {}
+        self._timeline_sequence_counters: dict[str, int] = {}
         self._background_supervisor_task: asyncio.Task[None] | None = None
         self._codex_pairing_monitor_task: asyncio.Task[None] | None = None
         self._started = False
@@ -200,6 +201,7 @@ class ChatService:
         self._agent_signature = None
         self._background_owner_sessions.clear()
         self._background_cursors.clear()
+        self._timeline_sequence_counters.clear()
 
     async def reload_agent(self, force_mcp_reconnect: bool = False) -> None:
         async with self._lock:
@@ -297,6 +299,95 @@ class ChatService:
         if transcript_messages:
             return transcript_messages
         return self.session_store.get_session_messages(session_id) or []
+
+    def _normalize_timeline_sequence_value(self, value: Any) -> int | None:
+        if not isinstance(value, int) or value < 0:
+            return None
+        return value
+
+    def _ensure_timeline_sequence_counter(self, session_id: str) -> None:
+        if session_id in self._timeline_sequence_counters:
+            return
+
+        max_sequence = -1
+        for sequence in self.session_ui_store.load_transcript_message_sequences(session_id):
+            normalized = self._normalize_timeline_sequence_value(sequence)
+            if normalized is not None:
+                max_sequence = max(max_sequence, normalized)
+
+        for event in self.session_ui_store.load_activity_events(session_id):
+            data = event.get("data")
+            if not isinstance(data, dict):
+                continue
+            normalized = self._normalize_timeline_sequence_value(data.get("sequence"))
+            if normalized is not None:
+                max_sequence = max(max_sequence, normalized)
+
+        self._timeline_sequence_counters[session_id] = max_sequence + 1
+
+    def _reserve_timeline_sequence(
+        self,
+        session_id: str,
+        *,
+        explicit: Any | None = None,
+    ) -> int:
+        self._ensure_timeline_sequence_counter(session_id)
+        normalized_explicit = self._normalize_timeline_sequence_value(explicit)
+        if normalized_explicit is not None:
+            self._timeline_sequence_counters[session_id] = max(
+                self._timeline_sequence_counters[session_id],
+                normalized_explicit + 1,
+            )
+            return normalized_explicit
+
+        next_sequence = self._timeline_sequence_counters[session_id]
+        self._timeline_sequence_counters[session_id] = next_sequence + 1
+        return next_sequence
+
+    def _annotate_timeline_sequence(
+        self,
+        event: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        session_id = data.get("session_id")
+        if not isinstance(session_id, str) or not session_id:
+            return data
+
+        if event == "assistant_message":
+            sequence = self._reserve_timeline_sequence(
+                session_id,
+                explicit=data.get("sequence"),
+            )
+            data["sequence"] = sequence
+            return data
+
+        if event not in {
+            "tool_call_start",
+            "tool_call_end",
+            "command_start",
+            "command_output",
+            "command_end",
+            "background_command_started",
+            "background_command_output",
+            "background_command_end",
+            "background_followup_queued",
+            "background_followup_started",
+            "background_followup_finished",
+            "reasoning",
+            "plan",
+            "approval_requested",
+            "approval_resolved",
+            "turn_aborted",
+            "stream_error",
+        }:
+            return data
+
+        sequence = self._reserve_timeline_sequence(
+            session_id,
+            explicit=data.get("sequence"),
+        )
+        data["sequence"] = sequence
+        return data
 
     def get_session_metadata(
         self,
@@ -702,16 +793,23 @@ class ChatService:
             if isinstance(session_meta["channel_meta"], dict)
             else None
         )
+        transcript_messages = self.get_session_messages(session_id)
+        message_sequences = self.session_ui_store.load_transcript_message_sequences(session_id)
         return [
             StoredSessionMessage(
                 role=message.role,
                 content=message.content,
                 reasoning_content=message.reasoning_content,
                 tool_call_id=message.tool_call_id,
+                sequence=(
+                    message_sequences[index]
+                    if index < len(message_sequences)
+                    else None
+                ),
                 source=session_meta["source"],
                 channel_meta=channel_meta_payload,
             )
-            for message in self.get_session_messages(session_id)
+            for index, message in enumerate(transcript_messages)
         ]
 
     def get_session_activity_events(self, session_id: str) -> list[dict[str, Any]]:
@@ -1013,6 +1111,7 @@ class ChatService:
             deleted = True
         deleted = self.session_metadata_store.delete(session_id) or deleted
         deleted = self.session_conversation_state_store.delete(session_id) or deleted
+        self._timeline_sequence_counters.pop(session_id, None)
 
         owned_background_ids = [
             background_session_id
@@ -1059,6 +1158,7 @@ class ChatService:
         event_queue: asyncio.Queue[dict[str, Any] | None] | None = None,
         publish_to_event_broker: bool = False,
     ) -> None:
+        self._annotate_timeline_sequence(event, data)
         self._handle_internal_event(event, data)
         self._persist_ui_event(event, data)
         await self.codex_ipc_bridge.notify_stream_event(event, data)
@@ -1907,7 +2007,7 @@ class ChatService:
                         },
                     )
                 if event.finish_reason == "stop" and event.message.content:
-                    self._append_transcript_message(
+                    message_sequence = self._append_transcript_message(
                         session_id,
                         Message(role="assistant", content=event.message.content),
                     )
@@ -1917,6 +2017,7 @@ class ChatService:
                             "session_id": session_id,
                             "content": event.message.content,
                             "iteration": event.iteration,
+                            "sequence": message_sequence,
                         },
                     )
                 continue
@@ -1952,10 +2053,24 @@ class ChatService:
 
         return finish_reason
 
-    def _append_transcript_message(self, session_id: str, message: Message) -> None:
+    def _append_transcript_message(
+        self,
+        session_id: str,
+        message: Message,
+        *,
+        sequence: int | None = None,
+    ) -> int:
+        message_sequence = self._reserve_timeline_sequence(
+            session_id,
+            explicit=sequence,
+        )
         messages = self.transcript_store.get_session_messages(session_id) or []
         messages.append(message)
         self.transcript_store.save(session_id, messages)
+        self.session_ui_store.append_transcript_message_sequence(
+            session_id,
+            message_sequence,
+        )
         metadata = self.get_session_metadata(session_id)
         title = metadata["title"] or self._session_title([item.model_dump() for item in messages if hasattr(item, "model_dump")])
         preview = self._session_preview([item.model_dump() for item in messages if hasattr(item, "model_dump")])
@@ -1971,6 +2086,7 @@ class ChatService:
             preview=preview,
             updated_at=time(),
         )
+        return message_sequence
 
     def _codex_input_payload_text(
         self,
@@ -2065,6 +2181,7 @@ class ChatService:
         }:
             return
 
+        self._annotate_timeline_sequence(event, data)
         self.session_ui_store.append_activity_event(session_id, event, data)
 
     def _handle_internal_event(self, event: str, data: dict[str, Any]) -> None:

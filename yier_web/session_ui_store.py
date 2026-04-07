@@ -10,16 +10,54 @@ class SessionUIStore:
         self.base_path = base_path
         self.base_path.mkdir(parents=True, exist_ok=True)
 
-    def load_activity_events(self, session_id: str) -> list[dict[str, Any]]:
+    def load_payload(self, session_id: str) -> dict[str, Any]:
         session_file = self._session_file(session_id)
         if not session_file.exists():
-            return []
+            return {
+                "session_id": session_id,
+                "activity_events": [],
+                "transcript_message_sequences": [],
+            }
 
         payload = json.loads(session_file.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            return {
+                "session_id": session_id,
+                "activity_events": [],
+                "transcript_message_sequences": [],
+            }
+
         activity_events = payload.get("activity_events", [])
         if not isinstance(activity_events, list):
-            return []
+            activity_events = []
+
+        transcript_message_sequences = payload.get("transcript_message_sequences", [])
+        if not isinstance(transcript_message_sequences, list):
+            transcript_message_sequences = []
+
+        return {
+            "session_id": payload.get("session_id") or session_id,
+            "activity_events": [
+                item for item in activity_events if isinstance(item, dict)
+            ],
+            "transcript_message_sequences": transcript_message_sequences,
+        }
+
+    def load_activity_events(self, session_id: str) -> list[dict[str, Any]]:
+        payload = self.load_payload(session_id)
+        activity_events = payload.get("activity_events", [])
         return [item for item in activity_events if isinstance(item, dict)]
+
+    def load_transcript_message_sequences(self, session_id: str) -> list[int | None]:
+        payload = self.load_payload(session_id)
+        raw_sequences = payload.get("transcript_message_sequences", [])
+        normalized: list[int | None] = []
+        for value in raw_sequences:
+            if isinstance(value, int) and value >= 0:
+                normalized.append(value)
+                continue
+            normalized.append(None)
+        return normalized
 
     def load_activity_page(
         self,
@@ -58,6 +96,7 @@ class SessionUIStore:
         )
 
     def append_activity_event(self, session_id: str, event: str, data: dict[str, Any]) -> None:
+        payload = self.load_payload(session_id)
         activity_events = self.load_activity_events(session_id)
         activity_events.append(
             {
@@ -65,10 +104,23 @@ class SessionUIStore:
                 "data": data,
             }
         )
-        payload = {
-            "session_id": session_id,
-            "activity_events": activity_events,
-        }
+        payload["activity_events"] = activity_events
+        self._write_payload(session_id, payload)
+
+    def append_transcript_message_sequence(
+        self,
+        session_id: str,
+        sequence: int | None,
+    ) -> None:
+        payload = self.load_payload(session_id)
+        raw_sequences = payload.get("transcript_message_sequences", [])
+        if not isinstance(raw_sequences, list):
+            raw_sequences = []
+        raw_sequences.append(sequence if isinstance(sequence, int) and sequence >= 0 else None)
+        payload["transcript_message_sequences"] = raw_sequences
+        self._write_payload(session_id, payload)
+
+    def _write_payload(self, session_id: str, payload: dict[str, Any]) -> None:
         self._session_file(session_id).write_text(
             json.dumps(payload, ensure_ascii=False, indent=2),
             encoding="utf-8",

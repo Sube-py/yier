@@ -12,6 +12,8 @@ import pytest
 from yier_agents import ToolContext
 
 from yier_web.background_followups import (
+    create_find_codex_projects_tool,
+    create_find_codex_sessions_tool,
     create_resume_codex_background_session_tool,
     create_start_codex_background_session_tool,
 )
@@ -21,6 +23,11 @@ from yier_web.codex_background_runner import (
     run_request,
 )
 from yier_web.event_stream import EventStreamBroker
+from yier_web.schemas import (
+    CodexNativeSessionSummary,
+    CodexProjectGroup,
+    CodexWorkspaceResponse,
+)
 from yier_web.tool_events import reset_tool_event_emitter, set_tool_event_emitter
 
 
@@ -88,6 +95,61 @@ class FakeChatService:
     def __init__(self, project_root: Path, home_dir: Path) -> None:
         self.project_root = project_root.resolve()
         self.config_service = FakeConfigService(project_root, home_dir)
+        self.workspace = CodexWorkspaceResponse(
+            projects=[
+                CodexProjectGroup(
+                    project="yier",
+                    project_path=str(self.project_root),
+                    session_count=2,
+                    sessions=[
+                        CodexNativeSessionSummary(
+                            thread_id="thread-new",
+                            title="Fix mobile flow",
+                            preview="fix mobile flow",
+                            updated_at=1_716_000_200.0,
+                            started_at=1_716_000_000.0,
+                            status="idle",
+                            cwd=str(self.project_root / "web"),
+                            project="yier",
+                            project_path=str(self.project_root),
+                            source="cli",
+                        ),
+                        CodexNativeSessionSummary(
+                            thread_id="thread-old",
+                            title="Refactor timeline",
+                            preview="timeline refactor",
+                            updated_at=1_715_999_000.0,
+                            started_at=1_715_998_000.0,
+                            status="idle",
+                            cwd=str(self.project_root),
+                            project="yier",
+                            project_path=str(self.project_root),
+                            source="cli",
+                        ),
+                    ],
+                ),
+                CodexProjectGroup(
+                    project="playground",
+                    project_path=str(home_dir / "playground"),
+                    session_count=1,
+                    sessions=[
+                        CodexNativeSessionSummary(
+                            thread_id="thread-play",
+                            title="Try sdk idea",
+                            preview="sdk experiment",
+                            updated_at=1_716_000_100.0,
+                            started_at=1_716_000_050.0,
+                            status="idle",
+                            cwd=str(home_dir / "playground"),
+                            project="playground",
+                            project_path=str(home_dir / "playground"),
+                            source="cli",
+                        )
+                    ],
+                ),
+            ],
+            paired_editors=[],
+        )
 
     def get_session_metadata(self, session_id: str) -> dict[str, Any]:
         return {
@@ -101,6 +163,9 @@ class FakeChatService:
             "preview": "",
             "updated_at": 0.0,
         }
+
+    def get_codex_workspace(self) -> CodexWorkspaceResponse:
+        return self.workspace
 
 
 def _request_file_from_command(command: str) -> Path:
@@ -200,6 +265,52 @@ def test_resume_codex_background_session_tool_writes_resume_request(
     assert payload["project_path"] == str((tmp_path / "workspace").resolve())
     assert result.metadata["thread_id"] == "thread-9"
     assert 'wait_background_command(session_id="bg-1")' in result.content
+
+
+def test_find_codex_projects_tool_lists_project_ids_and_paths(tmp_path: Path) -> None:
+    chat_service = FakeChatService(tmp_path / "app", tmp_path / "home")
+    tool = create_find_codex_projects_tool(chat_service)
+
+    result = asyncio.run(
+        tool.execute(
+            tool.parameters(query="yier"),
+            ToolContext(
+                session_id="caller-1",
+                message_id="message-1",
+                call_id="call-projects",
+            ),
+        )
+    )
+
+    assert result.metadata["count"] == 1
+    assert result.metadata["projects"][0]["project_id"] == 1
+    assert result.metadata["projects"][0]["project_path"] == str(chat_service.project_root)
+    assert result.metadata["projects"][0]["latest_thread_id"] == "thread-new"
+    assert "project_path" in result.content
+    assert "latest_thread_id: thread-new" in result.content
+
+
+def test_find_codex_sessions_tool_returns_thread_id_cwd_and_project_path(tmp_path: Path) -> None:
+    chat_service = FakeChatService(tmp_path / "app", tmp_path / "home")
+    tool = create_find_codex_sessions_tool(chat_service)
+
+    result = asyncio.run(
+        tool.execute(
+            tool.parameters(project_id=1, query="mobile"),
+            ToolContext(
+                session_id="caller-2",
+                message_id="message-2",
+                call_id="call-sessions",
+            ),
+        )
+    )
+
+    assert result.metadata["count"] == 1
+    assert result.metadata["sessions"][0]["thread_id"] == "thread-new"
+    assert result.metadata["sessions"][0]["cwd"] == str(chat_service.project_root / "web")
+    assert result.metadata["sessions"][0]["project_path"] == str(chat_service.project_root)
+    assert "thread_id=thread-new" in result.content
+    assert f"cwd: {chat_service.project_root / 'web'}" in result.content
 
 
 def test_load_request_validates_resume_thread_id(tmp_path: Path) -> None:

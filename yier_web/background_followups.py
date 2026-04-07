@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 import shlex
 from typing import TYPE_CHECKING
@@ -92,6 +93,67 @@ class ResumeCodexBackgroundSessionParams(BaseModel):
         return normalized or None
 
 
+class FindCodexProjectsParams(BaseModel):
+    query: str | None = Field(
+        default=None,
+        description=(
+            "Optional project name or project path hint. Leave empty to list recent Codex projects."
+        ),
+    )
+    limit: int = Field(
+        default=8,
+        ge=1,
+        le=50,
+        description="Maximum number of projects to return.",
+    )
+
+    @field_validator("query")
+    @classmethod
+    def validate_query(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+
+class FindCodexSessionsParams(BaseModel):
+    project_id: int | None = Field(
+        default=None,
+        ge=1,
+        description="Optional project id from find_codex_projects.",
+    )
+    project: str | None = Field(
+        default=None,
+        description=(
+            "Optional project name or project path hint. Useful when the user names a repo in plain language."
+        ),
+    )
+    query: str | None = Field(
+        default=None,
+        description=(
+            "Optional session hint. Matches thread id, title, preview, cwd, project name, and project path."
+        ),
+    )
+    thread_id: str | None = Field(
+        default=None,
+        description="Optional exact thread id to inspect.",
+    )
+    limit: int = Field(
+        default=10,
+        ge=1,
+        le=50,
+        description="Maximum number of sessions to return.",
+    )
+
+    @field_validator("project", "query", "thread_id")
+    @classmethod
+    def validate_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+
 class FollowupQueueManager:
     def __init__(self) -> None:
         self._queue: list[QueuedFollowup] = []
@@ -132,6 +194,39 @@ class FollowupQueueManager:
             pending.append(item)
         self._queue = pending
         return ready
+
+
+def _normalized_match_text(value: str | None) -> str:
+    if not isinstance(value, str):
+        return ""
+    return " ".join(value.strip().lower().split())
+
+
+def _query_matches(query: str | None, *values: str | None) -> bool:
+    normalized_query = _normalized_match_text(query)
+    if not normalized_query:
+        return True
+
+    haystacks = [_normalized_match_text(value) for value in values]
+    haystacks = [value for value in haystacks if value]
+    if not haystacks:
+        return False
+
+    if any(normalized_query in haystack for haystack in haystacks):
+        return True
+
+    query_terms = normalized_query.split()
+    if not query_terms:
+        return True
+
+    combined = " ".join(haystacks)
+    return all(term in combined for term in query_terms)
+
+
+def _format_timestamp(timestamp: float) -> str:
+    if not timestamp:
+        return ""
+    return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _resolve_codex_background_project_path(
@@ -313,11 +408,13 @@ def create_start_codex_background_session_tool(
             "Start a real background shell process that creates a new Codex session and "
             "runs a Codex turn inside it. Safe to use with agents that support background "
             "shell workflows. Important: the returned session id is for the background "
-            "command tools, not the Codex thread id. Use read_background_command with "
-            "that session id to inspect live progress, and you may call read repeatedly "
-            "while the process runs. If you use wait_background_command, call "
-            "read_background_command again after wait finishes to fetch the final Codex "
-            "result from stdout. Live progress also continues through Codex IPC."
+            "command tools, not the Codex thread id. If you do not know the target "
+            "project yet, call find_codex_projects or find_codex_sessions first. Use "
+            "read_background_command with that session id to inspect live progress, and "
+            "you may call read repeatedly while the process runs. If you use "
+            "wait_background_command, call read_background_command again after wait "
+            "finishes to fetch the final Codex result from stdout. Live progress also "
+            "continues through Codex IPC."
         ),
         parameters=StartCodexBackgroundSessionParams,
         execute=execute,
@@ -395,12 +492,190 @@ def create_resume_codex_background_session_tool(
             "by explicit thread id and runs a Codex turn inside it. Safe to use with "
             "agents that support background shell workflows. Important: the returned "
             "session id is for the background command tools, not the Codex thread id. "
-            "Use read_background_command with that session id to inspect live progress, "
-            "and you may call read repeatedly while the process runs. If you use "
-            "wait_background_command, call read_background_command again after wait "
-            "finishes to fetch the final Codex result from stdout. Live progress also "
-            "continues through Codex IPC."
+            "If you do not know the thread id or work path yet, call "
+            "find_codex_sessions first. Use read_background_command with that session "
+            "id to inspect live progress, and you may call read repeatedly while the "
+            "process runs. If you use wait_background_command, call "
+            "read_background_command again after wait finishes to fetch the final Codex "
+            "result from stdout. Live progress also continues through Codex IPC."
         ),
         parameters=ResumeCodexBackgroundSessionParams,
+        execute=execute,
+    )
+
+
+def create_find_codex_projects_tool(
+    chat_service: ChatService,
+) -> Tool[FindCodexProjectsParams]:
+    async def execute(
+        params: FindCodexProjectsParams,
+        ctx: ToolContext,
+    ) -> ToolOutput:
+        del ctx
+        workspace = chat_service.get_codex_workspace()
+        projects: list[dict[str, object]] = []
+
+        for project_id, project in enumerate(workspace.projects, start=1):
+            latest_session = project.sessions[0] if project.sessions else None
+            if not _query_matches(
+                params.query,
+                project.project,
+                project.project_path,
+                latest_session.title if latest_session else "",
+                latest_session.preview if latest_session else "",
+            ):
+                continue
+
+            projects.append(
+                {
+                    "project_id": project_id,
+                    "project": project.project,
+                    "project_path": project.project_path,
+                    "session_count": project.session_count,
+                    "latest_thread_id": latest_session.thread_id if latest_session else "",
+                    "latest_title": latest_session.title if latest_session else "",
+                    "latest_cwd": latest_session.cwd if latest_session else "",
+                    "latest_updated_at": latest_session.updated_at if latest_session else 0.0,
+                }
+            )
+            if len(projects) >= params.limit:
+                break
+
+        if not projects:
+            content = "No Codex projects matched that query."
+        else:
+            lines = [f"Found {len(projects)} Codex project(s):"]
+            for item in projects:
+                lines.append(
+                    f"{item['project_id']}. {item['project']} | sessions={item['session_count']}"
+                )
+                lines.append(f"   project_path: {item['project_path']}")
+                latest_thread_id = str(item["latest_thread_id"] or "")
+                if latest_thread_id:
+                    lines.append(f"   latest_thread_id: {latest_thread_id}")
+                latest_cwd = str(item["latest_cwd"] or "")
+                if latest_cwd:
+                    lines.append(f"   latest_cwd: {latest_cwd}")
+            content = "\n".join(lines)
+
+        return ToolOutput(
+            content=content,
+            metadata={
+                "query": params.query,
+                "count": len(projects),
+                "projects": projects,
+            },
+        )
+
+    return Tool(
+        name="find_codex_projects",
+        description=(
+            "Find Codex projects by natural-language repo name or path hint. Use this before "
+            "start_codex_background_session or resume_codex_background_session when the user "
+            "did not provide a project path, especially on mobile. Returns project_id, "
+            "project_path, session count, and the latest thread id/cwd when available."
+        ),
+        parameters=FindCodexProjectsParams,
+        execute=execute,
+    )
+
+
+def create_find_codex_sessions_tool(
+    chat_service: ChatService,
+) -> Tool[FindCodexSessionsParams]:
+    async def execute(
+        params: FindCodexSessionsParams,
+        ctx: ToolContext,
+    ) -> ToolOutput:
+        del ctx
+        workspace = chat_service.get_codex_workspace()
+        project_entries = list(enumerate(workspace.projects, start=1))
+
+        if params.project_id is not None:
+            project_entries = [
+                (project_id, project)
+                for project_id, project in project_entries
+                if project_id == params.project_id
+            ]
+        elif params.project:
+            project_entries = [
+                (project_id, project)
+                for project_id, project in project_entries
+                if _query_matches(params.project, project.project, project.project_path)
+            ]
+
+        sessions: list[dict[str, object]] = []
+        for project_id, project in project_entries:
+            for session in project.sessions:
+                if params.thread_id and session.thread_id != params.thread_id:
+                    continue
+                if not params.thread_id and not _query_matches(
+                    params.query,
+                    session.thread_id,
+                    session.title,
+                    session.preview,
+                    session.cwd,
+                    project.project,
+                    project.project_path,
+                ):
+                    continue
+
+                sessions.append(
+                    {
+                        "project_id": project_id,
+                        "project": project.project,
+                        "project_path": project.project_path,
+                        "thread_id": session.thread_id,
+                        "title": session.title,
+                        "preview": session.preview,
+                        "cwd": session.cwd,
+                        "status": session.status,
+                        "updated_at": session.updated_at,
+                    }
+                )
+                if len(sessions) >= params.limit:
+                    break
+            if len(sessions) >= params.limit:
+                break
+
+        if not sessions:
+            content = "No Codex sessions matched that query."
+        else:
+            lines = [f"Found {len(sessions)} Codex session(s):"]
+            for index, item in enumerate(sessions, start=1):
+                lines.append(
+                    f"{index}. thread_id={item['thread_id']} | project_id={item['project_id']} | title={item['title']}"
+                )
+                lines.append(f"   project_path: {item['project_path']}")
+                lines.append(f"   cwd: {item['cwd']}")
+                preview = str(item["preview"] or "")
+                if preview and preview != item["title"]:
+                    lines.append(f"   preview: {preview}")
+                updated_at = _format_timestamp(float(item["updated_at"] or 0.0))
+                if updated_at:
+                    lines.append(f"   updated_at: {updated_at}")
+            content = "\n".join(lines)
+
+        return ToolOutput(
+            content=content,
+            metadata={
+                "project_id": params.project_id,
+                "project": params.project,
+                "query": params.query,
+                "thread_id": params.thread_id,
+                "count": len(sessions),
+                "sessions": sessions,
+            },
+        )
+
+    return Tool(
+        name="find_codex_sessions",
+        description=(
+            "Find Codex sessions/threads by natural-language project hint, thread id, title, "
+            "preview, or work path. Use this before resume_codex_background_session when the "
+            "user does not know the thread id or cwd. Returns thread_id, project_id, "
+            "project_path, cwd, title, preview, and updated_at."
+        ),
+        parameters=FindCodexSessionsParams,
         execute=execute,
     )

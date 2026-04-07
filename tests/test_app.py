@@ -2058,6 +2058,8 @@ def test_chat_service_workspace_tools_include_background_tools(
     assert "start_background_command" in tool_names
     assert "list_background_commands" in tool_names
     assert "queue_background_followup" in tool_names
+    assert "find_codex_projects" in tool_names
+    assert "find_codex_sessions" in tool_names
     assert "start_codex_background_session" in tool_names
     assert "resume_codex_background_session" in tool_names
 

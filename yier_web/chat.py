@@ -44,6 +44,8 @@ from yier_agents.src.config import AssistantSettings
 from yier_web.agent_backends import ChatSessionContext, CodexAppServerBackend, YierAgentBackend
 from yier_web.background_followups import (
     FollowupQueueManager,
+    create_find_codex_projects_tool,
+    create_find_codex_sessions_tool,
     create_queue_background_followup_tool,
     create_resume_codex_background_session_tool,
     create_start_codex_background_session_tool,
@@ -2423,6 +2425,8 @@ class ChatService:
             create_stop_background_command_tool(self.background_manager),
             create_send_background_command_input_tool(self.background_manager),
             create_queue_background_followup_tool(self.background_manager, self.followup_queue),
+            create_find_codex_projects_tool(self),
+            create_find_codex_sessions_tool(self),
             create_start_codex_background_session_tool(self, self.background_manager),
             create_resume_codex_background_session_tool(self, self.background_manager),
             create_write_file_tool(normalized_roots, default_root=workspace_root),

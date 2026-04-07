@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 import pytest
 from litestar.testing import TestClient
+from yier_channel.core.models import ChannelMessage
 
 from yier_agents import (
     AgentEndEvent,
@@ -25,6 +26,7 @@ from yier_web.agent_backends.codex_backend import (
 from yier_web.auth import AuthService, hash_password, verify_password
 from yier_web.app import AppServices, create_app
 from yier_web.chat import ChatService
+from yier_web.channel_workspace import IntegratedChannelWorkspaceService
 from yier_web.config import AppConfigService, MCPValidationError
 from yier_web.event_stream import EventStreamBroker
 from yier_web.frontend import FrontendService
@@ -469,6 +471,186 @@ class FakeMCPManager:
 
     async def get_status(self) -> dict[str, dict[str, Any]]:
         return {}
+
+
+def test_channel_workspace_weixin_replies_only_with_final_assistant_message(
+    tmp_path: Path,
+) -> None:
+    class RecordingChatService:
+        def __init__(self) -> None:
+            self.marked_sessions: list[tuple[str, dict[str, Any]]] = []
+
+        def mark_channel_session(self, session_id: str, channel_meta: dict[str, Any]) -> None:
+            self.marked_sessions.append((session_id, channel_meta))
+
+        async def stream_chat(self, session_id: str, user_message: str):
+            assert session_id == "wx-session-1"
+            assert user_message == "帮我看一下"
+            yield {
+                "event": "assistant_message",
+                "data": {
+                    "session_id": session_id,
+                    "content": "先看一下项目情况",
+                },
+            }
+            yield {
+                "event": "tool_call_start",
+                "data": {
+                    "session_id": session_id,
+                    "tool_name": "list_projects",
+                },
+            }
+            yield {
+                "event": "assistant_message",
+                "data": {
+                    "session_id": session_id,
+                    "content": "最终答案",
+                },
+            }
+
+    class RecordingWorkspaceService:
+        def __init__(self) -> None:
+            self.sent_texts: list[dict[str, str]] = []
+
+        async def send_text(
+            self,
+            *,
+            platform: str,
+            account_id: str,
+            peer_id: str,
+            text: str,
+        ) -> None:
+            self.sent_texts.append(
+                {
+                    "platform": platform,
+                    "account_id": account_id,
+                    "peer_id": peer_id,
+                    "text": text,
+                }
+            )
+
+    import asyncio
+
+    chat_service = RecordingChatService()
+    workspace_service = RecordingWorkspaceService()
+    service = IntegratedChannelWorkspaceService(
+        project_root=tmp_path,
+        chat_service=chat_service,  # type: ignore[arg-type]
+        event_broker=EventStreamBroker(),
+    )
+    service.workspace_service = workspace_service  # type: ignore[assignment]
+
+    message = ChannelMessage.model_validate(
+        {
+            "id": "msg-1",
+            "session_id": "wx-session-1",
+            "content": "帮我看一下",
+            "direction": "inbound",
+            "channel_meta": {
+                "platform": "weixin",
+                "account_id": "wx-account-1",
+                "peer_id": "peer-1",
+            },
+            "timestamp_ms": 1,
+            "raw": {},
+        }
+    )
+
+    asyncio.run(service._handle_inbound_message(message))
+
+    assert chat_service.marked_sessions == [
+        (
+            "wx-session-1",
+            {
+                "platform": "weixin",
+                "account_id": "wx-account-1",
+                "peer_id": "peer-1",
+            },
+        )
+    ]
+    assert workspace_service.sent_texts == [
+        {
+            "platform": "weixin",
+            "account_id": "wx-account-1",
+            "peer_id": "peer-1",
+            "text": "最终答案",
+        }
+    ]
+
+
+def test_channel_workspace_weixin_replies_with_error_fallback_when_no_final_answer(
+    tmp_path: Path,
+) -> None:
+    class RecordingChatService:
+        def mark_channel_session(self, session_id: str, channel_meta: dict[str, Any]) -> None:
+            return None
+
+        async def stream_chat(self, session_id: str, user_message: str):
+            yield {
+                "event": "tool_call_start",
+                "data": {
+                    "session_id": session_id,
+                    "tool_name": "run_project_tool",
+                },
+            }
+            yield {
+                "event": "error",
+                "data": {
+                    "session_id": session_id,
+                    "message": "workspace not found",
+                },
+            }
+            yield {
+                "event": "done",
+                "data": {
+                    "session_id": session_id,
+                    "finish_reason": "error",
+                },
+            }
+
+    class RecordingWorkspaceService:
+        def __init__(self) -> None:
+            self.sent_texts: list[str] = []
+
+        async def send_text(
+            self,
+            *,
+            platform: str,
+            account_id: str,
+            peer_id: str,
+            text: str,
+        ) -> None:
+            self.sent_texts.append(text)
+
+    import asyncio
+
+    service = IntegratedChannelWorkspaceService(
+        project_root=tmp_path,
+        chat_service=RecordingChatService(),  # type: ignore[arg-type]
+        event_broker=EventStreamBroker(),
+    )
+    workspace_service = RecordingWorkspaceService()
+    service.workspace_service = workspace_service  # type: ignore[assignment]
+
+    message = ChannelMessage.model_validate(
+        {
+            "id": "msg-2",
+            "session_id": "wx-session-2",
+            "content": "开始执行",
+            "direction": "inbound",
+            "channel_meta": {
+                "platform": "weixin",
+                "account_id": "wx-account-1",
+                "peer_id": "peer-2",
+            },
+            "timestamp_ms": 2,
+            "raw": {},
+        }
+    )
+
+    asyncio.run(service._handle_inbound_message(message))
+
+    assert workspace_service.sent_texts == ["处理失败：workspace not found"]
 
 
 def test_frontend_service_prefers_static_bundle_when_debug_is_disabled(

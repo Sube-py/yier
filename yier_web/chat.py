@@ -1109,7 +1109,7 @@ class ChatService:
             return saved
         if action in {"start", "resume"}:
             if not state.goal or not state.definition_of_done:
-                raise RuntimeError("Goal and definition of done are required before starting.")
+                raise ValueError("Goal and definition of done are required before starting.")
             next_state = state.model_copy(
                 update={
                     "status": "running",
@@ -1130,7 +1130,7 @@ class ChatService:
                 reason="start" if action == "start" else "resume",
             )
             return saved
-        raise RuntimeError(f"Unsupported Codex goal loop action: {action}")
+        raise ValueError(f"Unsupported Codex goal loop action: {action}")
 
     def list_session_summaries(self, source: str | None = None) -> list[SessionSummary]:
         session_entries: dict[str, dict[str, Any]] = {}

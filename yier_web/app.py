@@ -12,6 +12,7 @@ from typing import Any, AsyncIterator
 from litestar import Litestar, Request, Router, delete, get, post, put
 from litestar.datastructures import State
 from litestar.exceptions import HTTPException
+from litestar.logging import LoggingConfig
 from litestar.response import Response, ServerSentEvent
 from litestar.response.sse import ServerSentEventMessage
 from litestar.status_codes import HTTP_400_BAD_REQUEST, HTTP_404_NOT_FOUND
@@ -84,6 +85,26 @@ def _env_flag(name: str) -> bool:
         "no",
         "off",
     }
+
+
+def _build_logging_config(*, debug: bool) -> LoggingConfig:
+    return LoggingConfig(
+        root={"level": "DEBUG" if debug else "INFO", "handlers": ["queue_listener"]},
+        formatters={
+            "standard": {
+                "format": "%(asctime)s %(levelname)s %(name)s - %(message)s",
+            }
+        },
+        loggers={
+            "granian": {"level": "INFO", "handlers": ["queue_listener"]},
+            "httpx": {"level": "WARNING", "handlers": ["queue_listener"]},
+            "httpcore": {"level": "WARNING", "handlers": ["queue_listener"]},
+            "httpcore.connection": {"level": "WARNING", "handlers": ["queue_listener"]},
+            "httpcore.http11": {"level": "WARNING", "handlers": ["queue_listener"]},
+        },
+        log_exceptions="always",
+        disable_stack_trace={HTTP_404_NOT_FOUND},
+    )
 
 
 def install_shutdown_signal_bridge(shutdown_event: asyncio.Event) -> None:
@@ -520,10 +541,13 @@ async def codex_goal_loop_action(
     data: CodexGoalLoopActionRequest,
     state: State,
 ) -> CodexGoalLoopResponse:
-    updated = await get_services(state).chat_service.apply_codex_goal_loop_action(
-        session_id=session_id,
-        action=data.action,
-    )
+    try:
+        updated = await get_services(state).chat_service.apply_codex_goal_loop_action(
+            session_id=session_id,
+            action=data.action,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     if updated is None:
         raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail="Codex session not found.")
     return CodexGoalLoopResponse(codex_goal_loop=updated)
@@ -712,6 +736,7 @@ def create_app(
     services: AppServices | None = None,
 ) -> Litestar:
     resolved_root = (project_root or Path.cwd()).resolve()
+    debug = _env_flag("YIER_DEBUG")
     app_services = services or build_services(project_root=resolved_root, home_dir=home_dir)
 
     async def before_request(request: Request[Any, Any, Any]) -> Response | None:
@@ -753,6 +778,8 @@ def create_app(
         route_handlers=[api_router, frontend_entry],
         before_request=before_request,
         lifespan=[lifespan],
+        debug=debug,
+        logging_config=_build_logging_config(debug=debug),
     )
 
 

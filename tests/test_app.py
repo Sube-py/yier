@@ -894,6 +894,90 @@ def build_test_client(tmp_path: Path) -> TestClient[Any]:
     return TestClient(app)
 
 
+def test_create_app_enables_exception_logging(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("YIER_DEBUG", "0")
+
+    project_root = tmp_path / "project"
+    (project_root / "web" / "dist").mkdir(parents=True)
+    (project_root / "web" / "dist" / "index.html").write_text(
+        "<html></html>", encoding="utf-8"
+    )
+
+    config_service = AppConfigService(
+        project_root=project_root, home_dir=tmp_path / "home"
+    )
+    app = create_app(
+        project_root=project_root,
+        home_dir=tmp_path / "home",
+        services=AppServices(
+            config_service=config_service,
+            chat_service=FakeChatService(),  # type: ignore[arg-type]
+            channel_workspace_service=FakeChannelWorkspaceService(),  # type: ignore[arg-type]
+            event_broker=EventStreamBroker(),
+            frontend_service=FrontendService(project_root=project_root),
+            directory_picker_service=FakeDirectoryPickerService(),
+            auth_service=AuthService(),
+        ),
+    )
+
+    assert app.debug is False
+    assert app.logging_config is not None
+    assert app.logging_config.log_exceptions == "always"
+    assert 404 in app.logging_config.disable_stack_trace
+    assert app.logging_config.loggers["httpx"]["level"] == "WARNING"
+    assert app.logging_config.loggers["httpcore"]["level"] == "WARNING"
+    assert app.logging_config.loggers["httpcore.http11"]["level"] == "WARNING"
+
+
+def test_codex_goal_loop_action_returns_bad_request_for_missing_goal(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    (project_root / "web" / "dist").mkdir(parents=True)
+    (project_root / "web" / "dist" / "index.html").write_text(
+        "<html></html>", encoding="utf-8"
+    )
+
+    config_service = AppConfigService(
+        project_root=project_root, home_dir=tmp_path / "home"
+    )
+    chat_service = FakeChatService()
+    app = create_app(
+        project_root=project_root,
+        home_dir=tmp_path / "home",
+        services=AppServices(
+            config_service=config_service,
+            chat_service=chat_service,  # type: ignore[arg-type]
+            channel_workspace_service=FakeChannelWorkspaceService(),  # type: ignore[arg-type]
+            event_broker=EventStreamBroker(),
+            frontend_service=FrontendService(project_root=project_root),
+            directory_picker_service=FakeDirectoryPickerService(),
+            auth_service=AuthService(),
+        ),
+    )
+    client = TestClient(app)
+
+    async def raise_missing_goal(*args: Any, **kwargs: Any) -> None:
+        raise ValueError("Goal and definition of done are required before starting.")
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        chat_service,
+        "apply_codex_goal_loop_action",
+        raise_missing_goal,
+    )
+
+    try:
+        with client:
+            response = client.post(
+                "/api/chat/sessions/session-a/codex-goal-loop/actions",
+                json={"action": "start"},
+            )
+    finally:
+        monkeypatch.undo()
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Goal and definition of done are required before starting."
+
+
 def test_config_service_creates_storage_under_home(tmp_path: Path) -> None:
     service = AppConfigService(
         project_root=tmp_path / "project", home_dir=tmp_path / "home"

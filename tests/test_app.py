@@ -82,6 +82,7 @@ class FakeChatService:
                 "project_path": "/tmp/project",
                 "channel_meta": None,
                 "codex_work_mode": None,
+                "codex_goal_loop": None,
             }
         ]
 
@@ -137,6 +138,7 @@ class FakeChatService:
             "channel_meta": None,
             "backend_state": {},
             "codex_work_mode": None,
+            "codex_goal_loop": None,
             "title": "hello",
             "preview": "hi there",
             "updated_at": 123.0,
@@ -231,6 +233,49 @@ class FakeChatService:
 
     def update_codex_session_mode(self, session_id: str, codex_work_mode: str) -> bool:
         return session_id == "session-a"
+
+    def update_codex_goal_loop(
+        self,
+        session_id: str,
+        *,
+        goal: str,
+        definition_of_done: str,
+    ) -> dict[str, Any] | None:
+        return {
+            "status": "idle",
+            "goal": goal,
+            "definition_of_done": definition_of_done,
+            "iteration_count": 0,
+            "max_iterations": 8,
+            "consecutive_failures": 0,
+            "max_consecutive_failures": 2,
+            "last_reason": "",
+            "last_background_session_id": None,
+            "started_at": None,
+            "updated_at": 123.0,
+            "completed_at": None,
+        }
+
+    async def apply_codex_goal_loop_action(
+        self,
+        session_id: str,
+        *,
+        action: str,
+    ) -> dict[str, Any] | None:
+        return {
+            "status": "running" if action in {"start", "resume"} else "paused",
+            "goal": "Ship it",
+            "definition_of_done": "All tests pass",
+            "iteration_count": 1,
+            "max_iterations": 8,
+            "consecutive_failures": 0,
+            "max_consecutive_failures": 2,
+            "last_reason": action,
+            "last_background_session_id": "bg-1",
+            "started_at": 123.0,
+            "updated_at": 124.0,
+            "completed_at": None,
+        }
 
     async def update_paired_editor_state(
         self,
@@ -1169,6 +1214,23 @@ def test_api_endpoints_cover_config_session_and_stream(tmp_path: Path) -> None:
         )
         assert codex_mode_response.status_code == 200
         assert codex_mode_response.json()["ok"] is True
+
+        goal_loop_update_response = client.put(
+            "/api/chat/sessions/session-a/codex-goal-loop",
+            json={
+                "goal": "Ship it",
+                "definition_of_done": "All tests pass",
+            },
+        )
+        assert goal_loop_update_response.status_code == 200
+        assert goal_loop_update_response.json()["codex_goal_loop"]["goal"] == "Ship it"
+
+        goal_loop_action_response = client.post(
+            "/api/chat/sessions/session-a/codex-goal-loop/actions",
+            json={"action": "start"},
+        )
+        assert goal_loop_action_response.status_code == 201
+        assert goal_loop_action_response.json()["codex_goal_loop"]["status"] == "running"
 
         paired_editor_response = client.post(
             "/api/codex/paired-editor/state",

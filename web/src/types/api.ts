@@ -2,7 +2,24 @@ export type LlmProvider = '' | 'zai' | 'zai-coding-plan'
 export type BackendId = 'yier' | 'codex'
 export type WorkspaceSurface = 'yier' | 'codex' | 'claude'
 export type CodexWorkMode = 'plan' | 'build'
+export type CodexGoalLoopStatus = 'idle' | 'running' | 'paused' | 'blocked' | 'completed' | 'failed'
+export type CodexGoalLoopAction = 'start' | 'pause' | 'resume' | 'complete' | 'clear'
 export type ApprovalDecision = 'accept' | 'accept_for_session' | 'decline' | 'cancel'
+
+export interface CodexGoalLoopState {
+  status: CodexGoalLoopStatus
+  goal: string
+  definition_of_done: string
+  iteration_count: number
+  max_iterations: number
+  consecutive_failures: number
+  max_consecutive_failures: number
+  last_reason: string
+  last_background_session_id?: string | null
+  started_at?: number | null
+  updated_at?: number | null
+  completed_at?: number | null
+}
 
 export interface FrontendHealth {
   ready: boolean
@@ -128,6 +145,7 @@ export interface SessionTranscriptResponse {
   project_path: string
   channel_meta?: ChannelMeta | null
   codex_work_mode?: CodexWorkMode | null
+  codex_goal_loop?: CodexGoalLoopState | null
   backend_runtime?: BackendRuntime | null
   pending_approvals: PendingApproval[]
   messages: StoredMessage[]
@@ -159,6 +177,7 @@ export interface SessionSummary {
   project_path: string
   channel_meta?: ChannelMeta | null
   codex_work_mode?: CodexWorkMode | null
+  codex_goal_loop?: CodexGoalLoopState | null
 }
 
 export interface SessionListResponse {
@@ -254,6 +273,20 @@ export interface UpdateCodexSessionModeRequest {
   codex_work_mode: CodexWorkMode
 }
 
+export interface UpdateCodexGoalLoopRequest {
+  goal: string
+  definition_of_done: string
+}
+
+export interface CodexGoalLoopActionRequest {
+  action: CodexGoalLoopAction
+}
+
+export interface CodexGoalLoopResponse {
+  ok: boolean
+  codex_goal_loop: CodexGoalLoopState
+}
+
 export interface OpenCodexSessionRequest {
   thread_id: string
 }
@@ -280,6 +313,7 @@ export interface CodexNativeSessionSummary {
   project: string
   project_path: string
   source: string
+  codex_goal_loop?: CodexGoalLoopState | null
 }
 
 export interface CodexProjectGroup {
@@ -746,6 +780,51 @@ export interface ChatBackgroundFollowupFinishedEvent {
   }
 }
 
+export interface ChatGoalLoopEventData {
+  session_id: string
+  status: CodexGoalLoopStatus | string
+  goal: string
+  iteration_count: number
+  max_iterations: number
+  last_reason: string
+  background_session_id?: string
+}
+
+export interface ChatGoalLoopStartedEvent {
+  event: 'goal_loop_started'
+  data: ChatGoalLoopEventData
+}
+
+export interface ChatGoalLoopIterationStartedEvent {
+  event: 'goal_loop_iteration_started'
+  data: ChatGoalLoopEventData
+}
+
+export interface ChatGoalLoopIterationFinishedEvent {
+  event: 'goal_loop_iteration_finished'
+  data: ChatGoalLoopEventData
+}
+
+export interface ChatGoalLoopPausedEvent {
+  event: 'goal_loop_paused'
+  data: ChatGoalLoopEventData
+}
+
+export interface ChatGoalLoopBlockedEvent {
+  event: 'goal_loop_blocked'
+  data: ChatGoalLoopEventData
+}
+
+export interface ChatGoalLoopCompletedEvent {
+  event: 'goal_loop_completed'
+  data: ChatGoalLoopEventData
+}
+
+export interface ChatGoalLoopBudgetExhaustedEvent {
+  event: 'goal_loop_budget_exhausted'
+  data: ChatGoalLoopEventData
+}
+
 export interface ChatReasoningEvent {
   event: 'reasoning'
   data: {
@@ -945,6 +1024,13 @@ export type ChatStreamEvent =
   | ChatBackgroundFollowupQueuedEvent
   | ChatBackgroundFollowupStartedEvent
   | ChatBackgroundFollowupFinishedEvent
+  | ChatGoalLoopStartedEvent
+  | ChatGoalLoopIterationStartedEvent
+  | ChatGoalLoopIterationFinishedEvent
+  | ChatGoalLoopPausedEvent
+  | ChatGoalLoopBlockedEvent
+  | ChatGoalLoopCompletedEvent
+  | ChatGoalLoopBudgetExhaustedEvent
   | ChatReasoningEvent
   | ChatPlanEvent
   | ChatAssistantDeltaEvent

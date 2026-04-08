@@ -44,6 +44,10 @@ import type {
   ChatStreamRequest,
   ChatTurnAbortedEvent,
   CodexPairedEditorStateRequest,
+  CodexGoalLoopAction,
+  CodexGoalLoopActionRequest,
+  CodexGoalLoopResponse,
+  CodexGoalLoopState,
   CodexTurnTiming,
   CodexWorkMode,
   CodexWorkspaceResponse,
@@ -71,12 +75,14 @@ import type {
   ToolDigestRawPayload,
   ToolRawPayload,
   UiChatMessage,
+  UpdateCodexGoalLoopRequest,
   UpdateCodexSessionModeRequest,
   WorkspaceSurface,
 } from '../types/api'
 
 const SESSION_STORAGE_KEY = 'yier.active-session-id'
 const WORKSPACE_SURFACE_STORAGE_KEY = 'yier.workspace-surface'
+const CODEX_ADVANCED_MODE_FAB_KEY = 'yier.codex-advanced-mode-fab'
 const CODEX_COMPACT_MEDIA_QUERY = '(max-width: 1023px)'
 const SESSION_ACTIVITY_PAGE_SIZE = 120
 const LLM_PROVIDER_DEFAULTS: Record<
@@ -102,6 +108,45 @@ function normalizeWorkspaceSurface(value: string | null | undefined): WorkspaceS
 
 function readCachedWorkspaceSurface(): WorkspaceSurface {
   return normalizeWorkspaceSurface(localStorage.getItem(WORKSPACE_SURFACE_STORAGE_KEY))
+}
+
+type CodexAdvancedMode = 'ralph-loop'
+type CodexAdvancedModeFabEdge = 'left' | 'right'
+
+function normalizeCodexAdvancedMode(value: string | null | undefined): CodexAdvancedMode {
+  return value === 'ralph-loop' ? value : 'ralph-loop'
+}
+
+function clampCodexAdvancedModeFabTop(value: number) {
+  return Math.min(Math.max(Math.round(value), 96), 640)
+}
+
+function readCachedCodexAdvancedModeFab(): {
+  edge: CodexAdvancedModeFabEdge
+  top: number
+} {
+  try {
+    const raw = localStorage.getItem(CODEX_ADVANCED_MODE_FAB_KEY)
+    if (!raw) {
+      return {
+        edge: 'right' as CodexAdvancedModeFabEdge,
+        top: 196,
+      }
+    }
+    const parsed = JSON.parse(raw) as {
+      edge?: CodexAdvancedModeFabEdge
+      top?: number
+    }
+    return {
+      edge: parsed.edge === 'left' ? 'left' : 'right',
+      top: clampCodexAdvancedModeFabTop(parsed.top ?? 196),
+    }
+  } catch {
+    return {
+      edge: 'right' as CodexAdvancedModeFabEdge,
+      top: 196,
+    }
+  }
 }
 
 function createClientId() {
@@ -180,9 +225,15 @@ function createWorkspaceApp() {
   const isHydratingOlderActivity = ref(false)
   const sessionHistory = ref<SessionSummary[]>([])
   const activeCodexWorkMode = ref<CodexWorkMode>('build')
+  const activeCodexGoalLoop = ref<CodexGoalLoopState | null>(null)
   const isCodexCompactLayout = ref(false)
   const isSidebarDrawerOpen = ref(false)
   const isRuntimeSheetOpen = ref(false)
+  const isCodexAdvancedModeOpen = ref(false)
+  const selectedCodexAdvancedMode = ref<CodexAdvancedMode>('ralph-loop')
+  const cachedCodexAdvancedModeFab = readCachedCodexAdvancedModeFab()
+  const codexAdvancedModeFabEdge = ref<CodexAdvancedModeFabEdge>(cachedCodexAdvancedModeFab.edge)
+  const codexAdvancedModeFabTop = ref(cachedCodexAdvancedModeFab.top)
   const composerText = ref('')
   const composerSelectionStart = ref(0)
   const composerSelectionEnd = ref(0)
@@ -196,6 +247,11 @@ function createWorkspaceApp() {
     reloadingMcp: false,
     codexMode: false,
     codexSandbox: false,
+    codexGoalLoop: false,
+  })
+  const codexGoalLoopDraft = reactive({
+    goal: '',
+    definitionOfDone: '',
   })
   const appForm = reactive({
     defaultBackendId: 'yier' as BackendId,
@@ -374,6 +430,41 @@ function createWorkspaceApp() {
         : 'Ask for follow-up changes or use /codex list to browse projects'
       : 'Ask yier to inspect code, read files, or use /codex list to jump into Codex...',
   )
+  const hasCodexGoalLoop = computed(
+    () => isCodexWorkspace.value && activeCodexGoalLoop.value !== null,
+  )
+  const codexGoalLoopSummary = computed(() => {
+    const goal = activeCodexGoalLoop.value?.goal?.trim() ?? ''
+    if (!goal) {
+      return 'Set a goal and definition of done to keep Codex iterating until it finishes.'
+    }
+    return goal
+  })
+  const codexGoalLoopShortStatus = computed(() => {
+    const status = activeCodexGoalLoop.value?.status ?? 'idle'
+    const labels: Record<string, string> = {
+      idle: 'Idle',
+      running: 'Running',
+      paused: 'Paused',
+      blocked: 'Blocked',
+      completed: 'Done',
+      failed: 'Failed',
+    }
+    return labels[status] ?? 'Idle'
+  })
+  const isCodexGoalLoopRunning = computed(
+    () => activeCodexGoalLoop.value?.status === 'running',
+  )
+  const showCodexAdvancedModePanel = computed(
+    () => isCodexWorkspace.value && !isCodexCompactLayout.value && isCodexAdvancedModeOpen.value,
+  )
+  const showCodexAdvancedModeSheet = computed(
+    () => showCodexMobileChrome.value && isCodexAdvancedModeOpen.value,
+  )
+  const showCodexAdvancedModeFab = computed(() => isCodexWorkspace.value)
+  const showCodexAdvancedModeOverlay = computed(
+    () => showCodexAdvancedModePanel.value || showCodexAdvancedModeSheet.value,
+  )
 
   function updateCodexCompactLayout(matches: boolean) {
     isCodexCompactLayout.value = matches
@@ -408,9 +499,11 @@ function createWorkspaceApp() {
   function closeCodexSheets() {
     isSidebarDrawerOpen.value = false
     isRuntimeSheetOpen.value = false
+    isCodexAdvancedModeOpen.value = false
   }
 
   function openSidebarDrawer() {
+    isCodexAdvancedModeOpen.value = false
     isRuntimeSheetOpen.value = false
     isSidebarDrawerOpen.value = true
   }
@@ -420,12 +513,59 @@ function createWorkspaceApp() {
   }
 
   function openRuntimeSheet() {
+    isCodexAdvancedModeOpen.value = false
     isSidebarDrawerOpen.value = false
     isRuntimeSheetOpen.value = true
   }
 
   function closeRuntimeSheet() {
     isRuntimeSheetOpen.value = false
+  }
+
+  function openCodexAdvancedMode() {
+    if (!isCodexWorkspace.value) {
+      return
+    }
+    isSidebarDrawerOpen.value = false
+    isRuntimeSheetOpen.value = false
+    isCodexAdvancedModeOpen.value = true
+  }
+
+  function closeCodexAdvancedMode() {
+    isCodexAdvancedModeOpen.value = false
+  }
+
+  function toggleCodexAdvancedMode() {
+    if (isCodexAdvancedModeOpen.value) {
+      closeCodexAdvancedMode()
+      return
+    }
+    openCodexAdvancedMode()
+  }
+
+  function selectCodexAdvancedMode(mode: CodexAdvancedMode) {
+    selectedCodexAdvancedMode.value = normalizeCodexAdvancedMode(mode)
+  }
+
+  function setCodexAdvancedModeFabPosition(
+    edge: CodexAdvancedModeFabEdge,
+    top: number,
+    options: { persist?: boolean } = {},
+  ) {
+    const normalizedEdge = edge === 'left' ? 'left' : 'right'
+    const normalizedTop = clampCodexAdvancedModeFabTop(top)
+    codexAdvancedModeFabEdge.value = normalizedEdge
+    codexAdvancedModeFabTop.value = normalizedTop
+    if (options.persist === false) {
+      return
+    }
+    localStorage.setItem(
+      CODEX_ADVANCED_MODE_FAB_KEY,
+      JSON.stringify({
+        edge: normalizedEdge,
+        top: normalizedTop,
+      }),
+    )
   }
 
   function syncSheetScrollLock(locked: boolean) {
@@ -492,8 +632,17 @@ function createWorkspaceApp() {
     }
   })
 
+  watch(isCodexWorkspace, (value) => {
+    if (!value) {
+      closeCodexSheets()
+    }
+  })
+
   watch(
-    () => showSidebarDrawer.value || showRuntimeSheet.value,
+    () =>
+      showSidebarDrawer.value ||
+      showRuntimeSheet.value ||
+      showCodexAdvancedModeOverlay.value,
     (locked) => {
       syncSheetScrollLock(locked)
     },
@@ -1238,6 +1387,8 @@ function createWorkspaceApp() {
       : []
     activeSessionRuntime.value = transcript.backend_runtime ?? null
     activeCodexWorkMode.value = transcript.codex_work_mode ?? 'build'
+    activeCodexGoalLoop.value = normalizeCodexGoalLoopState(transcript.codex_goal_loop)
+    hydrateCodexGoalLoopDraft(activeCodexGoalLoop.value)
     rebuildLoadedSessionTimeline()
     void hydrateOlderActivityEvents(sessionId, requestId)
   }
@@ -1258,6 +1409,8 @@ function createWorkspaceApp() {
     codexTurnTimings.value = []
     resetTimelineSequence()
     activeSessionRuntime.value = null
+    activeCodexGoalLoop.value = null
+    hydrateCodexGoalLoopDraft(null)
     backgroundActivityIdsByToolCallId.clear()
     await ensureSession()
     if (!isChatRoute.value) {
@@ -1317,6 +1470,148 @@ function createWorkspaceApp() {
       errorMessage.value = toErrorMessage(error)
     } finally {
       savingState.codexMode = false
+    }
+  }
+
+  function applyCodexGoalLoopState(
+    sessionId: string,
+    state: CodexGoalLoopState | null,
+    options: { syncDraft?: boolean } = {},
+  ) {
+    const syncDraft = options.syncDraft ?? false
+    const normalized = normalizeCodexGoalLoopState(state)
+    if (sessionId === activeSessionId.value) {
+      activeCodexGoalLoop.value = normalized
+      if (syncDraft) {
+        hydrateCodexGoalLoopDraft(normalized)
+      }
+    }
+
+    const sessionSummary = sessionHistory.value.find((session) => session.session_id === sessionId)
+    if (sessionSummary) {
+      sessionSummary.codex_goal_loop = normalized
+    }
+
+    const threadId =
+      activeSessionRuntime.value?.thread_id && sessionId === activeSessionId.value
+        ? activeSessionRuntime.value.thread_id
+        : sessionId
+    if (!threadId || !codexWorkspace.value) {
+      return
+    }
+    codexWorkspace.value = {
+      ...codexWorkspace.value,
+      projects: codexWorkspace.value.projects.map((project) => ({
+        ...project,
+        sessions: project.sessions.map((session) =>
+          session.thread_id === threadId
+            ? {
+                ...session,
+                codex_goal_loop: normalized,
+              }
+            : session,
+        ),
+      })),
+    }
+  }
+
+  function applyCodexGoalLoopEventState(
+    sessionId: string,
+    payload: {
+      status: string
+      goal: string
+      iteration_count: number
+      max_iterations: number
+      last_reason: string
+    },
+  ) {
+    const currentState =
+      (sessionId === activeSessionId.value ? activeCodexGoalLoop.value : null) ??
+      sessionHistory.value.find((session) => session.session_id === sessionId)?.codex_goal_loop ??
+      null
+    const baseState = normalizeCodexGoalLoopState(currentState) ?? {
+      status: 'idle',
+      goal: '',
+      definition_of_done: '',
+      iteration_count: 0,
+      max_iterations: 8,
+      consecutive_failures: 0,
+      max_consecutive_failures: 2,
+      last_reason: '',
+      last_background_session_id: null,
+      started_at: null,
+      updated_at: null,
+      completed_at: null,
+    }
+    applyCodexGoalLoopState(sessionId, {
+      ...baseState,
+      status: payload.status as CodexGoalLoopState['status'],
+      goal: payload.goal || baseState.goal,
+      iteration_count: payload.iteration_count,
+      max_iterations: payload.max_iterations,
+      last_reason: payload.last_reason,
+      updated_at: Date.now() / 1000,
+    })
+  }
+
+  async function saveCodexGoalLoop() {
+    if (!activeSessionId.value || activeBackendId.value !== 'codex') {
+      return
+    }
+
+    savingState.codexGoalLoop = true
+    errorMessage.value = ''
+    successMessage.value = ''
+    try {
+      const response = await apiPut<CodexGoalLoopResponse>(
+        `/api/chat/sessions/${activeSessionId.value}/codex-goal-loop`,
+        {
+          goal: codexGoalLoopDraft.goal.trim(),
+          definition_of_done: codexGoalLoopDraft.definitionOfDone.trim(),
+        } satisfies UpdateCodexGoalLoopRequest,
+      )
+      applyCodexGoalLoopState(activeSessionId.value, response.codex_goal_loop, { syncDraft: true })
+      successMessage.value = 'Goal updated.'
+    } catch (error) {
+      errorMessage.value = toErrorMessage(error)
+    } finally {
+      savingState.codexGoalLoop = false
+    }
+  }
+
+  async function runCodexGoalLoopAction(action: CodexGoalLoopAction) {
+    if (!activeSessionId.value || activeBackendId.value !== 'codex') {
+      return
+    }
+
+    savingState.codexGoalLoop = true
+    errorMessage.value = ''
+    successMessage.value = ''
+    try {
+      const response = await apiPost<CodexGoalLoopResponse>(
+        `/api/chat/sessions/${activeSessionId.value}/codex-goal-loop/actions`,
+        {
+          action,
+        } satisfies CodexGoalLoopActionRequest,
+      )
+      applyCodexGoalLoopState(activeSessionId.value, response.codex_goal_loop, {
+        syncDraft: action === 'clear' || action === 'complete',
+      })
+      if (action === 'start' || action === 'resume') {
+        activeCodexWorkMode.value = 'build'
+      }
+      const actionLabels: Record<CodexGoalLoopAction, string> = {
+        start: 'started',
+        pause: 'paused',
+        resume: 'resumed',
+        complete: 'completed',
+        clear: 'cleared',
+      }
+      successMessage.value = `Goal loop ${actionLabels[action]}.`
+    } catch (error) {
+      errorMessage.value = toErrorMessage(error)
+    } finally {
+      savingState.codexGoalLoop = false
     }
   }
 
@@ -1445,6 +1740,13 @@ function createWorkspaceApp() {
       eventName === 'background_followup_queued' ||
       eventName === 'background_followup_started' ||
       eventName === 'background_followup_finished' ||
+      eventName === 'goal_loop_started' ||
+      eventName === 'goal_loop_iteration_started' ||
+      eventName === 'goal_loop_iteration_finished' ||
+      eventName === 'goal_loop_paused' ||
+      eventName === 'goal_loop_blocked' ||
+      eventName === 'goal_loop_completed' ||
+      eventName === 'goal_loop_budget_exhausted' ||
       eventName === 'reasoning' ||
       eventName === 'plan' ||
       eventName === 'approval_requested' ||
@@ -1530,6 +1832,54 @@ function createWorkspaceApp() {
 
       if (event.event === 'channel_error') {
         errorMessage.value = event.data.message
+        return
+      }
+
+      if (
+        event.event === 'goal_loop_started' ||
+        event.event === 'goal_loop_iteration_started' ||
+        event.event === 'goal_loop_iteration_finished' ||
+        event.event === 'goal_loop_paused' ||
+        event.event === 'goal_loop_blocked' ||
+        event.event === 'goal_loop_completed' ||
+        event.event === 'goal_loop_budget_exhausted'
+      ) {
+        applyCodexGoalLoopEventState(event.data.session_id, event.data)
+        const titleByEvent: Record<typeof event.event, string> = {
+          goal_loop_started: 'Goal loop started',
+          goal_loop_iteration_started: 'Goal loop iteration started',
+          goal_loop_iteration_finished: 'Goal loop iteration finished',
+          goal_loop_paused: 'Goal loop paused',
+          goal_loop_blocked: 'Goal loop blocked',
+          goal_loop_completed: 'Goal loop completed',
+          goal_loop_budget_exhausted: 'Goal loop budget exhausted',
+        }
+        const stateByEvent: Record<typeof event.event, ChatActivity['state']> = {
+          goal_loop_started: 'running',
+          goal_loop_iteration_started: 'running',
+          goal_loop_iteration_finished: 'done',
+          goal_loop_paused: 'info',
+          goal_loop_blocked: 'error',
+          goal_loop_completed: 'done',
+          goal_loop_budget_exhausted: 'error',
+        }
+        upsertActivity(`goal-loop:${event.event}:${event.data.iteration_count}`, {
+          id: `goal-loop:${event.event}:${event.data.iteration_count}`,
+          kind: 'status',
+          title: titleByEvent[event.event],
+          detail: event.data.last_reason || event.data.goal || 'Codex updated the goal loop state.',
+          state: stateByEvent[event.event],
+          command: '',
+          cwd: '',
+          stdout: '',
+          stderr: '',
+          meta: [
+            event.data.goal ? `Goal: ${event.data.goal}` : '',
+            `Iteration ${event.data.iteration_count}/${event.data.max_iterations}`,
+          ].filter(Boolean),
+          shell: null,
+          tool: null,
+        })
         return
       }
 
@@ -2777,6 +3127,33 @@ function createWorkspaceApp() {
 
   function normalizeSessionSummaries(payload: Partial<SessionListResponse> | null | undefined) {
     return Array.isArray(payload?.sessions) ? payload.sessions : []
+  }
+
+  function normalizeCodexGoalLoopState(
+    value: CodexGoalLoopState | null | undefined,
+  ): CodexGoalLoopState | null {
+    if (!value) {
+      return null
+    }
+    return {
+      status: value.status ?? 'idle',
+      goal: value.goal ?? '',
+      definition_of_done: value.definition_of_done ?? '',
+      iteration_count: value.iteration_count ?? 0,
+      max_iterations: value.max_iterations ?? 8,
+      consecutive_failures: value.consecutive_failures ?? 0,
+      max_consecutive_failures: value.max_consecutive_failures ?? 2,
+      last_reason: value.last_reason ?? '',
+      last_background_session_id: value.last_background_session_id ?? null,
+      started_at: value.started_at ?? null,
+      updated_at: value.updated_at ?? null,
+      completed_at: value.completed_at ?? null,
+    }
+  }
+
+  function hydrateCodexGoalLoopDraft(state: CodexGoalLoopState | null) {
+    codexGoalLoopDraft.goal = state?.goal ?? ''
+    codexGoalLoopDraft.definitionOfDone = state?.definition_of_done ?? ''
   }
 
   function normalizeLlmProvider(value: unknown): LlmProvider {
@@ -4235,9 +4612,14 @@ function createWorkspaceApp() {
     isHydratingOlderActivity,
     sessionHistory,
     activeCodexWorkMode,
+    activeCodexGoalLoop,
     isCodexCompactLayout,
     isSidebarDrawerOpen,
     isRuntimeSheetOpen,
+    isCodexAdvancedModeOpen,
+    selectedCodexAdvancedMode,
+    codexAdvancedModeFabEdge,
+    codexAdvancedModeFabTop,
     composerText,
     composerSelectionStart,
     composerSelectionEnd,
@@ -4245,6 +4627,7 @@ function createWorkspaceApp() {
     deletingSessionId,
     savingState,
     appForm,
+    codexGoalLoopDraft,
     newSessionDraft,
     llmForm,
     rootsDraft,
@@ -4277,15 +4660,28 @@ function createWorkspaceApp() {
     isMobileChatPage,
     showSidebarDrawer,
     showRuntimeSheet,
+    showCodexAdvancedModePanel,
+    showCodexAdvancedModeSheet,
+    showCodexAdvancedModeFab,
+    showCodexAdvancedModeOverlay,
     activeWorkspaceSurface,
     workspaceSurfaceOptions,
     workspaceSurfaceModel,
     composerPlaceholder,
+    hasCodexGoalLoop,
+    codexGoalLoopSummary,
+    codexGoalLoopShortStatus,
+    isCodexGoalLoopRunning,
     openSidebarDrawer,
     closeSidebarDrawer,
     openRuntimeSheet,
     closeRuntimeSheet,
+    openCodexAdvancedMode,
+    closeCodexAdvancedMode,
+    toggleCodexAdvancedMode,
     closeCodexSheets,
+    selectCodexAdvancedMode,
+    setCodexAdvancedModeFabPosition,
     handleNewChatClick,
     handleCodexSessionStart,
     openCodexNativeSession,
@@ -4297,6 +4693,8 @@ function createWorkspaceApp() {
     openChannel,
     openChat,
     updateCodexWorkMode,
+    saveCodexGoalLoop,
+    runCodexGoalLoopAction,
     saveLlmSettings,
     saveAppSettings,
     saveCodexSandboxMode,

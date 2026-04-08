@@ -34,6 +34,8 @@ from yier_web.schemas import (
     ChannelLoginRequest,
     ChannelPlatformsResponse,
     ChannelWorkspaceResponse,
+    CodexGoalLoopActionRequest,
+    CodexGoalLoopResponse,
     CodexWorkspaceResponse,
     CodexPairedEditorStateRequest,
     CreateSessionRequest,
@@ -55,6 +57,7 @@ from yier_web.schemas import (
     SessionActivityPageResponse,
     SessionListResponse,
     SessionTranscriptResponse,
+    UpdateCodexGoalLoopRequest,
     UpdateCodexSessionModeRequest,
 )
 
@@ -428,6 +431,7 @@ async def get_session(
             else None
         ),
         codex_work_mode=metadata["codex_work_mode"],
+        codex_goal_loop=metadata["codex_goal_loop"],
         backend_runtime=services.chat_service.get_backend_runtime(session_id),
         pending_approvals=services.chat_service.get_pending_approvals(session_id),
         messages=transcript.messages,
@@ -492,6 +496,37 @@ async def update_codex_session_mode(
     if not updated:
         raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail="Codex session not found.")
     return Response(content={"ok": True})
+
+
+@put("/chat/sessions/{session_id:str}/codex-goal-loop")
+async def update_codex_goal_loop(
+    session_id: str,
+    data: UpdateCodexGoalLoopRequest,
+    state: State,
+) -> CodexGoalLoopResponse:
+    updated = get_services(state).chat_service.update_codex_goal_loop(
+        session_id=session_id,
+        goal=data.goal,
+        definition_of_done=data.definition_of_done,
+    )
+    if updated is None:
+        raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail="Codex session not found.")
+    return CodexGoalLoopResponse(codex_goal_loop=updated)
+
+
+@post("/chat/sessions/{session_id:str}/codex-goal-loop/actions")
+async def codex_goal_loop_action(
+    session_id: str,
+    data: CodexGoalLoopActionRequest,
+    state: State,
+) -> CodexGoalLoopResponse:
+    updated = await get_services(state).chat_service.apply_codex_goal_loop_action(
+        session_id=session_id,
+        action=data.action,
+    )
+    if updated is None:
+        raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail="Codex session not found.")
+    return CodexGoalLoopResponse(codex_goal_loop=updated)
 
 
 @post("/chat/stream", status_code=200)
@@ -646,6 +681,8 @@ api_router = Router(
         delete_session,
         respond_to_approval,
         update_codex_session_mode,
+        update_codex_goal_loop,
+        codex_goal_loop_action,
         stream_chat,
         get_channel_workspace,
         get_channel_platforms,

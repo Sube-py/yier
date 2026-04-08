@@ -1236,7 +1236,11 @@ class CodexAppServerBackend(ChatBackend):
                         "item_id": item.id,
                         "content": content,
                         "iteration": 0,
-                        "sequence": message_sequence,
+                        **(
+                            {"sequence": message_sequence}
+                            if isinstance(message_sequence, int)
+                            else {}
+                        ),
                     },
                 )
             return

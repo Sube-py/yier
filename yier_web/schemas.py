@@ -18,6 +18,8 @@ LLMProvider = Literal["", "zai", "zai-coding-plan"]
 BackendId = Literal["yier", "codex"]
 WorkspaceSurface = Literal["yier", "codex", "claude"]
 CodexWorkMode = Literal["plan", "build"]
+CodexGoalLoopStatus = Literal["idle", "running", "paused", "blocked", "completed", "failed"]
+CodexGoalLoopAction = Literal["start", "pause", "resume", "complete", "clear"]
 CodexApprovalPolicy = Literal["untrusted", "on-failure", "on-request", "never"]
 CodexSandboxMode = Literal["read-only", "workspace-write", "danger-full-access"]
 CodexPersonality = Literal["none", "friendly", "pragmatic"]
@@ -218,6 +220,36 @@ class PendingApproval(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class CodexGoalLoopState(BaseModel):
+    status: CodexGoalLoopStatus = "idle"
+    goal: str = ""
+    definition_of_done: str = ""
+    iteration_count: int = Field(default=0, ge=0)
+    max_iterations: int = Field(default=8, ge=1)
+    consecutive_failures: int = Field(default=0, ge=0)
+    max_consecutive_failures: int = Field(default=2, ge=1)
+    last_reason: str = ""
+    last_background_session_id: str | None = None
+    started_at: float | None = None
+    updated_at: float | None = None
+    completed_at: float | None = None
+
+    @field_validator("goal", "definition_of_done", "last_reason", mode="before")
+    @classmethod
+    def normalize_text_fields(cls, value: Any) -> str:
+        if not isinstance(value, str):
+            return ""
+        return value.strip()
+
+    @field_validator("last_background_session_id", mode="before")
+    @classmethod
+    def normalize_background_session_id(cls, value: Any) -> str | None:
+        if not isinstance(value, str):
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+
 class BackendRuntimePayload(BaseModel):
     backend_id: BackendId
     label: str
@@ -266,6 +298,7 @@ class SessionSummary(BaseModel):
     project_path: str = ""
     channel_meta: ChannelMetaPayload | None = None
     codex_work_mode: CodexWorkMode | None = None
+    codex_goal_loop: CodexGoalLoopState | None = None
 
 
 class SessionListResponse(BaseModel):
@@ -311,6 +344,7 @@ class SessionTranscriptResponse(BaseModel):
     project_path: str = ""
     channel_meta: ChannelMetaPayload | None = None
     codex_work_mode: CodexWorkMode | None = None
+    codex_goal_loop: CodexGoalLoopState | None = None
     backend_runtime: BackendRuntimePayload | None = None
     pending_approvals: list[PendingApproval] = Field(default_factory=list)
     messages: list[StoredSessionMessage] = Field(default_factory=list)
@@ -376,6 +410,25 @@ class UpdateCodexSessionModeRequest(BaseModel):
     codex_work_mode: CodexWorkMode
 
 
+class UpdateCodexGoalLoopRequest(BaseModel):
+    goal: str = ""
+    definition_of_done: str = ""
+
+    @field_validator("goal", "definition_of_done")
+    @classmethod
+    def strip_fields(cls, value: str) -> str:
+        return value.strip()
+
+
+class CodexGoalLoopActionRequest(BaseModel):
+    action: CodexGoalLoopAction
+
+
+class CodexGoalLoopResponse(BaseModel):
+    ok: bool = True
+    codex_goal_loop: CodexGoalLoopState
+
+
 class OpenCodexSessionRequest(BaseModel):
     thread_id: str
 
@@ -414,6 +467,7 @@ class CodexNativeSessionSummary(BaseModel):
     project: str
     project_path: str
     source: str = "active"
+    codex_goal_loop: CodexGoalLoopState | None = None
 
 
 class CodexPairingExtensionSummary(BaseModel):

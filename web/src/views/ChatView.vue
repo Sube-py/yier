@@ -4,6 +4,7 @@ import Message from 'primevue/message'
 import ProgressSpinner from 'primevue/progressspinner'
 
 import ChatComposer from '../components/ChatComposer.vue'
+import CodexAdvancedModeDock from '../components/CodexAdvancedModeDock.vue'
 import ChatTimeline from '../components/ChatTimeline.vue'
 import CodexWorkbar from '../components/CodexWorkbar.vue'
 import { useWorkspaceAppContext } from '../composables/useWorkspaceApp'
@@ -73,6 +74,7 @@ const workspace = useWorkspaceAppContext()
       </div>
       <div class="shrink-0 px-[1.1rem] pb-4 max-[1023px]:px-4 max-sm:px-3 max-sm:pb-3">
         <div class="flex flex-col gap-3">
+          <CodexAdvancedModeDock v-if="workspace.isCodexWorkspace" />
           <Message v-if="workspace.activeSession?.source === 'channel'" severity="info" class="m-0">
             This session comes from
             {{ workspace.activeSession.channel_meta?.platform ?? 'channel' }} and is read-only in

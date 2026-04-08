@@ -220,6 +220,7 @@ async function mountApp(initialPath = '/chat') {
 describe('App', () => {
   beforeEach(() => {
     localStorage.clear()
+    document.body.innerHTML = ''
     vi.restoreAllMocks()
     MockEventSource.reset()
     vi.stubGlobal(
@@ -728,6 +729,357 @@ describe('App', () => {
     expect(wrapper.text()).toContain('Codex mode switched to plan.')
   })
 
+  it('opens advanced mode in the codex workspace and saves then resumes Ralph Loop', async () => {
+    localStorage.setItem('yier.active-session-id', 'codex-thread')
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = input.toString()
+      if (path.endsWith('/api/health')) {
+        return jsonResponse({
+          frontend: { ready: true, mode: 'static' },
+          llm: { ready: true },
+          mcp: { ready: true, runtime: {} },
+          backends: {
+            yier: { ready: true },
+            codex: { ready: true },
+          },
+          allowed_roots: ['/tmp/project'],
+        })
+      }
+      if (path.endsWith('/api/config') && (!init || init.method === 'GET')) {
+        return jsonResponse({
+          llm: { provider: '', base_url: 'https://example.test', model: 'demo', has_api_key: true },
+          allowed_roots: ['/tmp/project'],
+          mcp_runtime: {},
+          session_defaults: {
+            default_backend_id: 'yier',
+            default_project_path: '/tmp/project',
+            channel_backend_id: 'yier',
+            channel_project_path: '/tmp/project',
+            channel_auto_approve_codex_requests: true,
+          },
+          codex: {
+            launcher_command: 'codex app-server --listen stdio://',
+            model: 'gpt-5.4',
+            sandbox: 'workspace-write',
+            approval_policy: 'on-request',
+            approvals_reviewer: 'user',
+            personality: 'friendly',
+            reasoning_effort: 'medium',
+            service_tier: '',
+          },
+        })
+      }
+      if (path.endsWith('/api/config/mcp')) {
+        return jsonResponse({ mcp_servers: {}, runtime: {} })
+      }
+      if (path.endsWith('/api/codex/workspace')) {
+        return jsonResponse({
+          projects: [
+            {
+              project: 'yier',
+              project_path: '/tmp/project',
+              session_count: 1,
+              sessions: [
+                {
+                  thread_id: 'codex-thread',
+                  title: 'Codex session',
+                  preview: 'Native preview',
+                  updated_at: 100,
+                  started_at: 90,
+                  cwd: '/tmp/project',
+                  project: 'yier',
+                  project_path: '/tmp/project',
+                  source: 'active',
+                  codex_goal_loop: {
+                    status: 'blocked',
+                    goal: 'Ship Ralph Loop',
+                    definition_of_done: 'Tests pass',
+                    iteration_count: 3,
+                    max_iterations: 8,
+                    consecutive_failures: 0,
+                    max_consecutive_failures: 2,
+                    last_reason: 'Waiting on your next decision.',
+                  },
+                },
+              ],
+            },
+          ],
+          paired_editors: [],
+        })
+      }
+      if (isSessionListRequest(path, init)) {
+        return jsonResponse({
+          sessions: [
+            {
+              session_id: 'codex-thread',
+              title: 'Codex session',
+              preview: 'Native preview',
+              updated_at: 100,
+              message_count: 2,
+              source: 'chat',
+              backend_id: 'codex',
+              project_path: '/tmp/project',
+              channel_meta: null,
+              codex_work_mode: 'build',
+              codex_goal_loop: {
+                status: 'blocked',
+                goal: 'Ship Ralph Loop',
+                definition_of_done: 'Tests pass',
+                iteration_count: 3,
+                max_iterations: 8,
+                consecutive_failures: 0,
+                max_consecutive_failures: 2,
+                last_reason: 'Waiting on your next decision.',
+              },
+            },
+          ],
+        })
+      }
+      if (isSessionTranscriptRequest(path, 'codex-thread', init)) {
+        return jsonResponse({
+          session_id: 'codex-thread',
+          source: 'chat',
+          backend_id: 'codex',
+          project_path: '/tmp/project',
+          codex_work_mode: 'build',
+          codex_goal_loop: {
+            status: 'blocked',
+            goal: 'Ship Ralph Loop',
+            definition_of_done: 'Tests pass',
+            iteration_count: 3,
+            max_iterations: 8,
+            consecutive_failures: 0,
+            max_consecutive_failures: 2,
+            last_reason: 'Waiting on your next decision.',
+          },
+          backend_runtime: {
+            backend_id: 'codex',
+            label: 'Codex App Server',
+            ready: true,
+            status: 'idle',
+            thread_id: 'codex-thread',
+            active_flags: [],
+            detail: null,
+            pending_approval_count: 0,
+          },
+          pending_approvals: [],
+          messages: [],
+          activity_events: [],
+        })
+      }
+      if (path.endsWith('/api/chat/sessions/codex-thread/codex-goal-loop') && init?.method === 'PUT') {
+        expect(JSON.parse(String(init.body))).toEqual({
+          goal: 'Ship the mobile-safe Ralph Loop',
+          definition_of_done: 'Desktop and mobile flows both pass',
+        })
+        return jsonResponse({
+          ok: true,
+          codex_goal_loop: {
+            status: 'blocked',
+            goal: 'Ship the mobile-safe Ralph Loop',
+            definition_of_done: 'Desktop and mobile flows both pass',
+            iteration_count: 3,
+            max_iterations: 8,
+            consecutive_failures: 0,
+            max_consecutive_failures: 2,
+            last_reason: 'Saved.',
+          },
+        })
+      }
+      if (path.endsWith('/api/chat/sessions/codex-thread/codex-goal-loop/actions') && init?.method === 'POST') {
+        expect(JSON.parse(String(init.body))).toEqual({ action: 'resume' })
+        return jsonResponse({
+          ok: true,
+          codex_goal_loop: {
+            status: 'running',
+            goal: 'Ship the mobile-safe Ralph Loop',
+            definition_of_done: 'Desktop and mobile flows both pass',
+            iteration_count: 4,
+            max_iterations: 8,
+            consecutive_failures: 0,
+            max_consecutive_failures: 2,
+            last_reason: 'Goal loop resumed.',
+          },
+        })
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const wrapper = await mountApp()
+    await flushPromises()
+
+    const fab = document.body.querySelector('[data-testid="advanced-mode-fab"]')
+    expect(fab).toBeTruthy()
+    expect(document.body.querySelector('[data-testid="advanced-mode-panel"]')).toBeNull()
+
+    ;(fab as HTMLButtonElement).click()
+    await flushPromises()
+
+    expect(document.body.querySelector('[data-testid="advanced-mode-panel"]')).toBeTruthy()
+    expect(document.body.textContent).toContain('Ralph Loop')
+    expect(document.body.textContent).toContain('Waiting on your next decision.')
+
+    const panelTextareas = Array.from(
+      document.body.querySelectorAll('[data-testid="advanced-mode-panel"] textarea'),
+    ) as HTMLTextAreaElement[]
+    panelTextareas[0]!.value = 'Ship the mobile-safe Ralph Loop'
+    panelTextareas[0]!.dispatchEvent(new Event('input', { bubbles: true }))
+    panelTextareas[1]!.value = 'Desktop and mobile flows both pass'
+    panelTextareas[1]!.dispatchEvent(new Event('input', { bubbles: true }))
+
+    ;(document.body.querySelector('[aria-label="Save"]') as HTMLButtonElement).click()
+    await flushPromises()
+    ;(document.body.querySelector('[aria-label="Resume"]') as HTMLButtonElement).click()
+    await flushPromises()
+
+    expect(document.body.textContent).toContain('Goal loop resumed.')
+  })
+
+  it('shows a running advanced mode floating button on mobile and opens the sheet on demand', async () => {
+    localStorage.setItem('yier.active-session-id', 'codex-thread')
+
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn().mockImplementation((query: string) => ({
+        matches: query === '(max-width: 1023px)',
+        media: query,
+        onchange: null,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    )
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const path = input.toString()
+        if (path.endsWith('/api/health')) {
+          return jsonResponse({
+            frontend: { ready: true, mode: 'static' },
+            llm: { ready: true },
+            mcp: { ready: true, runtime: {} },
+            backends: {
+              yier: { ready: true },
+              codex: { ready: true },
+            },
+            allowed_roots: ['/tmp/project'],
+          })
+        }
+        if (path.endsWith('/api/config') && (!init || init.method === 'GET')) {
+          return jsonResponse({
+            llm: { provider: '', base_url: 'https://example.test', model: 'demo', has_api_key: true },
+            allowed_roots: ['/tmp/project'],
+            mcp_runtime: {},
+            session_defaults: {
+              default_backend_id: 'yier',
+              default_project_path: '/tmp/project',
+              channel_backend_id: 'yier',
+              channel_project_path: '/tmp/project',
+              channel_auto_approve_codex_requests: true,
+              workspace_surface: 'codex',
+            },
+            codex: {
+              launcher_command: 'codex app-server --listen stdio://',
+              model: 'gpt-5.4',
+              sandbox: 'workspace-write',
+              approval_policy: 'on-request',
+              approvals_reviewer: 'user',
+              personality: 'friendly',
+              reasoning_effort: 'medium',
+              service_tier: '',
+            },
+          })
+        }
+        if (path.endsWith('/api/config/mcp')) {
+          return jsonResponse({ mcp_servers: {}, runtime: {} })
+        }
+        if (path.endsWith('/api/codex/workspace')) {
+          return jsonResponse({ projects: [], paired_editors: [] })
+        }
+        if (isSessionListRequest(path, init)) {
+          return jsonResponse({
+            sessions: [
+              {
+                session_id: 'codex-thread',
+                title: 'Codex session',
+                preview: 'Native preview',
+                updated_at: 100,
+                message_count: 2,
+                source: 'chat',
+                backend_id: 'codex',
+                project_path: '/tmp/project',
+                channel_meta: null,
+                codex_work_mode: 'build',
+                codex_goal_loop: {
+                  status: 'running',
+                  goal: 'Keep pushing the release',
+                  definition_of_done: 'Release notes and tests are done',
+                  iteration_count: 2,
+                  max_iterations: 8,
+                  consecutive_failures: 0,
+                  max_consecutive_failures: 2,
+                  last_reason: 'Codex is still working.',
+                },
+              },
+            ],
+          })
+        }
+        if (isSessionTranscriptRequest(path, 'codex-thread', init)) {
+          return jsonResponse({
+            session_id: 'codex-thread',
+            source: 'chat',
+            backend_id: 'codex',
+            project_path: '/tmp/project',
+            codex_work_mode: 'build',
+            codex_goal_loop: {
+              status: 'running',
+              goal: 'Keep pushing the release',
+              definition_of_done: 'Release notes and tests are done',
+              iteration_count: 2,
+              max_iterations: 8,
+              consecutive_failures: 0,
+              max_consecutive_failures: 2,
+              last_reason: 'Codex is still working.',
+            },
+            backend_runtime: {
+              backend_id: 'codex',
+              label: 'Codex App Server',
+              ready: true,
+              status: 'active',
+              thread_id: 'codex-thread',
+              active_flags: [],
+              detail: null,
+              pending_approval_count: 0,
+            },
+            pending_approvals: [],
+            messages: [],
+            activity_events: [],
+          })
+        }
+        throw new Error(`Unexpected request: ${path}`)
+      }),
+    )
+
+    const wrapper = await mountApp()
+    await flushPromises()
+
+    const fab = document.body.querySelector('[data-testid="advanced-mode-fab"]')
+    expect(fab).toBeTruthy()
+    expect(fab?.getAttribute('data-running')).toBe('true')
+    expect(document.body.querySelector('[data-testid="advanced-mode-sheet"]')).toBeNull()
+
+    ;(fab as HTMLButtonElement).click()
+    await flushPromises()
+
+    expect(document.body.querySelector('[data-testid="advanced-mode-sheet"]')).toBeTruthy()
+    expect(document.body.textContent).toContain('Ralph Loop')
+    expect(document.body.textContent).toContain('Keep pushing the release')
+  })
+
   it('renders the yier workspace mobile drawer in compact chat layout', async () => {
     localStorage.setItem('yier.active-session-id', 'yier-thread-a')
 
@@ -1117,7 +1469,7 @@ describe('App', () => {
     })
     await flushPromises()
 
-    const textarea = wrapper.get('textarea').element as HTMLTextAreaElement
+    const textarea = wrapper.get('textarea.composer-textarea').element as HTMLTextAreaElement
     expect(textarea.value).toBe('remote draft')
     expect(textarea.selectionStart).toBe(2)
     expect(textarea.selectionEnd).toBe(5)
@@ -1468,7 +1820,7 @@ describe('App', () => {
     const wrapper = await mountApp()
     await flushPromises()
 
-    const textarea = wrapper.get('textarea')
+    const textarea = wrapper.get('textarea.composer-textarea')
     await textarea.setValue('/codex list')
     const sendButton = wrapper.find('[aria-label="Send message"]')
     await sendButton.trigger('click')
@@ -1479,7 +1831,7 @@ describe('App', () => {
     expect(wrapper.text()).toContain('/codex 1 new')
     expect(wrapper.text()).toContain('/codex 2 list')
     expect(wrapper.text()).not.toContain('Second native session')
-    expect((wrapper.get('textarea').element as HTMLTextAreaElement).value).toBe('')
+    expect((wrapper.get('textarea.composer-textarea').element as HTMLTextAreaElement).value).toBe('')
   })
 
   it('lists project sessions, opens them, and creates fresh Codex sessions from slash commands', async () => {
@@ -1703,7 +2055,7 @@ describe('App', () => {
     const wrapper = await mountApp()
     await flushPromises()
 
-    const textarea = wrapper.get('textarea')
+    const textarea = wrapper.get('textarea.composer-textarea')
     const sendButton = wrapper.find('[aria-label="Send message"]')
 
     await textarea.setValue('/codex 1 list')
@@ -1913,7 +2265,7 @@ describe('App', () => {
     const wrapper = await mountApp()
     await flushPromises()
 
-    const textarea = wrapper.get('textarea')
+    const textarea = wrapper.get('textarea.composer-textarea')
     const sendButton = wrapper.find('[aria-label="Send message"]')
 
     await textarea.setValue('/codex 1 new inspect the repo and summarize it')
@@ -2123,7 +2475,7 @@ describe('App', () => {
     const wrapper = await mountApp()
     await flushPromises()
 
-    const textarea = wrapper.get('textarea')
+    const textarea = wrapper.get('textarea.composer-textarea')
     const sendButton = wrapper.find('[aria-label="Send message"]')
 
     await textarea.setValue('/codex 1 1 summarize the current state')
@@ -3113,7 +3465,7 @@ describe('App', () => {
     const wrapper = await mountApp()
     await flushPromises()
 
-    const textarea = wrapper.get('textarea')
+    const textarea = wrapper.get('textarea.composer-textarea')
     await textarea.setValue('List the project files')
     const buttons = wrapper.findAll('button')
     const sendButton = buttons.find((item) => item.attributes('aria-label') === 'Send message')
@@ -3213,7 +3565,7 @@ describe('App', () => {
     const wrapper = await mountApp()
     await flushPromises()
 
-    const textarea = wrapper.get('textarea')
+    const textarea = wrapper.get('textarea.composer-textarea')
     await textarea.setValue('Run the command')
     const sendButton = wrapper
       .findAll('button')
@@ -3289,7 +3641,7 @@ describe('App', () => {
     const wrapper = await mountApp()
     await flushPromises()
 
-    const textarea = wrapper.get('textarea')
+    const textarea = wrapper.get('textarea.composer-textarea')
     await textarea.setValue('Inspect the repo')
     const sendButton = wrapper.find('[aria-label="Send message"]')
     expect(sendButton.exists()).toBe(true)
@@ -3354,7 +3706,7 @@ describe('App', () => {
     const wrapper = await mountApp()
     await flushPromises()
 
-    const textarea = wrapper.get('textarea')
+    const textarea = wrapper.get('textarea.composer-textarea')
     await textarea.setValue('Inspect the repo')
     const sendButton = wrapper.find('[aria-label="Send message"]')
     expect(sendButton.exists()).toBe(true)
@@ -3423,7 +3775,7 @@ describe('App', () => {
     const wrapper = await mountApp()
     await flushPromises()
 
-    const textarea = wrapper.get('textarea')
+    const textarea = wrapper.get('textarea.composer-textarea')
     await textarea.setValue('Give me the result')
     const sendButton = wrapper.find('[aria-label="Send message"]')
     expect(sendButton.exists()).toBe(true)
@@ -3493,7 +3845,7 @@ describe('App', () => {
     const wrapper = await mountApp()
     await flushPromises()
 
-    const textarea = wrapper.get('textarea')
+    const textarea = wrapper.get('textarea.composer-textarea')
     await textarea.setValue('Say hello')
     const sendButton = wrapper
       .findAll('button')
@@ -3561,7 +3913,7 @@ describe('App', () => {
     const wrapper = await mountApp()
     await flushPromises()
 
-    const textarea = wrapper.get('textarea')
+    const textarea = wrapper.get('textarea.composer-textarea')
     await textarea.setValue('Run codex')
     const sendButton = wrapper
       .findAll('button')

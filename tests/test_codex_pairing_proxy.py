@@ -8,7 +8,7 @@ import threading
 import time
 from uuid import uuid4
 
-from yier_web.codex_pairing_proxy import (
+from yier_web.codex.pairing.proxy import (
     CodexPairingProxyServer,
     PairingDescriptorSocketOverride,
 )

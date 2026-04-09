@@ -7,16 +7,14 @@ import sys
 
 import pytest
 
-import yier_web.agent_backends.codex_backend as codex_backend_module
 from yier_web.agent_backends.base import ChatSessionContext
-from yier_web.agent_backends.codex_backend import (
+import yier_web.codex.backend as codex_backend_module
+from yier_web.codex.backend import (
     CodexAppServerBackend,
-    CodexSessionRuntime,
-    PendingApprovalState,
-    TurnSnapshotState,
     _codex_thread_sandbox_mode,
     _codex_turn_sandbox_policy_type,
 )
+from yier_web.codex.runtime import CodexSessionRuntime, PendingApprovalState, TurnSnapshotState
 from yier_web.schemas import StoredCodexSettings, WebSettings
 
 
@@ -110,7 +108,7 @@ def test_codex_backend_injects_pairing_mcp_server_when_paths_are_available() -> 
         "mcp_servers": {
             "yier_codex_pairing": {
                 "command": sys.executable,
-                "args": ["-m", "yier_web.codex_pairing_mcp"],
+                "args": ["-m", "yier_web.codex.pairing.mcp"],
                 "cwd": str(project_root.resolve()),
                 "env": {
                     "YIER_PAIRING_HOME_DIR": str(home_dir.resolve()),

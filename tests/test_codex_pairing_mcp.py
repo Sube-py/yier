@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from yier_web.codex_pairing import CodexPairingClientError
-from yier_web.codex_pairing_mcp import CodexPairingMCPServer, MCP_PROTOCOL_VERSION
+from yier_web.codex.pairing.client import CodexPairingClientError
+from yier_web.codex.pairing.mcp import CodexPairingMCPServer, MCP_PROTOCOL_VERSION
 from yier_web.schemas import CodexPairingExtensionSummary
 
 

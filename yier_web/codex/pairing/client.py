@@ -5,7 +5,7 @@ from pathlib import Path
 import socket
 from typing import Any
 
-from yier_web.codex_workspace import CodexWorkspaceService
+from yier_web.codex.sdk.workspace import CodexWorkspaceService
 from yier_web.schemas import CodexPairingExtensionSummary
 
 

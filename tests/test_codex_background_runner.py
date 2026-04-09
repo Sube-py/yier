@@ -11,13 +11,13 @@ import pytest
 
 from yier_agents import ToolContext
 
-from yier_web.background_followups import (
+from yier_web.codex.background import (
     create_find_codex_projects_tool,
     create_find_codex_sessions_tool,
     create_resume_codex_background_session_tool,
     create_start_codex_background_session_tool,
 )
-from yier_web.codex_background_runner import (
+from yier_web.codex.background_runner import (
     CodexBackgroundRunnerRequest,
     load_request,
     run_request,
@@ -203,7 +203,7 @@ def test_start_codex_background_session_tool_starts_real_background_process(
     assert background_manager.calls
     command, cwd = background_manager.calls[0]
     assert cwd == str(chat_service.project_root)
-    assert "yier_web.codex_background_runner" in command
+    assert "yier_web.codex.background_runner" in command
     request_file = _request_file_from_command(command)
     payload = json.loads(request_file.read_text(encoding="utf-8"))
     assert payload == {
@@ -449,7 +449,7 @@ def test_run_request_uses_chat_service_helpers(
             ]
 
     monkeypatch.setattr(
-        "yier_web.codex_background_runner.ChatService",
+        "yier_web.codex.background_runner.ChatService",
         FakeChatServiceForRunner,
     )
 

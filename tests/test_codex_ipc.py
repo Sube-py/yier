@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
-from yier_web.codex_ipc import CodexThreadFollowerBridge
+from yier_web.codex.ipc import CodexThreadFollowerBridge
 
 
 async def _read_frame(reader: asyncio.StreamReader) -> dict[str, Any]:

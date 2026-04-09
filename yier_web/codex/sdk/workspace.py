@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import json
-import shlex
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from codex_app_server import AppServerConfig, Codex, ThreadSortKey, ThreadSourceKind
+from codex_app_server import Codex, ThreadSortKey, ThreadSourceKind
 
+from yier_web.codex.sdk.config import DEFAULT_CODEX_LAUNCHER, build_app_server_config
 from yier_web.schemas import (
     CodexNativeSessionSummary,
     CodexPairingExtensionSummary,
@@ -17,8 +17,6 @@ from yier_web.schemas import (
     CodexWorkspaceResponse,
 )
 
-
-DEFAULT_CODEX_LAUNCHER = "codex app-server --listen stdio://"
 INTERACTIVE_THREAD_SOURCE_KINDS = [
     ThreadSourceKind.cli,
     ThreadSourceKind.vscode,
@@ -239,7 +237,7 @@ class CodexWorkspaceService:
             last_seen_at=last_seen_at,
         )
 
-    def _sdk_config(self) -> AppServerConfig | None:
+    def _sdk_config(self):
         launcher_command = DEFAULT_CODEX_LAUNCHER
         client_cwd: str | None = None
         if self.config_service is not None:
@@ -248,21 +246,17 @@ class CodexWorkspaceService:
             project_root = getattr(self.config_service, "project_root", None)
             if isinstance(project_root, Path):
                 client_cwd = str(project_root)
-
+        if client_cwd is None:
+            client_cwd = str(self.home_dir)
         try:
-            launch_args = tuple(shlex.split(launcher_command))
-        except ValueError:
+            return build_app_server_config(
+                launcher_command=launcher_command,
+                cwd=client_cwd,
+                client_name="yier_web_workspace",
+                client_title="Yier Web Workspace",
+            )
+        except (RuntimeError, ValueError):
             return None
-
-        if not launch_args:
-            return None
-
-        return AppServerConfig(
-            launch_args_override=launch_args,
-            cwd=client_cwd,
-            client_name="yier_web_workspace",
-            client_title="Yier Web Workspace",
-        )
 
     def _extract_sdk_session(self, thread: Any) -> CodexNativeSessionSummary | None:
         thread_id = getattr(thread, "id", None)

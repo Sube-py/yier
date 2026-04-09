@@ -8,7 +8,7 @@ import socket
 from codex_app_server import ThreadSortKey, ThreadSourceKind
 from codex_app_server.generated.v2_all import ThreadListResponse
 
-from yier_web.codex_workspace import CodexWorkspaceService
+from yier_web.codex.sdk.workspace import CodexWorkspaceService
 
 
 class _FakeCodexClient:

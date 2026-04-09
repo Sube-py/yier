@@ -10,7 +10,7 @@ from uuid import uuid4
 
 import pytest
 
-from yier_web.codex_pairing import CodexPairingClientError, CodexPairingSocketClient
+from yier_web.codex.pairing.client import CodexPairingClientError, CodexPairingSocketClient
 
 
 def _read_exact(connection: socket.socket, byte_count: int) -> bytes:

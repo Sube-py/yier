@@ -3,20 +3,15 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from copy import deepcopy
-from dataclasses import dataclass, field
 import logging
 import os
 from pathlib import Path
-import shlex
-import sys
-import threading
 from time import time
 from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel
 
 from codex_app_server import (
     AppServerClient,
-    AppServerConfig,
     Thread as CodexThread,
     ThreadResumeParams,
     ThreadStartParams,
@@ -27,37 +22,27 @@ from codex_app_server.models import Notification
 from yier_agents import Message
 
 from yier_web.agent_backends.base import ChatBackend, ChatSessionContext, StreamEmitter
+from yier_web.codex.runtime import (
+    CodexSessionRuntime,
+    PendingApprovalState,
+    TurnSnapshotState,
+)
+from yier_web.codex.sdk.config import (
+    DEFAULT_CODEX_LAUNCHER,
+    PLAN_MODE_PROMPT,
+    PLAN_MODE_PROMPT_PREFIX,
+    build_app_server_config,
+    build_pairing_mcp_config,
+    normalize_codex_thread_sandbox_mode,
+    normalize_codex_turn_sandbox_policy_type,
+)
+from yier_web.codex.sdk.client import ApprovalAwareAppServerClient
 from yier_web.schemas import StoredSessionMessage
 
 if TYPE_CHECKING:
     from yier_web.chat import ChatService
 
-
-DEFAULT_CODEX_LAUNCHER = "codex app-server --listen stdio://"
 CODEX_IPC_DEBUG_ENV = "YIER_CODEX_IPC_DEBUG"
-PLAN_MODE_PROMPT_PREFIX = "<yier-codex-plan-mode>"
-PLAN_MODE_PROMPT = (
-    f"{PLAN_MODE_PROMPT_PREFIX}\n"
-    "Work in planning mode for this request. Analyze the task, avoid making changes, "
-    "and return a concrete implementation plan that another engineer could execute."
-)
-CODEX_THREAD_SANDBOX_MODE_MAP = {
-    "read-only": "read-only",
-    "workspace-write": "workspace-write",
-    "danger-full-access": "danger-full-access",
-    "readOnly": "read-only",
-    "workspaceWrite": "workspace-write",
-    "dangerFullAccess": "danger-full-access",
-}
-CODEX_TURN_SANDBOX_POLICY_TYPE_MAP = {
-    "read-only": "readOnly",
-    "workspace-write": "workspaceWrite",
-    "danger-full-access": "dangerFullAccess",
-    "readOnly": "readOnly",
-    "workspaceWrite": "workspaceWrite",
-    "dangerFullAccess": "dangerFullAccess",
-    "externalSandbox": "externalSandbox",
-}
 logger = logging.getLogger(__name__)
 
 
@@ -85,80 +70,11 @@ def _codex_ipc_debug_log(message: str, **fields: Any) -> None:
 
 
 def _codex_thread_sandbox_mode(value: str) -> str:
-    normalized = value.strip()
-    sandbox_mode = CODEX_THREAD_SANDBOX_MODE_MAP.get(normalized)
-    if sandbox_mode is None:
-        raise ValueError(f"Unsupported Codex thread sandbox mode: {value}")
-    return sandbox_mode
+    return normalize_codex_thread_sandbox_mode(value)
 
 
 def _codex_turn_sandbox_policy_type(value: str) -> str:
-    normalized = value.strip()
-    sandbox_mode = CODEX_TURN_SANDBOX_POLICY_TYPE_MAP.get(normalized)
-    if sandbox_mode is None:
-        raise ValueError(f"Unsupported Codex turn sandbox policy type: {value}")
-    return sandbox_mode
-
-
-
-
-@dataclass(slots=True)
-class PendingApprovalState:
-    request_id: str
-    method: str
-    payload: dict[str, Any]
-    record: dict[str, Any]
-    event: threading.Event = field(default_factory=threading.Event)
-    response: dict[str, Any] | None = None
-    decision: str | None = None
-
-
-@dataclass(slots=True)
-class TurnSnapshotState:
-    params: dict[str, Any]
-    turn_started_at_ms: int | None = None
-    final_assistant_started_at_ms: int | None = None
-    assistant_item_id: str | None = None
-    assistant_text: str = ""
-
-
-@dataclass(slots=True)
-class CodexSessionRuntime:
-    session_id: str
-    client: AppServerClient | None = None
-    thread_id: str | None = None
-    status: str = "idle"
-    active_flags: list[str] = field(default_factory=list)
-    pending_requests: dict[str, PendingApprovalState] = field(default_factory=dict)
-    turn_snapshots: dict[str, TurnSnapshotState] = field(default_factory=dict)
-    assistant_buffers: dict[str, str] = field(default_factory=dict)
-    reasoning_buffers: dict[str, dict[str, str]] = field(default_factory=dict)
-    plan_buffers: dict[str, str] = field(default_factory=dict)
-    detail: str | None = None
-    loop: asyncio.AbstractEventLoop | None = None
-    emit: StreamEmitter | None = None
-    streaming_turn_id: str | None = None
-    thread_state_cache: dict[str, Any] | None = None
-
-
-class ApprovalAwareAppServerClient(AppServerClient):
-    def __init__(
-        self,
-        config: AppServerConfig,
-        approval_callback,
-    ) -> None:
-        super().__init__(config=config)
-        self._approval_callback = approval_callback
-
-    def _handle_server_request(self, msg: dict[str, Any]) -> dict[str, Any]:
-        method = msg.get("method")
-        params = msg.get("params")
-        request_id = msg.get("id")
-        if not isinstance(method, str) or not isinstance(request_id, str):
-            return {}
-        if not isinstance(params, dict):
-            params = {}
-        return self._approval_callback(request_id, method, params)
+    return normalize_codex_turn_sandbox_policy_type(value)
 
 
 class CodexAppServerBackend(ChatBackend):
@@ -612,12 +528,9 @@ class CodexAppServerBackend(ChatBackend):
     ) -> AppServerClient:
         codex_settings = self.chat_service.config_service.load_web_settings().codex
         launcher_command = codex_settings.launcher_command or DEFAULT_CODEX_LAUNCHER
-        launch_args = tuple(shlex.split(launcher_command))
-        if not launch_args:
-            raise RuntimeError("Codex launcher command is empty.")
         client = ApprovalAwareAppServerClient(
-            config=AppServerConfig(
-                launch_args_override=launch_args,
+            config=build_app_server_config(
+                launcher_command=launcher_command,
                 cwd=str(context.project_path),
                 client_name="yier_web",
                 client_title="Yier Web",
@@ -1645,23 +1558,11 @@ class CodexAppServerBackend(ChatBackend):
         config_service = getattr(self.chat_service, "config_service", None)
         project_root = getattr(config_service, "project_root", None)
         home_dir = getattr(config_service, "home_dir", None)
-        if not isinstance(project_root, Path) or not isinstance(home_dir, Path):
-            return None
-
-        return {
-            "mcp_servers": {
-                self.pairing_mcp_server_name: {
-                    "command": sys.executable,
-                    "args": ["-m", "yier_web.codex_pairing_mcp"],
-                    "cwd": str(project_root.resolve()),
-                    "env": {
-                        "YIER_PAIRING_HOME_DIR": str(home_dir.resolve()),
-                    },
-                    "startup_timeout_sec": 5,
-                    "tool_timeout_sec": 30,
-                }
-            }
-        }
+        return build_pairing_mcp_config(
+            server_name=self.pairing_mcp_server_name,
+            project_root=project_root,
+            home_dir=home_dir,
+        )
 
     def _thread_runtime_status_payload(
         self,

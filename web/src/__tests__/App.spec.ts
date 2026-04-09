@@ -5132,7 +5132,7 @@ describe('App', () => {
       background_session_id: 'bg-1',
       tool_call_id: 'call-resume',
       tool_name: 'resume_codex_background_session',
-      command: 'uv run python -m yier_web.codex_background_runner',
+      command: 'uv run python -m yier_web.codex.background_runner',
       cwd: '/tmp/project',
       state: 'running',
     })
@@ -5144,7 +5144,7 @@ describe('App', () => {
     eventSource.emit('background_command_output', {
       session_id: 'session-1',
       background_session_id: 'bg-1',
-      command: 'uv run python -m yier_web.codex_background_runner',
+      command: 'uv run python -m yier_web.codex.background_runner',
       cwd: '/tmp/project',
       stream: 'stdout',
       content:
@@ -5154,7 +5154,7 @@ describe('App', () => {
     eventSource.emit('background_command_end', {
       session_id: 'session-1',
       background_session_id: 'bg-1',
-      command: 'uv run python -m yier_web.codex_background_runner',
+      command: 'uv run python -m yier_web.codex.background_runner',
       cwd: '/tmp/project',
       state: 'completed',
       exit_code: 0,
@@ -5215,14 +5215,14 @@ describe('App', () => {
       background_session_id: 'bg-2',
       tool_call_id: 'call-start',
       tool_name: 'start_codex_background_session',
-      command: 'uv run python -m yier_web.codex_background_runner',
+      command: 'uv run python -m yier_web.codex.background_runner',
       cwd: '/tmp/project',
       state: 'running',
     })
     eventSource.emit('background_command_end', {
       session_id: 'session-1',
       background_session_id: 'bg-2',
-      command: 'uv run python -m yier_web.codex_background_runner',
+      command: 'uv run python -m yier_web.codex.background_runner',
       cwd: '/tmp/project',
       state: 'failed',
       exit_code: 1,

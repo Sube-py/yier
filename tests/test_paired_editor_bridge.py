@@ -6,7 +6,7 @@ from pathlib import Path
 import socket
 
 from yier_web.event_stream import EventStreamBroker
-from yier_web.paired_editor_bridge import CodexPairedEditorBridge
+from yier_web.codex.pairing.bridge import CodexPairedEditorBridge
 
 
 def _read_exact(connection: socket.socket, byte_count: int) -> bytes:

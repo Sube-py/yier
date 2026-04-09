@@ -267,7 +267,7 @@ def _build_codex_background_runner_command(
         str(chat_service.project_root),
         "python",
         "-m",
-        "yier_web.codex_background_runner",
+        "yier_web.codex.background_runner",
         "--app-project-root",
         str(chat_service.project_root),
         "--home-dir",

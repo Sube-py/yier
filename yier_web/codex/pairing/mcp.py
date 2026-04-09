@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from yier_web.codex_pairing import CodexPairingClientError, CodexPairingSocketClient
+from yier_web.codex.pairing.client import CodexPairingClientError, CodexPairingSocketClient
 
 
 JSONRPC_VERSION = "2.0"

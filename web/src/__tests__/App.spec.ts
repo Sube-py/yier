@@ -69,12 +69,22 @@ function isSessionCreateRequest(path: string, init?: RequestInit) {
   return path.endsWith('/api/chat/sessions') && init?.method === 'POST'
 }
 
+function isCodexSessionCreateRequest(path: string, init?: RequestInit) {
+  return path.endsWith('/api/codex/sessions') && init?.method === 'POST'
+}
+
 function isSessionTranscriptRequest(path: string, sessionId: string, init?: RequestInit) {
-  const normalizedPath = `/api/chat/sessions/${sessionId}`
+  const normalizedPaths = [`/api/chat/sessions/${sessionId}`, `/api/codex/sessions/${sessionId}`]
   return (
     (!init?.method || init.method === 'GET') &&
-    (path === normalizedPath || path.startsWith(`${normalizedPath}?`))
+    normalizedPaths.some(
+      (normalizedPath) => path === normalizedPath || path.startsWith(`${normalizedPath}?`),
+    )
   )
+}
+
+function isAnySessionRequestPath(path: string) {
+  return path.includes('/api/chat/sessions/') || path.includes('/api/codex/sessions/')
 }
 
 function shellCommandRaw(overrides: Record<string, unknown> = {}) {
@@ -330,7 +340,7 @@ describe('App', () => {
         })
         return jsonResponse({ session_id: `session-${sessionCounter}` }, 201)
       }
-      if (path.includes('/api/chat/sessions/')) {
+      if (isAnySessionRequestPath(path)) {
         return jsonResponse({ session_id: 'session-1', messages: [] })
       }
       throw new Error(`Unexpected request: ${path}`)
@@ -568,6 +578,7 @@ describe('App', () => {
 
   it('renders the codex workspace shell and updates the session mode', async () => {
     localStorage.setItem('yier.active-session-id', 'codex-thread')
+    localStorage.setItem('yier.workspace-surface', 'codex')
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const path = input.toString()
       if (path.endsWith('/api/health')) {
@@ -693,7 +704,7 @@ describe('App', () => {
           activity_events: [],
         })
       }
-      if (path.endsWith('/api/chat/sessions/codex-thread/codex-mode') && init?.method === 'PUT') {
+      if (path.endsWith('/api/codex/sessions/codex-thread/mode') && init?.method === 'PUT') {
         expect(JSON.parse(String(init.body))).toEqual({ codex_work_mode: 'plan' })
         return jsonResponse({ ok: true })
       }
@@ -731,6 +742,7 @@ describe('App', () => {
 
   it('opens advanced mode in the codex workspace and saves then resumes Ralph Loop', async () => {
     localStorage.setItem('yier.active-session-id', 'codex-thread')
+    localStorage.setItem('yier.workspace-surface', 'codex')
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const path = input.toString()
       if (path.endsWith('/api/health')) {
@@ -867,7 +879,7 @@ describe('App', () => {
           activity_events: [],
         })
       }
-      if (path.endsWith('/api/chat/sessions/codex-thread/codex-goal-loop') && init?.method === 'PUT') {
+      if (path.endsWith('/api/codex/sessions/codex-thread/goal-loop') && init?.method === 'PUT') {
         expect(JSON.parse(String(init.body))).toEqual({
           goal: 'Ship the mobile-safe Ralph Loop',
           definition_of_done: 'Desktop and mobile flows both pass',
@@ -886,7 +898,7 @@ describe('App', () => {
           },
         })
       }
-      if (path.endsWith('/api/chat/sessions/codex-thread/codex-goal-loop/actions') && init?.method === 'POST') {
+      if (path.endsWith('/api/codex/sessions/codex-thread/goal-loop/actions') && init?.method === 'POST') {
         expect(JSON.parse(String(init.body))).toEqual({ action: 'resume' })
         return jsonResponse({
           ok: true,
@@ -938,6 +950,7 @@ describe('App', () => {
 
   it('shows a running advanced mode floating button on mobile and opens the sheet on demand', async () => {
     localStorage.setItem('yier.active-session-id', 'codex-thread')
+    localStorage.setItem('yier.workspace-surface', 'codex')
 
     vi.stubGlobal(
       'matchMedia',
@@ -1219,6 +1232,7 @@ describe('App', () => {
 
   it('updates paired editors from persistent codex pairing events', async () => {
     localStorage.setItem('yier.active-session-id', 'codex-thread')
+    localStorage.setItem('yier.workspace-surface', 'codex')
 
     vi.stubGlobal(
       'fetch',
@@ -1354,6 +1368,7 @@ describe('App', () => {
 
   it('applies remote paired editor updates to the composer textarea', async () => {
     localStorage.setItem('yier.active-session-id', 'codex-thread')
+    localStorage.setItem('yier.workspace-surface', 'codex')
 
     vi.stubGlobal(
       'fetch',
@@ -1477,6 +1492,7 @@ describe('App', () => {
 
   it('opens a native codex session from the project sidebar', async () => {
     localStorage.setItem('yier.active-session-id', 'codex-thread-a')
+    localStorage.setItem('yier.workspace-surface', 'codex')
 
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const path = input.toString()
@@ -2026,9 +2042,8 @@ describe('App', () => {
         expect(JSON.parse(String(init.body))).toEqual({ thread_id: 'codex-thread-b' })
         return jsonResponse({ session_id: 'codex-thread-b' }, 201)
       }
-      if (isSessionCreateRequest(path, init)) {
+      if (isCodexSessionCreateRequest(path, init)) {
         expect(JSON.parse(String(init?.body))).toEqual({
-          backend_id: 'codex',
           project_path: '/tmp/project',
         })
         return jsonResponse({ session_id: 'new-codex-session' }, 201)
@@ -2223,9 +2238,8 @@ describe('App', () => {
           activity_events: [],
         })
       }
-      if (isSessionCreateRequest(path, init)) {
+      if (isCodexSessionCreateRequest(path, init)) {
         expect(JSON.parse(String(init?.body))).toEqual({
-          backend_id: 'codex',
           project_path: '/tmp/project',
         })
         return jsonResponse({ session_id: 'new-codex-session' }, 201)
@@ -2491,6 +2505,7 @@ describe('App', () => {
 
   it('starts a project-scoped codex session from the sidebar action', async () => {
     localStorage.setItem('yier.active-session-id', 'codex-thread-a')
+    localStorage.setItem('yier.workspace-surface', 'codex')
 
     let createPayload: Record<string, unknown> | null = null
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
@@ -2599,7 +2614,7 @@ describe('App', () => {
           activity_events: [],
         })
       }
-      if (isSessionCreateRequest(path, init)) {
+      if (isCodexSessionCreateRequest(path, init)) {
         createPayload = JSON.parse(String(init?.body))
         return jsonResponse({ session_id: 'codex-thread-created' }, 201)
       }
@@ -2617,7 +2632,6 @@ describe('App', () => {
     await flushPromises()
 
     expect(createPayload).toEqual({
-      backend_id: 'codex',
       project_path: '/tmp/project-b',
     })
     expect(wrapper.text()).toContain('Started a fresh session.')
@@ -2625,6 +2639,7 @@ describe('App', () => {
 
   it('starts a codex session from a backend-picked project directory', async () => {
     localStorage.setItem('yier.active-session-id', 'codex-thread-a')
+    localStorage.setItem('yier.workspace-surface', 'codex')
 
     let createPayload: Record<string, unknown> | null = null
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
@@ -2740,7 +2755,7 @@ describe('App', () => {
           project_path: '/tmp/picked-project',
         }, 201)
       }
-      if (isSessionCreateRequest(path, init)) {
+      if (isCodexSessionCreateRequest(path, init)) {
         createPayload = JSON.parse(String(init?.body))
         return jsonResponse({ session_id: 'codex-thread-created' }, 201)
       }
@@ -2758,7 +2773,6 @@ describe('App', () => {
     await flushPromises()
 
     expect(createPayload).toEqual({
-      backend_id: 'codex',
       project_path: '/tmp/picked-project',
     })
     expect(wrapper.text()).toContain('Started a fresh session.')
@@ -2766,6 +2780,7 @@ describe('App', () => {
 
   it('switches from the codex workspace to the yier workspace from the sidebar switcher', async () => {
     localStorage.setItem('yier.active-session-id', 'codex-thread-a')
+    localStorage.setItem('yier.workspace-surface', 'codex')
 
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const path = input.toString()
@@ -2930,6 +2945,7 @@ describe('App', () => {
 
   it('renders codex elicitation requests with schema details', async () => {
     localStorage.setItem('yier.active-session-id', 'codex-thread')
+    localStorage.setItem('yier.workspace-surface', 'codex')
 
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const path = input.toString()
@@ -3186,7 +3202,7 @@ describe('App', () => {
             ],
           })
         }
-        if (path.includes('/api/chat/sessions/')) {
+        if (isAnySessionRequestPath(path)) {
           return jsonResponse({
             session_id: 'session-1',
             messages: [
@@ -3302,7 +3318,7 @@ describe('App', () => {
             ],
           })
         }
-        if (path.includes('/api/chat/sessions/')) {
+        if (isAnySessionRequestPath(path)) {
           return jsonResponse({
             session_id: 'session-1',
             messages: [
@@ -3412,7 +3428,7 @@ describe('App', () => {
         if (isSessionCreateRequest(path, init)) {
           return jsonResponse({ session_id: 'session-1' }, 201)
         }
-        if (path.includes('/api/chat/sessions/')) {
+        if (isAnySessionRequestPath(path)) {
           return jsonResponse({ session_id: 'session-1', messages: [] })
         }
         if (path.endsWith('/api/chat/stream') && init?.method === 'POST') {
@@ -3515,7 +3531,7 @@ describe('App', () => {
         if (isSessionCreateRequest(path, init)) {
           return jsonResponse({ session_id: 'session-1' }, 201)
         }
-        if (path.includes('/api/chat/sessions/')) {
+        if (isAnySessionRequestPath(path)) {
           return jsonResponse({ session_id: 'session-1', messages: [] })
         }
         if (path.endsWith('/api/chat/stream') && init?.method === 'POST') {
@@ -3613,7 +3629,7 @@ describe('App', () => {
         if (isSessionCreateRequest(path, init)) {
           return jsonResponse({ session_id: 'session-1' }, 201)
         }
-        if (path.includes('/api/chat/sessions/')) {
+        if (isAnySessionRequestPath(path)) {
           return jsonResponse({ session_id: 'session-1', messages: [] })
         }
         if (path.endsWith('/api/chat/stream') && init?.method === 'POST') {
@@ -3681,7 +3697,7 @@ describe('App', () => {
         if (isSessionCreateRequest(path, init)) {
           return jsonResponse({ session_id: 'session-1' }, 201)
         }
-        if (path.includes('/api/chat/sessions/')) {
+        if (isAnySessionRequestPath(path)) {
           return jsonResponse({ session_id: 'session-1', messages: [] })
         }
         if (path.endsWith('/api/chat/stream') && init?.method === 'POST') {
@@ -3747,7 +3763,7 @@ describe('App', () => {
         if (isSessionCreateRequest(path, init)) {
           return jsonResponse({ session_id: 'session-1' }, 201)
         }
-        if (path.includes('/api/chat/sessions/')) {
+        if (isAnySessionRequestPath(path)) {
           return jsonResponse({ session_id: 'session-1', messages: [] })
         }
         if (path.endsWith('/api/chat/stream') && init?.method === 'POST') {
@@ -3817,7 +3833,7 @@ describe('App', () => {
         if (isSessionCreateRequest(path, init)) {
           return jsonResponse({ session_id: 'session-1' }, 201)
         }
-        if (path.includes('/api/chat/sessions/')) {
+        if (isAnySessionRequestPath(path)) {
           return jsonResponse({ session_id: 'session-1', messages: [] })
         }
         if (path.endsWith('/api/chat/stream') && init?.method === 'POST') {
@@ -3888,7 +3904,7 @@ describe('App', () => {
         if (isSessionCreateRequest(path, init)) {
           return jsonResponse({ session_id: 'session-1' }, 201)
         }
-        if (path.includes('/api/chat/sessions/')) {
+        if (isAnySessionRequestPath(path)) {
           return jsonResponse({ session_id: 'session-1', messages: [] })
         }
         if (path.endsWith('/api/chat/stream') && init?.method === 'POST') {
@@ -3965,7 +3981,7 @@ describe('App', () => {
             ],
           })
         }
-        if (path.includes('/api/chat/sessions/')) {
+        if (isAnySessionRequestPath(path)) {
           return jsonResponse({
             session_id: 'session-1',
             messages: [
@@ -4095,7 +4111,7 @@ describe('App', () => {
             ],
           })
         }
-        if (path.includes('/api/chat/sessions/')) {
+        if (isAnySessionRequestPath(path)) {
           return jsonResponse({
             session_id: 'session-1',
             messages: [{ role: 'user', content: 'load a skill' }],
@@ -4181,7 +4197,7 @@ describe('App', () => {
             ],
           })
         }
-        if (path.includes('/api/chat/sessions/')) {
+        if (isAnySessionRequestPath(path)) {
           return jsonResponse({
             session_id: 'session-1',
             messages: [
@@ -4311,7 +4327,7 @@ describe('App', () => {
             ],
           })
         }
-        if (path.includes('/api/chat/sessions/')) {
+        if (isAnySessionRequestPath(path)) {
           return jsonResponse({
             session_id: 'session-1',
             messages: [{ role: 'user', content: 'inspect tools' }],
@@ -4418,7 +4434,7 @@ describe('App', () => {
             ],
           })
         }
-        if (path.includes('/api/chat/sessions/')) {
+        if (isAnySessionRequestPath(path)) {
           return jsonResponse({
             session_id: 'session-1',
             messages: [{ role: 'user', content: 'read a file' }],
@@ -4775,7 +4791,7 @@ describe('App', () => {
         if (isSessionCreateRequest(path, init)) {
           return jsonResponse({ session_id: 'session-1' }, 201)
         }
-        if (path.includes('/api/chat/sessions/')) {
+        if (isAnySessionRequestPath(path)) {
           return jsonResponse({ session_id: 'session-1', messages: [] })
         }
         throw new Error(`Unexpected request: ${path}`)
@@ -4980,7 +4996,7 @@ describe('App', () => {
         if (isSessionCreateRequest(path, init)) {
           return jsonResponse({ session_id: 'session-1' }, 201)
         }
-        if (path.includes('/api/chat/sessions/')) {
+        if (isAnySessionRequestPath(path)) {
           return jsonResponse({ session_id: 'session-1', messages: [] })
         }
         throw new Error(`Unexpected request: ${path}`)
@@ -5111,7 +5127,7 @@ describe('App', () => {
         if (isSessionCreateRequest(path, init)) {
           return jsonResponse({ session_id: 'session-1' }, 201)
         }
-        if (path.includes('/api/chat/sessions/')) {
+        if (isAnySessionRequestPath(path)) {
           return jsonResponse({ session_id: 'session-1', messages: [] })
         }
         throw new Error(`Unexpected request: ${path}`)
@@ -5194,7 +5210,7 @@ describe('App', () => {
         if (isSessionCreateRequest(path, init)) {
           return jsonResponse({ session_id: 'session-1' }, 201)
         }
-        if (path.includes('/api/chat/sessions/')) {
+        if (isAnySessionRequestPath(path)) {
           return jsonResponse({ session_id: 'session-1', messages: [] })
         }
         throw new Error(`Unexpected request: ${path}`)

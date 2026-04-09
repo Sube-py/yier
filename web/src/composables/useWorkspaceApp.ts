@@ -289,9 +289,11 @@ function createWorkspaceApp() {
   const isSettingsRoute = computed(() => route.name === 'settings')
   const isChannelRoute = computed(() => route.name === 'channel')
   const isChatRoute = computed(() => route.name === 'chat')
+  const codexSessionHistory = computed<SessionSummary[]>(() =>
+    normalizeCodexSessionSummaries(codexWorkspace.value),
+  )
   const activeSession = computed(
-    () =>
-      sessionHistory.value.find((session) => session.session_id === activeSessionId.value) ?? null,
+    () => findSessionSummary(activeSessionId.value) ?? null,
   )
   const backendOptions = computed(
     () =>
@@ -365,10 +367,13 @@ function createWorkspaceApp() {
           ? 'Project-aware Codex sessions with mode and permission control'
         : 'One calm surface for code, files, and config',
   )
-  const sessionHistoryCount = computed(() => sessionHistory.value.length)
+  const workspaceSessionHistory = computed(() =>
+    activeWorkspaceSurface.value === 'codex' ? codexSessionHistory.value : sessionHistory.value,
+  )
+  const sessionHistoryCount = computed(() => workspaceSessionHistory.value.length)
   const sidebarSessionHistory = computed(() =>
     isCodexWorkspace.value
-      ? sessionHistory.value
+      ? codexSessionHistory.value
       : sessionHistory.value.filter((session) => session.backend_id !== 'codex'),
   )
   const sidebarSessionHistoryCount = computed(() => sidebarSessionHistory.value.length)
@@ -686,6 +691,7 @@ function createWorkspaceApp() {
   }
 
   async function refreshDashboard() {
+    const prefersCodexSurface = appForm.workspaceSurface === 'codex'
     const [
       healthPayload,
       configPayload,
@@ -700,11 +706,18 @@ function createWorkspaceApp() {
       apiGet<HealthResponse>('/api/health'),
       apiGet<ConfigResponse>('/api/config'),
       apiGet<McpConfigResponse>('/api/config/mcp'),
-      apiGet<SessionListResponse>('/api/chat/sessions'),
-      safeApiGet<CodexWorkspaceResponse>('/api/codex/workspace', {
-        projects: [],
-        paired_editors: [],
-      }),
+      prefersCodexSurface
+        ? Promise.resolve({ sessions: [] } satisfies SessionListResponse)
+        : apiGet<SessionListResponse>('/api/chat/sessions'),
+      prefersCodexSurface
+        ? safeApiGet<CodexWorkspaceResponse>('/api/codex/workspace', {
+            projects: [],
+            paired_editors: [],
+          })
+        : Promise.resolve({
+            projects: [],
+            paired_editors: [],
+          } satisfies CodexWorkspaceResponse),
       safeApiGet<ChannelWorkspaceResponse>('/api/channel/workspace', {
         platforms: [],
         accounts: [],
@@ -725,7 +738,7 @@ function createWorkspaceApp() {
     channelConfig.value = channelConfigPayload
     channelMonitorSessions.value = normalizeSessionSummaries(channelMonitorSessionsPayload)
     codexWorkspace.value = codexWorkspacePayload
-    sessionHistory.value = normalizeSessionSummaries(sessionsPayload)
+    sessionHistory.value = normalizeChatSessionSummaries(sessionsPayload)
     hydrateLlmForm(configPayload.llm)
     hydrateAppForm(configPayload)
     initializeNewSessionDraft(configPayload)
@@ -743,8 +756,8 @@ function createWorkspaceApp() {
       }
     }
 
-    if (sessionHistory.value.length) {
-      activeSessionId.value = sessionHistory.value[0]?.session_id ?? ''
+    if (workspaceSessionHistory.value.length) {
+      activeSessionId.value = workspaceSessionHistory.value[0]?.session_id ?? ''
       if (activeSessionId.value) {
         await ensureSession()
         return
@@ -760,10 +773,15 @@ function createWorkspaceApp() {
     navigateToChat = true,
   ) {
     closeCodexSheets()
-    const payload = await apiPost<{ session_id: string }>('/api/chat/sessions', {
-      backend_id: backendId,
-      project_path: projectPath,
-    } satisfies CreateSessionRequest)
+    const payload =
+      backendId === 'codex'
+        ? await apiPost<{ session_id: string }>('/api/codex/sessions', {
+            project_path: projectPath,
+          })
+        : await apiPost<{ session_id: string }>('/api/chat/sessions', {
+            backend_id: backendId,
+            project_path: projectPath,
+          } satisfies CreateSessionRequest)
     activeSessionId.value = payload.session_id
     chatMessages.value = []
     activities.value = []
@@ -782,6 +800,34 @@ function createWorkspaceApp() {
 
   async function startNewSession(navigateToChat = true) {
     await createSession(newSessionDraft.backendId, newSessionDraft.projectPath, navigateToChat)
+  }
+
+  function latestSessionIdForBackend(backendId: BackendId) {
+    if (backendId === 'codex') {
+      return codexSessionHistory.value.find((session) => session.source === 'chat')?.session_id
+    }
+    return sessionHistory.value.find(
+      (session) => session.source === 'chat' && session.backend_id === backendId,
+    )?.session_id
+  }
+
+  function startNewCodexSession(projectPath: string) {
+    const nextProjectPath =
+      projectPath.trim() || activeProjectPath.value || newSessionDraft.projectPath
+    void createSession('codex', nextProjectPath, true)
+  }
+
+  async function refreshSessionHistory() {
+    if (activeWorkspaceSurface.value === 'codex') {
+      codexWorkspace.value = await safeApiGet<CodexWorkspaceResponse>('/api/codex/workspace', {
+        projects: [],
+        paired_editors: [],
+      })
+      return
+    }
+    sessionHistory.value = normalizeChatSessionSummaries(
+      await apiGet<SessionListResponse>('/api/chat/sessions'),
+    )
   }
 
   function nextYierChatProjectPath() {
@@ -850,18 +896,6 @@ function createWorkspaceApp() {
 
     await streamChat(body, handleStreamEvent)
     await refreshSessionHistory()
-  }
-
-  function latestChatSessionIdForBackend(backendId: BackendId) {
-    return sessionHistory.value.find(
-      (session) => session.source === 'chat' && session.backend_id === backendId,
-    )?.session_id
-  }
-
-  function startNewCodexSession(projectPath: string) {
-    const nextProjectPath =
-      projectPath.trim() || activeProjectPath.value || newSessionDraft.projectPath
-    void createSession('codex', nextProjectPath, true)
   }
 
   function handleCodexSessionStart(projectPath: string) {
@@ -935,7 +969,14 @@ function createWorkspaceApp() {
     newSessionDraft.backendId = backendId
 
     try {
-      const existingSessionId = latestChatSessionIdForBackend(backendId)
+      if (target === 'codex') {
+        await loadCodexWorkspaceSnapshot()
+      } else {
+        sessionHistory.value = normalizeChatSessionSummaries(
+          await apiGet<SessionListResponse>('/api/chat/sessions'),
+        )
+      }
+      const existingSessionId = latestSessionIdForBackend(backendId)
       if (existingSessionId) {
         await openSessionFromHistory(existingSessionId)
       } else {
@@ -1279,18 +1320,6 @@ function createWorkspaceApp() {
     }
   }
 
-  async function refreshSessionHistory() {
-    const [payload, codexWorkspacePayload] = await Promise.all([
-      apiGet<SessionListResponse>('/api/chat/sessions'),
-      safeApiGet<CodexWorkspaceResponse>('/api/codex/workspace', {
-        projects: [],
-        paired_editors: [],
-      }),
-    ])
-    sessionHistory.value = normalizeSessionSummaries(payload)
-    codexWorkspace.value = codexWorkspacePayload
-  }
-
   function normalizeActivityHistory(
     history: ActivityHistory | null | undefined,
     returnedCount: number,
@@ -1344,7 +1373,7 @@ function createWorkspaceApp() {
         }
 
         const page = await apiGet<SessionActivityPageResponse>(
-          `/api/chat/sessions/${sessionId}/activity-events?before=${before}&limit=${SESSION_ACTIVITY_PAGE_SIZE}`,
+          buildSessionActivityEventsPath(sessionId, before),
         )
         if (requestId !== latestSessionLoadRequestId || sessionId !== activeSessionId.value) {
           return
@@ -1365,10 +1394,54 @@ function createWorkspaceApp() {
     }
   }
 
+  function sessionBackendId(sessionId: string): BackendId {
+    return findSessionSummary(sessionId)?.backend_id ?? 'yier'
+  }
+
+  function buildSessionTranscriptPath(sessionId: string): string {
+    const basePath = buildSessionBasePath(sessionId)
+    return `${basePath}?activity_limit=${SESSION_ACTIVITY_PAGE_SIZE}`
+  }
+
+  function buildSessionActivityEventsPath(sessionId: string, before: number): string {
+    const basePath = buildSessionBasePath(sessionId)
+    return `${basePath}?before=${before}&limit=${SESSION_ACTIVITY_PAGE_SIZE}`
+  }
+
+  function buildSessionBasePath(sessionId: string): string {
+    return sessionBackendId(sessionId) === 'codex'
+      ? `/api/codex/sessions/${sessionId}`
+      : `/api/chat/sessions/${sessionId}`
+  }
+
+  function buildSessionApprovalPath(sessionId: string): string {
+    return `${buildSessionBasePath(sessionId)}/approvals/respond`
+  }
+
+  function buildSessionDeletePath(sessionId: string): string {
+    return buildSessionBasePath(sessionId)
+  }
+
+  function buildSessionModePath(sessionId: string): string {
+    return sessionBackendId(sessionId) === 'codex'
+      ? `${buildSessionBasePath(sessionId)}/mode`
+      : `${buildSessionBasePath(sessionId)}/codex-mode`
+  }
+
+  function buildSessionGoalLoopPath(sessionId: string): string {
+    return sessionBackendId(sessionId) === 'codex'
+      ? `${buildSessionBasePath(sessionId)}/goal-loop`
+      : `${buildSessionBasePath(sessionId)}/codex-goal-loop`
+  }
+
+  function buildSessionGoalLoopActionPath(sessionId: string): string {
+    return `${buildSessionGoalLoopPath(sessionId)}/actions`
+  }
+
   async function loadSessionTranscript(sessionId: string) {
     const requestId = ++latestSessionLoadRequestId
     const transcript = await apiGet<SessionTranscriptResponse>(
-      `/api/chat/sessions/${sessionId}?activity_limit=${SESSION_ACTIVITY_PAGE_SIZE}`,
+      buildSessionTranscriptPath(sessionId),
     )
     if (requestId !== latestSessionLoadRequestId || sessionId !== activeSessionId.value) {
       return
@@ -1453,15 +1526,13 @@ function createWorkspaceApp() {
     successMessage.value = ''
     try {
       await apiPut<{ ok: boolean }>(
-        `/api/chat/sessions/${activeSessionId.value}/codex-mode`,
+        buildSessionModePath(activeSessionId.value),
         {
           codex_work_mode: mode,
         } satisfies UpdateCodexSessionModeRequest,
       )
       activeCodexWorkMode.value = mode
-      const activeSummary = sessionHistory.value.find(
-        (session) => session.session_id === activeSessionId.value,
-      )
+      const activeSummary = findSessionSummary(activeSessionId.value)
       if (activeSummary) {
         activeSummary.codex_work_mode = mode
       }
@@ -1487,7 +1558,7 @@ function createWorkspaceApp() {
       }
     }
 
-    const sessionSummary = sessionHistory.value.find((session) => session.session_id === sessionId)
+    const sessionSummary = findSessionSummary(sessionId)
     if (sessionSummary) {
       sessionSummary.codex_goal_loop = normalized
     }
@@ -1527,7 +1598,7 @@ function createWorkspaceApp() {
   ) {
     const currentState =
       (sessionId === activeSessionId.value ? activeCodexGoalLoop.value : null) ??
-      sessionHistory.value.find((session) => session.session_id === sessionId)?.codex_goal_loop ??
+      findSessionSummary(sessionId)?.codex_goal_loop ??
       null
     const baseState = normalizeCodexGoalLoopState(currentState) ?? {
       status: 'idle',
@@ -1564,7 +1635,7 @@ function createWorkspaceApp() {
     successMessage.value = ''
     try {
       const response = await apiPut<CodexGoalLoopResponse>(
-        `/api/chat/sessions/${activeSessionId.value}/codex-goal-loop`,
+        buildSessionGoalLoopPath(activeSessionId.value),
         {
           goal: codexGoalLoopDraft.goal.trim(),
           definition_of_done: codexGoalLoopDraft.definitionOfDone.trim(),
@@ -1589,7 +1660,7 @@ function createWorkspaceApp() {
     successMessage.value = ''
     try {
       const response = await apiPost<CodexGoalLoopResponse>(
-        `/api/chat/sessions/${activeSessionId.value}/codex-goal-loop/actions`,
+        buildSessionGoalLoopActionPath(activeSessionId.value),
         {
           action,
         } satisfies CodexGoalLoopActionRequest,
@@ -1620,7 +1691,7 @@ function createWorkspaceApp() {
     errorMessage.value = ''
     successMessage.value = ''
     try {
-      const response = await apiDelete<DeleteSessionResponse>(`/api/chat/sessions/${sessionId}`)
+      const response = await apiDelete<DeleteSessionResponse>(buildSessionDeletePath(sessionId))
       if (!response.deleted) {
         throw new Error('Failed to delete session.')
       }
@@ -1628,7 +1699,7 @@ function createWorkspaceApp() {
       await refreshSessionHistory()
 
       if (activeSessionId.value === sessionId) {
-        const nextSessionId = sessionHistory.value[0]?.session_id
+        const nextSessionId = workspaceSessionHistory.value[0]?.session_id
         if (nextSessionId) {
           await openSessionFromHistory(nextSessionId)
         } else {
@@ -3087,7 +3158,7 @@ function createWorkspaceApp() {
     }
     try {
       await apiPost<{ ok: boolean }>(
-        `/api/chat/sessions/${activeSessionId.value}/approvals/respond`,
+        buildSessionApprovalPath(activeSessionId.value),
         {
           request_id: requestId,
           decision,
@@ -3127,6 +3198,48 @@ function createWorkspaceApp() {
 
   function normalizeSessionSummaries(payload: Partial<SessionListResponse> | null | undefined) {
     return Array.isArray(payload?.sessions) ? payload.sessions : []
+  }
+
+  function normalizeChatSessionSummaries(
+    payload: Partial<SessionListResponse> | null | undefined,
+  ): SessionSummary[] {
+    return normalizeSessionSummaries(payload).filter((session) => session.backend_id !== 'codex')
+  }
+
+  function normalizeCodexSessionSummaries(
+    workspace: CodexWorkspaceResponse | null | undefined,
+  ): SessionSummary[] {
+    const sessions = (workspace?.projects ?? []).flatMap((project) =>
+      project.sessions.map((session) => ({
+        session_id: session.thread_id,
+        title: session.title,
+        preview: session.preview,
+        updated_at: session.updated_at,
+        message_count: 0,
+        source: 'chat' as const,
+        backend_id: 'codex' as const,
+        project_path: session.project_path || session.cwd,
+        channel_meta: null,
+        codex_work_mode: 'build' as const,
+        codex_goal_loop: normalizeCodexGoalLoopState(session.codex_goal_loop),
+      })),
+    )
+    return sessions.sort(
+      (left, right) =>
+        right.updated_at - left.updated_at ||
+        right.title.localeCompare(left.title),
+    )
+  }
+
+  function findSessionSummary(sessionId: string): SessionSummary | null {
+    if (!sessionId) {
+      return null
+    }
+    return (
+      sessionHistory.value.find((session) => session.session_id === sessionId) ??
+      codexSessionHistory.value.find((session) => session.session_id === sessionId) ??
+      null
+    )
   }
 
   function normalizeCodexGoalLoopState(
@@ -3186,7 +3299,7 @@ function createWorkspaceApp() {
       ...(configPayload.codex ?? {}),
     }
     const workspaceSurface = normalizeWorkspaceSurface(
-      sessionDefaults.workspace_surface ?? readCachedWorkspaceSurface(),
+      configPayload.session_defaults?.workspace_surface ?? readCachedWorkspaceSurface(),
     )
 
     appForm.defaultBackendId = sessionDefaults.default_backend_id

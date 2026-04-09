@@ -481,6 +481,19 @@ class CodexAppServerBackend(ChatBackend):
             activity_limit=activity_limit,
         )
 
+    def build_thread_view(
+        self,
+        context: ChatSessionContext,
+        thread: Any,
+        *,
+        activity_limit: int | None = None,
+    ) -> dict[str, Any]:
+        return self._thread_view_payload(
+            context,
+            thread,
+            activity_limit=activity_limit,
+        )
+
     def should_use_local_session_view(self, context: ChatSessionContext) -> bool:
         runtime = self._runtimes.get(context.session_id)
         if runtime is None:

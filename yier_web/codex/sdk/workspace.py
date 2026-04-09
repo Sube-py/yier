@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from codex_app_server import Codex, ThreadSortKey, ThreadSourceKind
+from codex_app_server import Codex, Thread as CodexThread, ThreadSortKey, ThreadSourceKind
 
 from yier_web.codex.sdk.config import DEFAULT_CODEX_LAUNCHER, build_app_server_config
 from yier_web.schemas import (
@@ -90,6 +90,30 @@ class CodexWorkspaceService:
             if session.thread_id == normalized_thread_id:
                 return session
         return None
+
+    def read_thread(self, thread_id: str, *, include_turns: bool = True) -> Any | None:
+        normalized_thread_id = thread_id.strip()
+        if not normalized_thread_id:
+            return None
+
+        config = self._sdk_config()
+        if config is None:
+            return None
+
+        try:
+            with self.codex_factory(config=config) as codex:
+                thread_read = getattr(codex, "thread_read", None)
+                if callable(thread_read):
+                    return thread_read(normalized_thread_id, include_turns=include_turns)
+
+                client = getattr(codex, "_client", None)
+                if client is None:
+                    return None
+                return CodexThread(client, normalized_thread_id).read(
+                    include_turns=include_turns
+                )
+        except Exception:
+            return None
 
     def list_active_sessions(self) -> list[CodexNativeSessionSummary]:
         sdk_sessions = self._list_active_sessions_from_sdk()

@@ -129,6 +129,19 @@ class FakeChatService:
         ]
 
     def get_session_metadata(self, session_id: str) -> dict[str, Any]:
+        if session_id == "codex-session":
+            return {
+                "source": "chat",
+                "backend_id": "codex",
+                "project_path": "/tmp/codex-project",
+                "channel_meta": None,
+                "backend_state": {"thread_id": "codex-session"},
+                "codex_work_mode": "build",
+                "codex_goal_loop": None,
+                "title": "codex hello",
+                "preview": "codex hello",
+                "updated_at": 456.0,
+            }
         return {
             "source": "chat",
             "backend_id": "yier",
@@ -144,11 +157,11 @@ class FakeChatService:
 
     def get_backend_runtime(self, session_id: str) -> dict[str, Any]:
         return {
-            "backend_id": "yier",
-            "label": "Yier Agent",
+            "backend_id": "codex" if session_id == "codex-session" else "yier",
+            "label": "Codex App Server" if session_id == "codex-session" else "Yier Agent",
             "ready": True,
             "status": "idle",
-            "thread_id": None,
+            "thread_id": "codex-session" if session_id == "codex-session" else None,
             "active_flags": [],
             "detail": None,
             "pending_approval_count": 0,
@@ -210,6 +223,34 @@ class FakeChatService:
             codex_turn_timings=[],
         )
 
+    def load_codex_session_transcript_from_sdk(
+        self,
+        session_id: str,
+        *,
+        activity_limit: int | None = None,
+    ) -> SimpleNamespace | None:
+        if session_id != "codex-session":
+            return None
+        activity_events, activity_history = self.get_session_activity_page(
+            "session-a",
+            limit=activity_limit,
+        )
+        return SimpleNamespace(
+            messages=[
+                {
+                    "role": "user",
+                    "content": "codex hello",
+                    "reasoning_content": None,
+                    "tool_call_id": None,
+                    "source": "chat",
+                    "channel_meta": None,
+                }
+            ],
+            activity_events=activity_events,
+            activity_history=activity_history,
+            codex_turn_timings=[{"turn_id": "turn-1"}],
+        )
+
     def load_session_view(
         self, session_id: str
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -229,8 +270,19 @@ class FakeChatService:
     def open_codex_native_session(self, thread_id: str) -> str | None:
         return thread_id if thread_id else None
 
+    def get_codex_session_activity_page_from_sdk(
+        self,
+        session_id: str,
+        *,
+        before: int | None = None,
+        limit: int | None = None,
+    ) -> tuple[list[dict[str, Any]], dict[str, int | None]] | None:
+        if session_id != "codex-session":
+            return None
+        return self.get_session_activity_page("session-a", before=before, limit=limit)
+
     def update_codex_session_mode(self, session_id: str, codex_work_mode: str) -> bool:
-        return session_id == "session-a"
+        return session_id in {"session-a", "codex-session"}
 
     def update_codex_goal_loop(
         self,
@@ -1271,6 +1323,14 @@ def test_api_endpoints_cover_config_session_and_stream(tmp_path: Path) -> None:
         )
         assert transcript_response.json()["activity_history"]["total_count"] == 1
 
+        codex_transcript_response = client.get("/api/codex/sessions/codex-session")
+        assert codex_transcript_response.status_code == 200
+        assert codex_transcript_response.json()["backend_id"] == "codex"
+        assert codex_transcript_response.json()["messages"][0]["content"] == "codex hello"
+        assert codex_transcript_response.json()["codex_turn_timings"] == [
+            {"turn_id": "turn-1", "turn_started_at_ms": None, "final_assistant_started_at_ms": None}
+        ]
+
         activity_page_response = client.get(
             "/api/chat/sessions/session-a/activity-events?limit=1"
         )
@@ -1280,9 +1340,25 @@ def test_api_endpoints_cover_config_session_and_stream(tmp_path: Path) -> None:
             == "tool_call_start"
         )
 
+        codex_activity_page_response = client.get(
+            "/api/codex/sessions/codex-session/activity-events?limit=1"
+        )
+        assert codex_activity_page_response.status_code == 200
+        assert (
+            codex_activity_page_response.json()["activity_events"][0]["event"]
+            == "tool_call_start"
+        )
+
         codex_workspace_response = client.get("/api/codex/workspace")
         assert codex_workspace_response.status_code == 200
         assert codex_workspace_response.json()["projects"] == []
+
+        create_codex_response = client.post(
+            "/api/codex/sessions",
+            json={"project_path": "/tmp/codex-project"},
+        )
+        assert create_codex_response.status_code == 201
+        assert create_codex_response.json()["session_id"] == "session-created"
 
         open_codex_response = client.post(
             "/api/codex/sessions/open", json={"thread_id": "thread-a"}
@@ -1291,14 +1367,14 @@ def test_api_endpoints_cover_config_session_and_stream(tmp_path: Path) -> None:
         assert open_codex_response.json()["session_id"] == "thread-a"
 
         codex_mode_response = client.put(
-            "/api/chat/sessions/session-a/codex-mode",
+            "/api/codex/sessions/codex-session/mode",
             json={"codex_work_mode": "plan"},
         )
         assert codex_mode_response.status_code == 200
         assert codex_mode_response.json()["ok"] is True
 
         goal_loop_update_response = client.put(
-            "/api/chat/sessions/session-a/codex-goal-loop",
+            "/api/codex/sessions/codex-session/goal-loop",
             json={
                 "goal": "Ship it",
                 "definition_of_done": "All tests pass",
@@ -1308,11 +1384,22 @@ def test_api_endpoints_cover_config_session_and_stream(tmp_path: Path) -> None:
         assert goal_loop_update_response.json()["codex_goal_loop"]["goal"] == "Ship it"
 
         goal_loop_action_response = client.post(
-            "/api/chat/sessions/session-a/codex-goal-loop/actions",
+            "/api/codex/sessions/codex-session/goal-loop/actions",
             json={"action": "start"},
         )
         assert goal_loop_action_response.status_code == 201
         assert goal_loop_action_response.json()["codex_goal_loop"]["status"] == "running"
+
+        approval_response = client.post(
+            "/api/codex/sessions/codex-session/approvals/respond",
+            json={
+                "request_id": "approval-1",
+                "decision": "accept",
+                "content": None,
+            },
+        )
+        assert approval_response.status_code == 201
+        assert approval_response.json()["ok"] is True
 
         paired_editor_response = client.post(
             "/api/codex/paired-editor/state",
@@ -1334,7 +1421,7 @@ def test_api_endpoints_cover_config_session_and_stream(tmp_path: Path) -> None:
             }
         ]
 
-        delete_response = client.delete("/api/chat/sessions/session-a")
+        delete_response = client.delete("/api/codex/sessions/codex-session")
         assert delete_response.status_code == 200
         assert delete_response.json()["deleted"] is True
 

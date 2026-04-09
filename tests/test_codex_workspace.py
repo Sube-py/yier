@@ -6,7 +6,7 @@ from pathlib import Path
 import socket
 
 from codex_app_server import ThreadSortKey, ThreadSourceKind
-from codex_app_server.generated.v2_all import ThreadListResponse
+from codex_app_server.generated.v2_all import ThreadListResponse, ThreadReadResponse
 
 from yier_web.codex.sdk.workspace import CodexWorkspaceService
 
@@ -15,9 +15,11 @@ class _FakeCodexClient:
     def __init__(
         self,
         responses: list[ThreadListResponse],
+        thread_read_response: ThreadReadResponse | None = None,
         error: Exception | None = None,
     ) -> None:
         self.responses = list(responses)
+        self.thread_read_response = thread_read_response
         self.error = error
         self.calls: list[dict[str, object]] = []
 
@@ -33,21 +35,39 @@ class _FakeCodexClient:
             raise self.error
         return self.responses.pop(0)
 
+    def thread_read(self, thread_id: str, *, include_turns: bool = False) -> ThreadReadResponse:
+        self.calls.append(
+            {
+                "thread_id": thread_id,
+                "include_turns": include_turns,
+            }
+        )
+        if self.error is not None:
+            raise self.error
+        assert self.thread_read_response is not None
+        return self.thread_read_response
+
 
 class _FakeCodexFactory:
     def __init__(
         self,
         responses: list[ThreadListResponse] | None = None,
+        thread_read_response: ThreadReadResponse | None = None,
         error: Exception | None = None,
     ) -> None:
         self.responses = responses or []
+        self.thread_read_response = thread_read_response
         self.error = error
         self.last_config = None
         self.last_client: _FakeCodexClient | None = None
 
     def __call__(self, *, config) -> _FakeCodexClient:  # type: ignore[no-untyped-def]
         self.last_config = config
-        self.last_client = _FakeCodexClient(self.responses, self.error)
+        self.last_client = _FakeCodexClient(
+            self.responses,
+            thread_read_response=self.thread_read_response,
+            error=self.error,
+        )
         return self.last_client
 
 
@@ -90,6 +110,10 @@ def _thread_list_response(
             "nextCursor": next_cursor,
         }
     )
+
+
+def _thread_read_response(payload: dict[str, object]) -> ThreadReadResponse:
+    return ThreadReadResponse.model_validate({"thread": payload})
 
 
 def _write_codex_session(
@@ -254,6 +278,40 @@ def test_codex_workspace_falls_back_to_local_disk_when_sdk_list_fails(tmp_path: 
     assert workspace.projects[0].sessions[0].thread_id == "thread-alpha-1"
     assert workspace.projects[0].sessions[0].status == "idle"
     assert workspace.projects[1].sessions[0].title == "Beta 1"
+
+
+def test_codex_workspace_reads_thread_from_sdk(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+
+    factory = _FakeCodexFactory(
+        thread_read_response=_thread_read_response(
+            _thread_payload(
+                thread_id="thread-alpha-1",
+                cwd=project_root,
+                created_at=100,
+                updated_at=300,
+                preview="alpha work",
+                name="Alpha 1",
+            )
+        )
+    )
+
+    response = CodexWorkspaceService(home_dir, codex_factory=factory).read_thread(
+        "thread-alpha-1",
+        include_turns=True,
+    )
+
+    assert response is not None
+    assert response.thread.id == "thread-alpha-1"
+    assert factory.last_client is not None
+    assert factory.last_client.calls == [
+        {
+            "thread_id": "thread-alpha-1",
+            "include_turns": True,
+        }
+    ]
 
 
 def test_codex_workspace_lists_online_paired_editors_only(tmp_path: Path) -> None:

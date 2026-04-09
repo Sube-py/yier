@@ -961,6 +961,35 @@ class ChatService:
             limit=limit,
         )
 
+    def _paginate_activity_events(
+        self,
+        activity_events: list[dict[str, Any]],
+        *,
+        before: int | None = None,
+        limit: int | None = None,
+    ) -> tuple[list[dict[str, Any]], dict[str, int | None]]:
+        total_count = len(activity_events)
+        normalized_before = (
+            total_count if before is None else max(0, min(before, total_count))
+        )
+        if limit is None or limit <= 0:
+            page = activity_events[:normalized_before]
+        else:
+            start_index = max(0, normalized_before - limit)
+            page = activity_events[start_index:normalized_before]
+        return (
+            page,
+            {
+                "total_count": total_count,
+                "returned_count": len(page),
+                "next_before": (
+                    normalized_before - len(page)
+                    if normalized_before - len(page) > 0
+                    else None
+                ),
+            },
+        )
+
     def get_codex_workspace(self) -> CodexWorkspaceResponse:
         workspace = self.codex_workspace.load_workspace()
         projects = []
@@ -1196,6 +1225,72 @@ class ChatService:
             )
 
         return sorted(summaries, key=lambda item: item.updated_at, reverse=True)
+
+    def load_codex_session_transcript_from_sdk(
+        self,
+        session_id: str,
+        *,
+        activity_limit: int | None = None,
+    ) -> SessionTranscriptView | None:
+        context = self.get_session_context(session_id)
+        thread_id = context.backend_state.get("thread_id")
+        if context.backend_id != "codex" or not isinstance(thread_id, str) or not thread_id:
+            return None
+
+        backend = self.backends.get(context.backend_id)
+        if not isinstance(backend, CodexAppServerBackend):
+            return None
+
+        response = self.codex_workspace.read_thread(thread_id, include_turns=True)
+        if response is None:
+            return None
+
+        view = backend.build_thread_view(context, response.thread)
+        activity_events, activity_history = self._paginate_activity_events(
+            view["activity_events"],
+            limit=activity_limit,
+        )
+
+        thread_cwd = getattr(response.thread, "cwd", None)
+        project_path = (
+            thread_cwd
+            if isinstance(thread_cwd, str) and thread_cwd.strip()
+            else str(context.project_path)
+        )
+        self.ensure_session_metadata(
+            session_id,
+            source=context.source,
+            channel_meta=context.channel_meta,
+            backend_id=context.backend_id,
+            project_path=project_path,
+            backend_state=context.backend_state,
+            codex_work_mode=self.get_session_metadata(session_id)["codex_work_mode"],
+            title=view["title"],
+            preview=view["preview"],
+            updated_at=view["updated_at"],
+        )
+        return SessionTranscriptView(
+            messages=view["messages"],
+            activity_events=activity_events,
+            activity_history=activity_history,
+            codex_turn_timings=view.get("codex_turn_timings", []),
+        )
+
+    def get_codex_session_activity_page_from_sdk(
+        self,
+        session_id: str,
+        *,
+        before: int | None = None,
+        limit: int | None = None,
+    ) -> tuple[list[dict[str, Any]], dict[str, int | None]] | None:
+        transcript = self.load_codex_session_transcript_from_sdk(session_id)
+        if transcript is None:
+            return None
+        return self._paginate_activity_events(
+            transcript.activity_events,
+            before=before,
+            limit=limit,
+        )
 
     def load_session_transcript(
         self,

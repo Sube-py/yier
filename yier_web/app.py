@@ -406,12 +406,95 @@ async def get_codex_workspace(state: State) -> CodexWorkspaceResponse:
     return get_services(state).chat_service.get_codex_workspace()
 
 
+@post("/codex/sessions")
+async def create_codex_session(
+    data: CreateSessionRequest,
+    request: Request[Any, Any, Any],
+    state: State,
+) -> CreateSessionResponse:
+    project_path = (
+        data.project_path
+        if data.project_path is not None
+        else request.query_params.get("project_path")
+    )
+    session_id = get_services(state).chat_service.create_session(
+        backend_id="codex",
+        project_path=project_path,
+    )
+    return CreateSessionResponse(session_id=session_id)
+
+
 @post("/codex/sessions/open")
 async def open_codex_session(data: OpenCodexSessionRequest, state: State) -> OpenCodexSessionResponse:
     session_id = get_services(state).chat_service.open_codex_native_session(data.thread_id)
     if session_id is None:
         raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail="Codex session not found.")
     return OpenCodexSessionResponse(session_id=session_id)
+
+
+@get("/codex/sessions/{session_id:str}")
+async def get_codex_session(
+    session_id: str,
+    state: State,
+    activity_limit: int | None = None,
+) -> SessionTranscriptResponse:
+    services = get_services(state)
+    transcript = services.chat_service.load_codex_session_transcript_from_sdk(
+        session_id,
+        activity_limit=activity_limit,
+    )
+    if transcript is None:
+        raise HTTPException(
+            status_code=HTTP_404_NOT_FOUND,
+            detail="Codex session not found.",
+        )
+
+    metadata = services.chat_service.get_session_metadata(session_id)
+    return SessionTranscriptResponse(
+        session_id=session_id,
+        source=metadata["source"],
+        backend_id=metadata["backend_id"],
+        project_path=metadata["project_path"],
+        channel_meta=(
+            metadata["channel_meta"]
+            if isinstance(metadata["channel_meta"], dict)
+            else None
+        ),
+        codex_work_mode=metadata["codex_work_mode"],
+        codex_goal_loop=metadata["codex_goal_loop"],
+        backend_runtime=services.chat_service.get_backend_runtime(session_id),
+        pending_approvals=services.chat_service.get_pending_approvals(session_id),
+        messages=transcript.messages,
+        activity_events=transcript.activity_events,
+        activity_history=transcript.activity_history,
+        codex_turn_timings=transcript.codex_turn_timings,
+    )
+
+
+@get("/codex/sessions/{session_id:str}/activity-events")
+async def get_codex_session_activity_events(
+    session_id: str,
+    state: State,
+    before: int | None = None,
+    limit: int | None = None,
+) -> SessionActivityPageResponse:
+    activity_page = get_services(state).chat_service.get_codex_session_activity_page_from_sdk(
+        session_id,
+        before=before,
+        limit=limit,
+    )
+    if activity_page is None:
+        raise HTTPException(
+            status_code=HTTP_404_NOT_FOUND,
+            detail="Codex session not found.",
+        )
+
+    activity_events, activity_history = activity_page
+    return SessionActivityPageResponse(
+        session_id=session_id,
+        activity_events=activity_events,
+        activity_history=activity_history,
+    )
 
 
 @post("/codex/paired-editor/state")
@@ -487,8 +570,31 @@ async def delete_session(session_id: str, state: State) -> DeleteSessionResponse
     return DeleteSessionResponse(session_id=session_id, deleted=deleted)
 
 
+@delete("/codex/sessions/{session_id:str}", status_code=200)
+async def delete_codex_session(session_id: str, state: State) -> DeleteSessionResponse:
+    deleted = await get_services(state).chat_service.delete_session(session_id)
+    return DeleteSessionResponse(session_id=session_id, deleted=deleted)
+
+
 @post("/chat/sessions/{session_id:str}/approvals/respond")
 async def respond_to_approval(
+    session_id: str,
+    data: ApprovalResponseRequest,
+    state: State,
+) -> Response:
+    handled = await get_services(state).chat_service.respond_to_approval(
+        session_id=session_id,
+        request_id=data.request_id,
+        decision=data.decision,
+        content=data.content,
+    )
+    if not handled:
+        raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail="Approval request not found.")
+    return Response(content={"ok": True})
+
+
+@post("/codex/sessions/{session_id:str}/approvals/respond")
+async def respond_to_codex_approval(
     session_id: str,
     data: ApprovalResponseRequest,
     state: State,
@@ -519,6 +625,21 @@ async def update_codex_session_mode(
     return Response(content={"ok": True})
 
 
+@put("/codex/sessions/{session_id:str}/mode")
+async def update_codex_session_mode_v2(
+    session_id: str,
+    data: UpdateCodexSessionModeRequest,
+    state: State,
+) -> Response:
+    updated = get_services(state).chat_service.update_codex_session_mode(
+        session_id=session_id,
+        codex_work_mode=data.codex_work_mode,
+    )
+    if not updated:
+        raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail="Codex session not found.")
+    return Response(content={"ok": True})
+
+
 @put("/chat/sessions/{session_id:str}/codex-goal-loop")
 async def update_codex_goal_loop(
     session_id: str,
@@ -535,8 +656,42 @@ async def update_codex_goal_loop(
     return CodexGoalLoopResponse(codex_goal_loop=updated)
 
 
+@put("/codex/sessions/{session_id:str}/goal-loop")
+async def update_codex_goal_loop_v2(
+    session_id: str,
+    data: UpdateCodexGoalLoopRequest,
+    state: State,
+) -> CodexGoalLoopResponse:
+    updated = get_services(state).chat_service.update_codex_goal_loop(
+        session_id=session_id,
+        goal=data.goal,
+        definition_of_done=data.definition_of_done,
+    )
+    if updated is None:
+        raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail="Codex session not found.")
+    return CodexGoalLoopResponse(codex_goal_loop=updated)
+
+
 @post("/chat/sessions/{session_id:str}/codex-goal-loop/actions")
 async def codex_goal_loop_action(
+    session_id: str,
+    data: CodexGoalLoopActionRequest,
+    state: State,
+) -> CodexGoalLoopResponse:
+    try:
+        updated = await get_services(state).chat_service.apply_codex_goal_loop_action(
+            session_id=session_id,
+            action=data.action,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    if updated is None:
+        raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail="Codex session not found.")
+    return CodexGoalLoopResponse(codex_goal_loop=updated)
+
+
+@post("/codex/sessions/{session_id:str}/goal-loop/actions")
+async def codex_goal_loop_action_v2(
     session_id: str,
     data: CodexGoalLoopActionRequest,
     state: State,
@@ -698,15 +853,23 @@ api_router = Router(
         select_directory,
         list_sessions,
         get_codex_workspace,
+        create_codex_session,
         open_codex_session,
+        get_codex_session,
+        get_codex_session_activity_events,
         update_codex_paired_editor_state,
         get_session,
         get_session_activity_events,
         delete_session,
+        delete_codex_session,
         respond_to_approval,
+        respond_to_codex_approval,
         update_codex_session_mode,
+        update_codex_session_mode_v2,
         update_codex_goal_loop,
+        update_codex_goal_loop_v2,
         codex_goal_loop_action,
+        codex_goal_loop_action_v2,
         stream_chat,
         get_channel_workspace,
         get_channel_platforms,

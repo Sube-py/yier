@@ -280,6 +280,36 @@ def test_codex_workspace_falls_back_to_local_disk_when_sdk_list_fails(tmp_path: 
     assert workspace.projects[1].sessions[0].title == "Beta 1"
 
 
+def test_codex_workspace_extracts_custom_sdk_session_source(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+
+    factory = _FakeCodexFactory(
+        responses=[
+            _thread_list_response(
+                [
+                    {
+                        **_thread_payload(
+                            thread_id="thread-custom-1",
+                            cwd=project_root,
+                            created_at=100,
+                            updated_at=200,
+                            preview="custom source",
+                            name="Custom Source",
+                        ),
+                        "source": {"custom": "yierShell"},
+                    }
+                ]
+            )
+        ]
+    )
+
+    workspace = CodexWorkspaceService(home_dir, codex_factory=factory).load_workspace()
+
+    assert workspace.projects[0].sessions[0].source == "yierShell"
+
+
 def test_codex_workspace_reads_thread_from_sdk(tmp_path: Path) -> None:
     home_dir = tmp_path / "home"
     project_root = tmp_path / "project"

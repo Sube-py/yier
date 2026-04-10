@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from codex_app_server import Codex, Thread as CodexThread, ThreadSortKey, ThreadSourceKind
+from codex_app_server.generated.v2_all import ThreadReadResponse
 
 from yier_web.codex.sdk.config import DEFAULT_CODEX_LAUNCHER, build_app_server_config
 from yier_web.schemas import (
@@ -91,7 +92,7 @@ class CodexWorkspaceService:
                 return session
         return None
 
-    def read_thread(self, thread_id: str, *, include_turns: bool = True) -> Any | None:
+    def read_thread(self, thread_id: str, *, include_turns: bool = True) -> ThreadReadResponse | None:
         normalized_thread_id = thread_id.strip()
         if not normalized_thread_id:
             return None
@@ -319,6 +320,18 @@ class CodexWorkspaceService:
         root = getattr(source, "root", None)
         if root is None:
             return "active"
+        custom = getattr(root, "custom", None)
+        if isinstance(custom, str) and custom:
+            return custom
+        sub_agent = getattr(root, "sub_agent", None)
+        if sub_agent is not None:
+            source_type = getattr(sub_agent, "type", None)
+            if isinstance(source_type, str) and source_type:
+                return source_type
+            sub_agent_root = getattr(sub_agent, "root", None)
+            sub_agent_value = getattr(sub_agent_root, "value", None)
+            if isinstance(sub_agent_value, str) and sub_agent_value:
+                return sub_agent_value
         value = getattr(root, "value", None)
         if isinstance(value, str) and value:
             return value

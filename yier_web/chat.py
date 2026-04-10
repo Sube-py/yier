@@ -1251,12 +1251,7 @@ class ChatService:
             limit=activity_limit,
         )
 
-        thread_cwd = getattr(response.thread, "cwd", None)
-        project_path = (
-            thread_cwd
-            if isinstance(thread_cwd, str) and thread_cwd.strip()
-            else str(context.project_path)
-        )
+        project_path = response.thread.cwd
         self.ensure_session_metadata(
             session_id,
             source=context.source,

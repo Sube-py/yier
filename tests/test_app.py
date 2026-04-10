@@ -7,6 +7,7 @@ from typing import Any
 
 import httpx
 import pytest
+from litestar.exceptions import WebSocketDisconnect
 from litestar.testing import TestClient
 from yier_channel.core.models import ChannelMessage
 
@@ -846,6 +847,41 @@ def test_frontend_login_route_falls_back_to_vite_index_when_proxy_returns_404(
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
     assert "vite index" in response.text
+
+
+def test_frontend_websocket_route_closes_gracefully_in_debug_proxy_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "project"
+    config_service = AppConfigService(
+        project_root=project_root, home_dir=tmp_path / "home"
+    )
+    frontend_service = FrontendService(project_root=project_root, debug=True)
+
+    async def fake_vite_available() -> bool:
+        return True
+
+    monkeypatch.setattr(frontend_service, "_vite_available", fake_vite_available)
+
+    app = create_app(
+        project_root=project_root,
+        home_dir=tmp_path / "home",
+        services=AppServices(
+            config_service=config_service,
+            chat_service=FakeChatService(),  # type: ignore[arg-type]
+            channel_workspace_service=FakeChannelWorkspaceService(),  # type: ignore[arg-type]
+            event_broker=EventStreamBroker(),
+            frontend_service=frontend_service,
+            directory_picker_service=FakeDirectoryPickerService(),
+            auth_service=AuthService(),
+        ),
+    )
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/", params={"token": "vite"}) as websocket_session:
+            with pytest.raises(WebSocketDisconnect):
+                websocket_session.receive_text()
 
 
 def test_frontend_service_vite_client_ignores_env_proxy(tmp_path: Path) -> None:

@@ -9,7 +9,8 @@ from pathlib import Path
 import signal
 from typing import Any, AsyncIterator
 
-from litestar import Litestar, Request, Router, delete, get, post, put
+from litestar import Litestar, Request, Router, delete, get, post, put, websocket
+from litestar.connection import WebSocket
 from litestar.datastructures import State
 from litestar.exceptions import HTTPException
 from litestar.logging import LoggingConfig
@@ -893,6 +894,20 @@ async def frontend_entry(request: Request[Any, Any, Any], state: State, path: st
     return await services.frontend_service.handle_request(request, path)
 
 
+@websocket(path=["/", "/{path:path}"], include_in_schema=False)
+async def frontend_entry_websocket(
+    socket: WebSocket,
+    path: str = "",
+) -> None:
+    if path.startswith("api/"):
+        await socket.accept()
+        await socket.close(code=1008, reason="WebSocket route not found.")
+        return
+
+    services = get_services(socket.app.state)
+    await services.frontend_service.handle_websocket(socket, path)
+
+
 def create_app(
     project_root: Path | None = None,
     home_dir: Path | None = None,
@@ -938,7 +953,7 @@ def create_app(
             await app_services.chat_service.stop()
 
     return Litestar(
-        route_handlers=[api_router, frontend_entry],
+        route_handlers=[api_router, frontend_entry, frontend_entry_websocket],
         before_request=before_request,
         lifespan=[lifespan],
         debug=debug,

@@ -253,6 +253,110 @@ def test_codex_backend_reasoning_notifications_keep_item_identity_and_accumulate
     ]
 
 
+def test_codex_backend_emits_assistant_delta_for_realtime_transcript_updates() -> None:
+    chat_service = SimpleNamespace(update_session_backend_state=lambda session_id, state: None)
+    backend = CodexAppServerBackend(chat_service)
+    context = ChatSessionContext(
+        session_id="session-1",
+        source="chat",
+        backend_id="codex",
+        project_path=Path("/tmp/project"),
+        channel_meta=None,
+    )
+    runtime = CodexSessionRuntime(session_id="session-1", streaming_turn_id="turn-1")
+    runtime.turn_snapshots["turn-1"] = TurnSnapshotState(params={})
+    emitted: list[tuple[str, dict[str, object]]] = []
+
+    backend._emit_from_thread = lambda runtime, event, data: emitted.append((event, data))  # type: ignore[method-assign]
+
+    backend._handle_turn_notification(
+        runtime,
+        context,
+        SimpleNamespace(
+            method="thread/realtime/transcriptUpdated",
+            payload=SimpleNamespace(role="assistant", text="Hello", thread_id="thread-1"),
+        ),
+    )
+    backend._handle_turn_notification(
+        runtime,
+        context,
+        SimpleNamespace(
+            method="thread/realtime/transcriptUpdated",
+            payload=SimpleNamespace(
+                role="assistant",
+                text="Hello there",
+                thread_id="thread-1",
+            ),
+        ),
+    )
+
+    assert emitted == [
+        (
+            "assistant_delta",
+            {
+                "session_id": "session-1",
+                "item_id": "turn-1:assistant-transcript",
+                "delta": "Hello",
+            },
+        ),
+        (
+            "assistant_delta",
+            {
+                "session_id": "session-1",
+                "item_id": "turn-1:assistant-transcript",
+                "delta": " there",
+            },
+        ),
+    ]
+    assert runtime.turn_snapshots["turn-1"].assistant_item_id == "turn-1:assistant-transcript"
+    assert runtime.turn_snapshots["turn-1"].assistant_text == "Hello there"
+
+
+def test_codex_backend_finalizes_transcript_backed_assistant_message_with_stable_item_id() -> None:
+    chat_service = SimpleNamespace(
+        update_session_backend_state=lambda session_id, state: None,
+        _append_transcript_message=lambda session_id, message: None,
+    )
+    backend = CodexAppServerBackend(chat_service)
+    context = ChatSessionContext(
+        session_id="session-1",
+        source="chat",
+        backend_id="codex",
+        project_path=Path("/tmp/project"),
+        channel_meta=None,
+    )
+    runtime = CodexSessionRuntime(session_id="session-1")
+    runtime.turn_snapshots["turn-1"] = TurnSnapshotState(
+        params={},
+        assistant_item_id="turn-1:assistant-transcript",
+        assistant_text="Hello there",
+    )
+    runtime.assistant_buffers["turn-1:assistant-transcript"] = "Hello there"
+    emitted: list[tuple[str, dict[str, object]]] = []
+
+    backend._emit_from_thread = lambda runtime, event, data: emitted.append((event, data))  # type: ignore[method-assign]
+
+    backend._handle_item_completed(
+        runtime,
+        context,
+        SimpleNamespace(type="agentMessage", id="msg-1", text="Hello there"),
+        turn_id="turn-1",
+    )
+
+    assert emitted == [
+        (
+            "assistant_message",
+            {
+                "session_id": "session-1",
+                "item_id": "turn-1:assistant-transcript",
+                "content": "Hello there",
+                "iteration": 0,
+            },
+        )
+    ]
+    assert runtime.turn_snapshots["turn-1"].assistant_item_id == "turn-1:assistant-transcript"
+
+
 def test_codex_backend_emits_turn_completed_for_completed_turn() -> None:
     chat_service = SimpleNamespace(update_session_backend_state=lambda session_id, state: None)
     backend = CodexAppServerBackend(chat_service)

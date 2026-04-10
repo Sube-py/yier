@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from litestar.connection import WebSocket
 from litestar import Request
 from litestar.response import Response
 
@@ -58,6 +59,20 @@ class FrontendService:
             content="Frontend is unavailable. Start `pnpm dev` in `web` or build the frontend.",
             media_type="text/plain",
             status_code=503,
+        )
+
+    async def handle_websocket(self, socket: WebSocket, _path: str) -> None:
+        await socket.accept()
+        if await self._should_proxy_to_vite():
+            await socket.close(
+                code=1013,
+                reason="Frontend dev WebSocket is served by Vite on port 5173.",
+            )
+            return
+
+        await socket.close(
+            code=1008,
+            reason="Frontend WebSocket is unavailable for the static bundle.",
         )
 
     async def _should_proxy_to_vite(self) -> bool:

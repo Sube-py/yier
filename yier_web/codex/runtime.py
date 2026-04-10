@@ -40,6 +40,7 @@ class CodexSessionRuntime:
     pending_requests: dict[str, PendingApprovalState] = field(default_factory=dict)
     turn_snapshots: dict[str, TurnSnapshotState] = field(default_factory=dict)
     assistant_buffers: dict[str, str] = field(default_factory=dict)
+    realtime_transcript_buffers: dict[str, str] = field(default_factory=dict)
     reasoning_buffers: dict[str, dict[str, str]] = field(default_factory=dict)
     plan_buffers: dict[str, str] = field(default_factory=dict)
     detail: str | None = None

@@ -16,6 +16,7 @@ from codex_app_server import (
     ThreadResumeParams,
     ThreadStartParams,
 )
+from codex_app_server.generated.v2_all import Thread as ThreadV2
 from codex_app_server.errors import AppServerError, TransportClosedError
 from codex_app_server.models import Notification
 
@@ -484,7 +485,7 @@ class CodexAppServerBackend(ChatBackend):
     def build_thread_view(
         self,
         context: ChatSessionContext,
-        thread: Any,
+        thread: ThreadV2,
         *,
         activity_limit: int | None = None,
     ) -> dict[str, Any]:
@@ -798,6 +799,7 @@ class CodexAppServerBackend(ChatBackend):
         if notification.method == "turn/started":
             runtime.status = "active"
             runtime.active_flags = []
+            runtime.realtime_transcript_buffers.clear()
             turn = getattr(notification.payload, "turn", None)
             turn_id = getattr(turn, "id", None)
             if isinstance(turn_id, str) and turn_id:
@@ -832,6 +834,37 @@ class CodexAppServerBackend(ChatBackend):
                         "will_retry": False,
                     },
                 )
+            return
+
+        if notification.method == "thread/realtime/transcriptUpdated":
+            role = self._notification_value(notification, "role")
+            text = self._notification_value(notification, "text")
+            turn_id = runtime.streaming_turn_id
+            if role != "assistant" or not isinstance(text, str) or not text or not turn_id:
+                return
+            transcript_key = self._transcript_buffer_key(turn_id, role)
+            previous_text = runtime.realtime_transcript_buffers.get(transcript_key, "")
+            runtime.realtime_transcript_buffers[transcript_key] = text
+            snapshot = runtime.turn_snapshots.get(turn_id)
+            item_id = self._assistant_transcript_item_id(runtime, turn_id)
+            if snapshot is not None:
+                if snapshot.final_assistant_started_at_ms is None:
+                    snapshot.final_assistant_started_at_ms = int(time() * 1000)
+                snapshot.assistant_item_id = item_id
+                snapshot.assistant_text = text
+            runtime.assistant_buffers[item_id] = text
+            delta = self._transcript_delta(previous_text, text)
+            if not delta:
+                return
+            self._emit_from_thread(
+                runtime,
+                "assistant_delta",
+                {
+                    "session_id": context.session_id,
+                    "item_id": item_id,
+                    "delta": delta,
+                },
+            )
             return
 
         if notification.method == "error":
@@ -996,7 +1029,12 @@ class CodexAppServerBackend(ChatBackend):
                 snapshot = runtime.turn_snapshots.get(turn_id)
                 if snapshot is not None and snapshot.final_assistant_started_at_ms is None:
                     snapshot.final_assistant_started_at_ms = int(time() * 1000)
-            self._handle_item_completed(runtime, context, item)
+            self._handle_item_completed(
+                runtime,
+                context,
+                item,
+                turn_id=turn_id if isinstance(turn_id, str) and turn_id else None,
+            )
             return
 
         if notification.method == "serverRequest/resolved":
@@ -1119,6 +1157,8 @@ class CodexAppServerBackend(ChatBackend):
         runtime: CodexSessionRuntime,
         context: ChatSessionContext,
         item: Any,
+        *,
+        turn_id: str | None = None,
     ) -> None:
         item_type = getattr(item, "type", "")
         if item_type == "commandExecution":
@@ -1140,15 +1180,35 @@ class CodexAppServerBackend(ChatBackend):
             return
 
         if item_type == "agentMessage":
-            content = getattr(item, "text", "") or runtime.assistant_buffers.pop(item.id, "")
-            turn_id = getattr(item, "turn_id", None)
-            if not isinstance(turn_id, str) or not turn_id:
-                turn_id = getattr(item, "turnId", None)
-            if isinstance(turn_id, str) and turn_id:
-                snapshot = runtime.turn_snapshots.get(turn_id)
-                if snapshot is not None:
-                    snapshot.assistant_item_id = item.id
-                    snapshot.assistant_text = content
+            resolved_turn_id = turn_id
+            if not isinstance(resolved_turn_id, str) or not resolved_turn_id:
+                raw_turn_id = getattr(item, "turn_id", None)
+                if not isinstance(raw_turn_id, str) or not raw_turn_id:
+                    raw_turn_id = getattr(item, "turnId", None)
+                if isinstance(raw_turn_id, str) and raw_turn_id:
+                    resolved_turn_id = raw_turn_id
+            snapshot = (
+                runtime.turn_snapshots.get(resolved_turn_id)
+                if isinstance(resolved_turn_id, str) and resolved_turn_id
+                else None
+            )
+            emitted_item_id = item.id
+            if (
+                snapshot is not None
+                and isinstance(snapshot.assistant_item_id, str)
+                and snapshot.assistant_item_id
+                and snapshot.assistant_item_id != item.id
+                and item.id not in runtime.assistant_buffers
+            ):
+                emitted_item_id = snapshot.assistant_item_id
+            content = getattr(item, "text", "") or runtime.assistant_buffers.get(emitted_item_id, "")
+            runtime.assistant_buffers.pop(emitted_item_id, None)
+            runtime.assistant_buffers.pop(item.id, None)
+            if snapshot is not None:
+                snapshot.assistant_item_id = emitted_item_id
+                snapshot.assistant_text = content
+            if isinstance(resolved_turn_id, str) and resolved_turn_id:
+                self._clear_transcript_buffers(runtime, resolved_turn_id)
             if content.strip():
                 message_sequence = self.chat_service._append_transcript_message(
                     context.session_id,
@@ -1159,7 +1219,7 @@ class CodexAppServerBackend(ChatBackend):
                     "assistant_message",
                     {
                         "session_id": context.session_id,
-                        "item_id": item.id,
+                        "item_id": emitted_item_id,
                         "content": content,
                         "iteration": 0,
                         **(
@@ -1287,6 +1347,7 @@ class CodexAppServerBackend(ChatBackend):
         runtime.detail = None
         if isinstance(turn_id, str) and turn_id:
             self._upsert_cached_thread_turn(runtime, turn_id, status=str(status or "idle"))
+            self._clear_transcript_buffers(runtime, turn_id)
         finish_reason = "stop"
         if status == "interrupted":
             finish_reason = "interrupted"
@@ -1876,7 +1937,7 @@ class CodexAppServerBackend(ChatBackend):
     def _thread_view_payload(
         self,
         context: ChatSessionContext,
-        thread: Any,
+        thread: ThreadV2,
         *,
         activity_limit: int | None = None,
     ) -> dict[str, Any]:
@@ -1890,7 +1951,7 @@ class CodexAppServerBackend(ChatBackend):
         activity_event_counter = [0]
         sequence_counter = [0]
 
-        raw_turns = getattr(thread, "turns", []) or []
+        raw_turns = thread.turns
         normalized_turns = self.build_ipc_turns(
             context,
             [
@@ -2336,6 +2397,44 @@ class CodexAppServerBackend(ChatBackend):
         if not parts:
             return ""
         return self._strip_plan_mode_prompt("\n".join(parts))
+
+    def _assistant_transcript_item_id(
+        self,
+        runtime: CodexSessionRuntime,
+        turn_id: str,
+    ) -> str:
+        snapshot = runtime.turn_snapshots.get(turn_id)
+        existing_item_id = snapshot.assistant_item_id if snapshot is not None else None
+        if isinstance(existing_item_id, str) and existing_item_id:
+            return existing_item_id
+        return f"{turn_id}:assistant-transcript"
+
+    def _transcript_buffer_key(self, turn_id: str, role: str) -> str:
+        return f"{turn_id}:{role}"
+
+    def _transcript_delta(self, previous_text: str, current_text: str) -> str:
+        if not current_text:
+            return ""
+        if not previous_text:
+            return current_text
+        if current_text.startswith(previous_text):
+            return current_text[len(previous_text) :]
+        common_prefix_length = 0
+        for previous_char, current_char in zip(previous_text, current_text):
+            if previous_char != current_char:
+                break
+            common_prefix_length += 1
+        return current_text[common_prefix_length:]
+
+    def _clear_transcript_buffers(
+        self,
+        runtime: CodexSessionRuntime,
+        turn_id: str,
+    ) -> None:
+        runtime.realtime_transcript_buffers.pop(
+            self._transcript_buffer_key(turn_id, "assistant"),
+            None,
+        )
 
     def _thread_item_value(self, item: Any, key: str, default: Any = None) -> Any:
         if isinstance(item, dict):

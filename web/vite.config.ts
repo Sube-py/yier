@@ -18,6 +18,11 @@ export default defineConfig({
     host: '0.0.0.0',
     port: 5173,
     strictPort: true,
+    hmr: {
+      // The HTML is served through the backend dev proxy on :9999, but the
+      // Vite WebSocket still needs to connect to the real dev server.
+      clientPort: 5173,
+    },
     proxy: {
       '/api': {
         target: backendOrigin,

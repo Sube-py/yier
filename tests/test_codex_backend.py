@@ -670,7 +670,9 @@ def test_codex_backend_turn_input_items_from_thread_items_preserves_typed_user_i
 
 
 def test_codex_backend_thread_view_payload_includes_image_and_review_related_items() -> None:
-    backend = CodexAppServerBackend(SimpleNamespace())
+    backend = CodexAppServerBackend(
+        SimpleNamespace(register_local_image_preview=lambda *_args, **_kwargs: None)
+    )
     context = ChatSessionContext(
         session_id="session-1",
         source="chat",
@@ -710,13 +712,15 @@ def test_codex_backend_thread_view_payload_includes_image_and_review_related_ite
 
     assert messages == []
     assert [event["event"] for event in activity_events] == [
-        "plan",
+        "tool_call_start",
+        "tool_call_end",
         "tool_call_start",
         "tool_call_end",
     ]
-    assert activity_events[0]["data"]["content"] == "Viewed image: /tmp/screenshot.png"
-    assert activity_events[1]["data"]["tool_name"] == "image_generation"
-    assert activity_events[2]["data"]["result"] == "Generated image: /tmp/generated.png"
+    assert activity_events[0]["data"]["tool_name"] == "image_view"
+    assert activity_events[1]["data"]["result"] == "Viewed image: /tmp/screenshot.png"
+    assert activity_events[2]["data"]["tool_name"] == "image_generation"
+    assert activity_events[3]["data"]["result"] == "Generated image: /tmp/generated.png"
 
 
 def test_codex_backend_start_turn_returns_native_turn_payload(

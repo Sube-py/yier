@@ -75,6 +75,40 @@ const workspace = useWorkspaceAppContext()
       <div class="shrink-0 px-[1.1rem] pb-4 max-[1023px]:px-4 max-sm:px-3 max-sm:pb-3">
         <div class="flex flex-col gap-3">
           <CodexAdvancedModeDock v-if="workspace.isCodexWorkspace" />
+          <div
+            v-if="workspace.isCodexWorkspace && workspace.activeSessionRuntime?.status === 'active'"
+            class="rounded-[1.15rem] border border-[rgba(21,94,99,0.12)] bg-[rgba(235,248,246,0.72)] p-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.5)]"
+          >
+            <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
+              <input
+                v-model="workspace.steerText"
+                class="min-w-0 flex-1 rounded-xl border border-[rgba(34,66,72,0.12)] bg-white/75 px-3 py-2 text-sm text-[color:var(--app-text)] outline-none transition focus:border-[rgba(21,94,99,0.36)] focus:shadow-[0_0_0_3px_rgba(21,94,99,0.1)]"
+                placeholder="Steer the active Codex turn..."
+                :disabled="workspace.isSteering || workspace.isInterrupting"
+                @keydown.enter.prevent="workspace.submitCodexSteer"
+              />
+              <div class="flex shrink-0 gap-2">
+                <Button
+                  label="Steer"
+                  icon="pi pi-directions"
+                  size="small"
+                  :loading="workspace.isSteering"
+                  :disabled="!workspace.steerText.trim() || workspace.isInterrupting"
+                  @click="workspace.submitCodexSteer"
+                />
+                <Button
+                  label="Interrupt"
+                  icon="pi pi-stop-circle"
+                  size="small"
+                  severity="secondary"
+                  outlined
+                  :loading="workspace.isInterrupting"
+                  :disabled="workspace.isSteering"
+                  @click="workspace.interruptCodexTurn"
+                />
+              </div>
+            </div>
+          </div>
           <Message v-if="workspace.activeSession?.source === 'channel'" severity="info" class="m-0">
             This session comes from
             {{ workspace.activeSession.channel_meta?.platform ?? 'channel' }} and is read-only in
@@ -84,6 +118,8 @@ const workspace = useWorkspaceAppContext()
             v-model="workspace.composerText"
             :disabled="!workspace.canSendToSession"
             :is-sending="workspace.isSending"
+            :attachments="workspace.composerAttachments"
+            :attachments-enabled="workspace.isCodexWorkspace && workspace.activeSession?.source !== 'channel'"
             :model-label="workspace.isCodexWorkspace ? workspace.appForm.codexModel : ''"
             :reasoning-label="
               workspace.isCodexWorkspace ? workspace.appForm.codexReasoningEffort : ''
@@ -96,6 +132,9 @@ const workspace = useWorkspaceAppContext()
             :selection-version="workspace.composerSelectionVersion"
             @update-sandbox="workspace.appForm.codexSandbox = $event"
             @save-sandbox="workspace.saveCodexSandboxMode"
+            @upload-files="workspace.uploadComposerFiles"
+            @remove-attachment="workspace.removeComposerAttachment"
+            @retry-attachment="workspace.retryComposerAttachment"
             @selection-change="workspace.handleComposerSelectionChange"
             @submit="workspace.submitMessage"
           />

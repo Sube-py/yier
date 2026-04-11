@@ -12,13 +12,15 @@ from typing import Any, AsyncIterator
 from litestar import Litestar, Request, Router, delete, get, post, put, websocket
 from litestar.connection import WebSocket
 from litestar.datastructures import State
+from litestar.datastructures import UploadFile
 from litestar.exceptions import HTTPException
 from litestar.logging import LoggingConfig
-from litestar.response import Response, ServerSentEvent
+from litestar.response import File, Response, ServerSentEvent
 from litestar.response.sse import ServerSentEventMessage
 from litestar.status_codes import HTTP_400_BAD_REQUEST, HTTP_404_NOT_FOUND
 
 from yier_web.auth import AuthService
+from yier_web.attachments import AttachmentStorageError
 from yier_web.chat import ChatService
 from yier_web.channel_workspace import IntegratedChannelWorkspaceService
 from yier_web.config import AppConfigService, MCPValidationError
@@ -27,6 +29,7 @@ from yier_web.event_stream import EventStreamBroker, EventStreamItem
 from yier_web.frontend import FrontendService
 from yier_web.schemas import (
     ApprovalResponseRequest,
+    AttachmentUploadResponse,
     AuthLoginRequest,
     AuthSessionResponse,
     ChatStreamRequest,
@@ -38,6 +41,8 @@ from yier_web.schemas import (
     ChannelWorkspaceResponse,
     CodexGoalLoopActionRequest,
     CodexGoalLoopResponse,
+    CodexTurnControlRequest,
+    CodexTurnControlResponse,
     CodexWorkspaceResponse,
     CodexPairedEditorStateRequest,
     CreateSessionRequest,
@@ -514,6 +519,78 @@ async def update_codex_paired_editor_state(
     return Response(content={"ok": True})
 
 
+@post("/chat/sessions/{session_id:str}/attachments")
+async def upload_chat_attachment(
+    session_id: str,
+    request: Request[Any, Any, Any],
+    state: State,
+) -> AttachmentUploadResponse:
+    try:
+        form = await request.form()
+        upload = form.get("file")
+        if not isinstance(upload, UploadFile):
+            raise AttachmentStorageError("Multipart form field 'file' is required.")
+        payload = await get_services(state).chat_service.save_chat_attachment(session_id, upload)
+    except AttachmentStorageError as exc:
+        raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return AttachmentUploadResponse.model_validate(payload)
+
+
+@get("/chat/sessions/{session_id:str}/attachments/{attachment_id:str}/content")
+async def get_chat_attachment_content(
+    session_id: str,
+    attachment_id: str,
+    state: State,
+) -> File:
+    try:
+        path, mime_type, name = get_services(state).chat_service.get_attachment_media_path(
+            session_id,
+            attachment_id,
+        )
+    except AttachmentStorageError as exc:
+        raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    return File(
+        path=path,
+        filename=name,
+        media_type=mime_type,
+        content_disposition_type="inline",
+    )
+
+
+@post("/codex/sessions/{session_id:str}/turns/steer")
+async def steer_codex_turn(
+    session_id: str,
+    data: CodexTurnControlRequest,
+    state: State,
+) -> CodexTurnControlResponse:
+    input_payload = get_services(state).chat_service.build_chat_input_payload(
+        session_id=session_id,
+        message=data.message,
+        input_items=data.input_items,
+    )
+    if input_payload in ("", []):
+        raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail="message or input_items is required.")
+    result = await get_services(state).chat_service.steer_codex_turn(
+        session_id=session_id,
+        turn_id=data.turn_id,
+        input_payload=input_payload,
+    )
+    return CodexTurnControlResponse(result=result)
+
+
+@post("/codex/sessions/{session_id:str}/turns/interrupt")
+async def interrupt_codex_turn(
+    session_id: str,
+    data: CodexTurnControlRequest,
+    state: State,
+) -> CodexTurnControlResponse:
+    result = await get_services(state).chat_service.interrupt_codex_turn(
+        session_id=session_id,
+        turn_id=data.turn_id,
+    )
+    return CodexTurnControlResponse(result=result)
+
+
 @get("/chat/sessions/{session_id:str}")
 async def get_session(
     session_id: str,
@@ -715,8 +792,6 @@ async def codex_goal_loop_action_v2(
 async def stream_chat(data: ChatStreamRequest, state: State) -> ServerSentEvent:
     if not data.session_id:
         raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail="session_id is required.")
-    if not data.message:
-        raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail="message is required.")
 
     services = get_services(state)
     if services.chat_service.is_channel_session(data.session_id):
@@ -724,9 +799,21 @@ async def stream_chat(data: ChatStreamRequest, state: State) -> ServerSentEvent:
             status_code=HTTP_400_BAD_REQUEST,
             detail="Channel-backed sessions are read-only in the chat workspace.",
         )
+    try:
+        if hasattr(services.chat_service, "build_chat_input_payload"):
+            input_payload = services.chat_service.build_chat_input_payload(
+                session_id=data.session_id,
+                message=data.message,
+                input_items=data.input_items,
+                attachment_ids=data.attachment_ids,
+            )
+        else:
+            input_payload = data.message or ""
+    except AttachmentStorageError as exc:
+        raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     async def event_stream() -> AsyncIterator[ServerSentEventMessage]:
-        async for item in services.chat_service.stream_chat(data.session_id, data.message):
+        async for item in services.chat_service.stream_chat(data.session_id, input_payload):
             yield ServerSentEventMessage(
                 event=item["event"],
                 data=json.dumps(item["data"], ensure_ascii=False),
@@ -861,6 +948,10 @@ api_router = Router(
         get_codex_session,
         get_codex_session_activity_events,
         update_codex_paired_editor_state,
+        upload_chat_attachment,
+        get_chat_attachment_content,
+        steer_codex_turn,
+        interrupt_codex_turn,
         get_session,
         get_session_activity_events,
         delete_session,

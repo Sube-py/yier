@@ -29,7 +29,7 @@ class ChatBackend(Protocol):
     async def stream_chat(
         self,
         context: ChatSessionContext,
-        user_message: str,
+        user_message: list[dict[str, Any]] | dict[str, Any] | str,
         emit: StreamEmitter,
     ) -> str: ...
 

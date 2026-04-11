@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 import threading
 from typing import Any
 
-from codex_app_server import AppServerClient
+from codex_app_server import AppServerClient, TurnHandle
 
 from yier_web.agent_backends.base import StreamEmitter
 
@@ -38,6 +38,7 @@ class CodexSessionRuntime:
     status: str = "idle"
     active_flags: list[str] = field(default_factory=list)
     pending_requests: dict[str, PendingApprovalState] = field(default_factory=dict)
+    turn_handles: dict[str, TurnHandle] = field(default_factory=dict)
     turn_snapshots: dict[str, TurnSnapshotState] = field(default_factory=dict)
     assistant_buffers: dict[str, str] = field(default_factory=dict)
     realtime_transcript_buffers: dict[str, str] = field(default_factory=dict)

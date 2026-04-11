@@ -42,6 +42,19 @@ const detailFrameClass = computed(() =>
 )
 const shellSectionClass = computed(() => `grid gap-[0.7rem] ${detailFrameClass.value}`)
 const textSectionClass = computed(() => `grid gap-[0.55rem] ${detailFrameClass.value}`)
+
+function formatBytes(size: number | null | undefined) {
+  if (typeof size !== 'number' || !Number.isFinite(size) || size <= 0) {
+    return ''
+  }
+  if (size < 1024) {
+    return `${size} B`
+  }
+  if (size < 1024 * 1024) {
+    return `${Math.round(size / 1024)} KB`
+  }
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`
+}
 </script>
 
 <template>
@@ -111,6 +124,31 @@ const textSectionClass = computed(() => `grid gap-[0.55rem] ${detailFrameClass.v
       :activity="display.activity"
       @submit-approval="emit('submitApproval', $event)"
     />
+  </div>
+
+  <div
+    v-if="display.activity.media?.kind === 'image'"
+    :class="textSectionClass"
+  >
+    <a
+      v-if="display.activity.media.url"
+      :href="display.activity.media.url"
+      target="_blank"
+      rel="noreferrer"
+      class="overflow-hidden rounded-2xl border border-[rgba(34,66,72,0.08)] bg-white/70 no-underline"
+    >
+      <img
+        :src="display.activity.media.url"
+        :alt="display.activity.media.label || display.activity.title"
+        class="max-h-[22rem] w-full object-contain bg-[rgba(21,94,99,0.04)]"
+      />
+    </a>
+    <div class="flex flex-wrap items-center gap-2 text-[0.8rem] text-[color:var(--app-text-soft)]">
+      <span v-if="display.activity.media.label">{{ display.activity.media.label }}</span>
+      <span v-if="display.activity.media.path">{{ display.activity.media.path }}</span>
+      <span v-if="display.activity.media.mime_type">{{ display.activity.media.mime_type }}</span>
+      <span v-if="formatBytes(display.activity.media.size)">{{ formatBytes(display.activity.media.size) }}</span>
+    </div>
   </div>
 
   <div

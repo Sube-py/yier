@@ -58,6 +58,7 @@ class AppConfigService:
         self.session_ui_path = self.web_root / "session_ui"
         self.session_meta_path = self.web_root / "session_meta"
         self.session_conversation_state_path = self.web_root / "session_conversation_state"
+        self.uploads_path = self.web_root / "uploads"
         self.prompt_history_path = self.web_root / "prompt_history.txt"
         self.mcp_config_path = self.yier_root / ".yier.json"
         self.ensure_storage()
@@ -70,6 +71,7 @@ class AppConfigService:
         self.session_ui_path.mkdir(parents=True, exist_ok=True)
         self.session_meta_path.mkdir(parents=True, exist_ok=True)
         self.session_conversation_state_path.mkdir(parents=True, exist_ok=True)
+        self.uploads_path.mkdir(parents=True, exist_ok=True)
 
     def default_allowed_roots(self) -> list[str]:
         defaults = [

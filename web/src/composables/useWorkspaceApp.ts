@@ -17,6 +17,7 @@ import {
   apiDelete,
   apiGet,
   apiPost,
+  apiPostForm,
   apiPut,
   openPersistentEventStream,
   streamChat,
@@ -27,6 +28,7 @@ import type {
   ApprovalFormFieldState,
   ApprovalFormMode,
   ApprovalResponseRequest,
+  AttachmentUploadResponse,
   BackendId,
   BackendRuntime,
   BackgroundCommandListRawPayload,
@@ -42,6 +44,9 @@ import type {
   ChatStreamErrorEvent,
   ChatStreamEvent,
   ChatStreamRequest,
+  CodexInputItem,
+  CodexTurnControlResponse,
+  ComposerAttachmentState,
   ChatTurnAbortedEvent,
   CodexPairedEditorStateRequest,
   CodexGoalLoopAction,
@@ -235,6 +240,10 @@ function createWorkspaceApp() {
   const codexAdvancedModeFabEdge = ref<CodexAdvancedModeFabEdge>(cachedCodexAdvancedModeFab.edge)
   const codexAdvancedModeFabTop = ref(cachedCodexAdvancedModeFab.top)
   const composerText = ref('')
+  const composerAttachments = ref<ComposerAttachmentState[]>([])
+  const steerText = ref('')
+  const isSteering = ref(false)
+  const isInterrupting = ref(false)
   const composerSelectionStart = ref(0)
   const composerSelectionEnd = ref(0)
   const composerSelectionVersion = ref(0)
@@ -846,7 +855,7 @@ function createWorkspaceApp() {
   async function runChatMessage(
     sessionId: string,
     content: string,
-    options: { finalOnly?: boolean } = {},
+    options: { finalOnly?: boolean; attachmentIds?: string[]; attachmentLabels?: string[] } = {},
   ) {
     latestSessionLoadRequestId += 1
     isHydratingOlderActivity.value = false
@@ -854,14 +863,21 @@ function createWorkspaceApp() {
       (item) => item.kind === 'background' && item.state === 'running',
     )
     composerText.value = ''
+    clearComposerAttachments()
     composerSelectionStart.value = 0
     composerSelectionEnd.value = 0
     composerSelectionVersion.value += 1
-    chatMessages.value.push(makeUiMessage('user', content))
+    const attachmentSummary = options.attachmentLabels?.length
+      ? `\n${options.attachmentLabels.map((label) => `[Attachment] ${label}`).join('\n')}`
+      : ''
+    chatMessages.value.push(makeUiMessage('user', `${content}${attachmentSummary}`.trim()))
 
     const body: ChatStreamRequest = {
       session_id: sessionId,
-      message: content,
+      message: content || null,
+    }
+    if (options.attachmentIds?.length) {
+      body.attachment_ids = options.attachmentIds
     }
 
     if (options.finalOnly) {
@@ -1292,7 +1308,15 @@ function createWorkspaceApp() {
 
   async function submitMessage() {
     const content = composerText.value.trim()
-    if (!content || !canSendToSession.value) {
+    const readyAttachments = composerAttachments.value.filter((attachment) => attachment.status === 'ready')
+    const hasUploadingAttachment = composerAttachments.value.some(
+      (attachment) => attachment.status === 'uploading',
+    )
+    if (hasUploadingAttachment) {
+      errorMessage.value = 'Please wait for attachments to finish uploading.'
+      return
+    }
+    if ((!content && !readyAttachments.length) || !canSendToSession.value) {
       return
     }
 
@@ -1304,7 +1328,10 @@ function createWorkspaceApp() {
       if (await handleCodexSlashCommand(content)) {
         return
       }
-      await runChatMessage(activeSessionId.value, content)
+      await runChatMessage(activeSessionId.value, content, {
+        attachmentIds: readyAttachments.map((attachment) => attachment.id),
+        attachmentLabels: readyAttachments.map((attachment) => attachment.name),
+      })
     } catch (error) {
       errorMessage.value = toErrorMessage(error)
       activities.value.push(
@@ -1317,6 +1344,149 @@ function createWorkspaceApp() {
       )
     } finally {
       isSending.value = false
+    }
+  }
+
+  async function uploadComposerFiles(files: File[] | FileList) {
+    const sessionId = activeSessionId.value
+    if (!isCodexWorkspace.value || !sessionId || activeSession.value?.source === 'channel') {
+      errorMessage.value = 'Attachments are available for interactive Codex sessions.'
+      return
+    }
+    const fileList = Array.from(files)
+    for (const file of fileList) {
+      const localId = createClientId()
+      const pending: ComposerAttachmentState = {
+        local_id: localId,
+        id: localId,
+        name: file.name,
+        mime_type: file.type || 'application/octet-stream',
+        size: file.size,
+        kind: file.type.startsWith('image/') ? 'image' : 'binary',
+        preview_url: file.type.startsWith('image/') ? URL.createObjectURL(file) : null,
+        input_items: [],
+        status: 'uploading',
+        error: null,
+        file,
+      }
+      composerAttachments.value = [...composerAttachments.value, pending]
+      await uploadComposerAttachment(sessionId, localId, file)
+    }
+  }
+
+  async function uploadComposerAttachment(sessionId: string, localId: string, file: File) {
+    composerAttachments.value = composerAttachments.value.map((attachment) =>
+      attachment.local_id === localId
+        ? {
+            ...attachment,
+            status: 'uploading',
+            error: null,
+          }
+        : attachment,
+    )
+    const formData = new FormData()
+    formData.append('file', file, file.name)
+    try {
+      const uploaded = await apiPostForm<AttachmentUploadResponse>(
+        buildSessionAttachmentPath(sessionId),
+        formData,
+      )
+      const existing = composerAttachments.value.find((attachment) => attachment.local_id === localId)
+      revokeAttachmentPreview(existing)
+      composerAttachments.value = composerAttachments.value.map((attachment) =>
+        attachment.local_id === localId
+          ? {
+              ...uploaded,
+              local_id: localId,
+              status: 'ready',
+              error: null,
+              file: null,
+            }
+          : attachment,
+      )
+    } catch (error) {
+      composerAttachments.value = composerAttachments.value.map((attachment) =>
+        attachment.local_id === localId
+          ? {
+              ...attachment,
+              status: 'error',
+              error: toErrorMessage(error),
+              file,
+            }
+          : attachment,
+      )
+    }
+  }
+
+  function removeComposerAttachment(localId: string) {
+    const existing = composerAttachments.value.find((attachment) => attachment.local_id === localId)
+    revokeAttachmentPreview(existing)
+    composerAttachments.value = composerAttachments.value.filter(
+      (attachment) => attachment.local_id !== localId,
+    )
+  }
+
+  async function retryComposerAttachment(localId: string) {
+    const sessionId = activeSessionId.value
+    const attachment = composerAttachments.value.find((item) => item.local_id === localId)
+    if (!sessionId || !attachment?.file || attachment.status === 'uploading') {
+      return
+    }
+    await uploadComposerAttachment(sessionId, localId, attachment.file)
+  }
+
+  function revokeAttachmentPreview(attachment: ComposerAttachmentState | undefined) {
+    if (attachment?.preview_url?.startsWith('blob:')) {
+      URL.revokeObjectURL(attachment.preview_url)
+    }
+  }
+
+  function clearComposerAttachments() {
+    for (const attachment of composerAttachments.value) {
+      revokeAttachmentPreview(attachment)
+    }
+    composerAttachments.value = []
+  }
+
+  async function submitCodexSteer() {
+    const message = steerText.value.trim()
+    if (!message || !activeSessionId.value || isSteering.value) {
+      return
+    }
+    isSteering.value = true
+    errorMessage.value = ''
+    try {
+      await apiPost<CodexTurnControlResponse>(
+        buildCodexTurnControlPath(activeSessionId.value, 'steer'),
+        {
+          message,
+        },
+      )
+      steerText.value = ''
+      successMessage.value = 'Steer instruction sent to the active Codex turn.'
+    } catch (error) {
+      errorMessage.value = toErrorMessage(error)
+    } finally {
+      isSteering.value = false
+    }
+  }
+
+  async function interruptCodexTurn() {
+    if (!activeSessionId.value || isInterrupting.value) {
+      return
+    }
+    isInterrupting.value = true
+    errorMessage.value = ''
+    try {
+      await apiPost<CodexTurnControlResponse>(
+        buildCodexTurnControlPath(activeSessionId.value, 'interrupt'),
+        {},
+      )
+      successMessage.value = 'Interrupt request sent to Codex.'
+    } catch (error) {
+      errorMessage.value = toErrorMessage(error)
+    } finally {
+      isInterrupting.value = false
     }
   }
 
@@ -1416,6 +1586,14 @@ function createWorkspaceApp() {
 
   function buildSessionApprovalPath(sessionId: string): string {
     return `${buildSessionBasePath(sessionId)}/approvals/respond`
+  }
+
+  function buildSessionAttachmentPath(sessionId: string): string {
+    return `/api/chat/sessions/${encodeURIComponent(sessionId)}/attachments`
+  }
+
+  function buildCodexTurnControlPath(sessionId: string, action: 'steer' | 'interrupt'): string {
+    return `/api/codex/sessions/${encodeURIComponent(sessionId)}/turns/${action}`
   }
 
   function buildSessionDeletePath(sessionId: string): string {
@@ -3406,6 +3584,7 @@ function createWorkspaceApp() {
       shell: overrides.shell ?? null,
       tool: overrides.tool ?? null,
       approval: overrides.approval ?? null,
+      media: overrides.media ?? null,
     }
   }
 
@@ -3542,6 +3721,7 @@ function createWorkspaceApp() {
         result,
         isError,
       }),
+      media: mediaPreviewFromMetadata(options.toolName, metadata),
     }
   }
 
@@ -3583,6 +3763,10 @@ function createWorkspaceApp() {
         return 'Read todos'
       case 'todo_write':
         return 'Update todos'
+      case 'image_generation':
+        return 'Generate image'
+      case 'image_view':
+        return 'View image'
       default:
         return toolName.replace(/_/g, ' ')
     }
@@ -3653,6 +3837,16 @@ function createWorkspaceApp() {
           ? `${formatFileChangeKind(firstChange.kind)} ${firstPath}.`
           : `${formatFileChangeKind(firstChange.kind)} ${firstPath} and ${changes.length - 1} more file${changes.length === 2 ? '' : 's'}.`
       }
+    }
+
+    if (toolName === 'image_generation') {
+      const label = stringMetadata(metadata.preview_name) ?? stringMetadata(metadata.saved_path)
+      return label ? `Generated ${displayNameForPath(label)}.` : (result || 'Generated an image.')
+    }
+
+    if (toolName === 'image_view') {
+      const path = stringMetadata(metadata.path)
+      return path ? `Viewed ${displayNameForPath(path)}.` : (result || 'Viewed an image.')
     }
 
     if (raw?.kind === 'file_read') {
@@ -3770,6 +3964,31 @@ function createWorkspaceApp() {
     return notes
   }
 
+  function mediaPreviewFromMetadata(
+    toolName: string,
+    metadata: Record<string, unknown>,
+  ): ChatActivity['media'] {
+    if (toolName !== 'image_generation' && toolName !== 'image_view') {
+      return null
+    }
+    const url = stringMetadata(metadata.preview_url)
+    const path = stringMetadata(metadata.path) ?? stringMetadata(metadata.saved_path)
+    const label = stringMetadata(metadata.preview_name)
+    const mimeType = stringMetadata(metadata.mime_type)
+    const size = numberMetadata(metadata.size)
+    if (!url && !path) {
+      return null
+    }
+    return {
+      kind: 'image',
+      url,
+      label,
+      path,
+      mime_type: mimeType,
+      size,
+    }
+  }
+
   function fileChangeMetadataEntries(metadata: Record<string, unknown>) {
     const value = metadata.changes
     if (!Array.isArray(value)) {
@@ -3816,6 +4035,10 @@ function createWorkspaceApp() {
 
   function stringMetadata(value: unknown) {
     return typeof value === 'string' ? value : null
+  }
+
+  function numberMetadata(value: unknown) {
+    return typeof value === 'number' && Number.isFinite(value) ? value : null
   }
 
   function extractSkillLoadName(result: string) {
@@ -4119,6 +4342,7 @@ function createWorkspaceApp() {
     target.shell = nextValue.shell
     target.tool = nextValue.tool
     target.approval = nextValue.approval ?? target.approval
+    target.media = nextValue.media ?? target.media
   }
 
   function upsertShellActivity(activityId: string, nextValue: ChatActivity) {
@@ -4145,6 +4369,7 @@ function createWorkspaceApp() {
     target.shell = mergeShellState(target.shell, nextValue.shell)
     target.tool = nextValue.tool ?? target.tool
     target.approval = nextValue.approval ?? target.approval
+    target.media = nextValue.media ?? target.media
   }
 
   function rekeyActivity(sourceId: string, targetId: string) {
@@ -4734,6 +4959,10 @@ function createWorkspaceApp() {
     codexAdvancedModeFabEdge,
     codexAdvancedModeFabTop,
     composerText,
+    composerAttachments,
+    steerText,
+    isSteering,
+    isInterrupting,
     composerSelectionStart,
     composerSelectionEnd,
     composerSelectionVersion,
@@ -4824,6 +5053,11 @@ function createWorkspaceApp() {
     stopChannelAccount,
     submitApprovalDecision,
     submitMessage,
+    uploadComposerFiles,
+    removeComposerAttachment,
+    retryComposerAttachment,
+    submitCodexSteer,
+    interruptCodexTurn,
     handleComposerSelectionChange,
   })
 }

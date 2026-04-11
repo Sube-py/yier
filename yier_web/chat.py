@@ -41,6 +41,7 @@ from yier_agents import (
 from yier_agents.src.config import AssistantSettings
 
 from yier_web.agent_backends import ChatSessionContext, CodexAppServerBackend, YierAgentBackend
+from yier_web.attachments import AttachmentStorageError, AttachmentStorageService
 from yier_web.codex.background import (
     FollowupQueueManager,
     _build_codex_background_runner_command,
@@ -182,6 +183,7 @@ class ChatService:
         self.session_conversation_state_store = SessionConversationStateStore(
             self.config_service.session_conversation_state_path
         )
+        self.attachment_storage = AttachmentStorageService(self.config_service.uploads_path)
         self.codex_workspace = CodexWorkspaceService(
             self.config_service.home_dir,
             config_service=self.config_service,
@@ -590,6 +592,66 @@ class ChatService:
             selection_start=selection_start,
             selection_end=selection_end,
         )
+
+    async def save_chat_attachment(self, session_id: str, upload: Any) -> dict[str, Any]:
+        if self.is_channel_session(session_id):
+            raise AttachmentStorageError("Channel-backed sessions are read-only in the chat workspace.")
+        if self.get_session_context(session_id).backend_id != "codex":
+            raise AttachmentStorageError("Attachments are available for interactive Codex sessions.")
+        response = await self.attachment_storage.save_upload(
+            session_id=session_id,
+            upload=upload,
+        )
+        return response.model_dump(mode="json")
+
+    def get_attachment_media_path(self, session_id: str, attachment_id: str) -> tuple[Path, str, str]:
+        return self.attachment_storage.media_path(
+            session_id=session_id,
+            attachment_id=attachment_id,
+        )
+
+    def register_local_image_preview(
+        self,
+        session_id: str,
+        source_path: str,
+    ) -> dict[str, Any] | None:
+        response = self.attachment_storage.register_local_image(
+            session_id=session_id,
+            source_path=source_path,
+        )
+        if response is None:
+            return None
+        return response.model_dump(mode="json")
+
+    def build_chat_input_payload(
+        self,
+        *,
+        session_id: str,
+        message: str | None,
+        input_items: list[Any] | None = None,
+        attachment_ids: list[str] | None = None,
+    ) -> list[dict[str, Any]] | str:
+        items: list[dict[str, Any]] = []
+        if message and message.strip():
+            items.append({"type": "text", "text": message.strip()})
+        for item in input_items or []:
+            if hasattr(item, "model_dump"):
+                dumped = item.model_dump(mode="json", exclude_none=True)
+            else:
+                dumped = item
+            if isinstance(dumped, dict) and isinstance(dumped.get("type"), str):
+                items.append(dict(dumped))
+        for attachment_id in attachment_ids or []:
+            items.extend(
+                self.attachment_storage.input_items_for_attachment(
+                    session_id=session_id,
+                    attachment_id=attachment_id,
+                )
+            )
+        if len(items) == 1 and items[0].get("type") == "text":
+            text = items[0].get("text")
+            return text if isinstance(text, str) else ""
+        return items
 
     def _paired_editor_workspace_name(self, session_id: str) -> str:
         normalized_session_id = session_id.strip()
@@ -1491,7 +1553,11 @@ class ChatService:
             await backend.close_session(session_id)
         return deleted
 
-    async def stream_chat(self, session_id: str, user_message: str) -> AsyncIterator[dict[str, Any]]:
+    async def stream_chat(
+        self,
+        session_id: str,
+        user_message: list[dict[str, Any]] | dict[str, Any] | str,
+    ) -> AsyncIterator[dict[str, Any]]:
         event_queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
         producer = asyncio.create_task(
             self._produce_stream_events(
@@ -1533,7 +1599,7 @@ class ChatService:
     async def _produce_stream_events(
         self,
         session_id: str,
-        user_message: str,
+        user_message: list[dict[str, Any]] | dict[str, Any] | str,
         event_queue: asyncio.Queue[dict[str, Any] | None],
     ) -> None:
         async def emit(event: str, data: dict[str, Any]) -> None:
@@ -1578,16 +1644,18 @@ class ChatService:
                 project_path=str(context.project_path),
                 backend_state=context.backend_state,
             )
+            transcript_text = self._codex_input_payload_text(user_message)
             self._append_transcript_message(
                 session_id,
-                Message(role="user", content=user_message),
+                Message(role="user", content=transcript_text),
             )
             backend = self.backends.get(context.backend_id)
             if backend is None:
                 raise RuntimeError(f"Unknown backend: {context.backend_id}")
             if context.backend_id != "codex":
                 await emit("run_started", {"session_id": session_id})
-            finish_reason = await backend.stream_chat(context, user_message, emit)
+            backend_input = user_message if context.backend_id == "codex" else transcript_text
+            finish_reason = await backend.stream_chat(context, backend_input, emit)
         except Exception as exc:
             finish_reason = "error"
             await emit(
@@ -2160,6 +2228,22 @@ class ChatService:
                 return
             if not isinstance(value, dict):
                 return
+
+            item_type = value.get("type")
+            if item_type == "image" and isinstance(value.get("url"), str):
+                parts.append(f"[Image] {value['url']}")
+            elif item_type == "localImage" and isinstance(value.get("path"), str):
+                parts.append(f"[Local image] {value['path']}")
+            elif item_type == "skill":
+                name = value.get("name")
+                path = value.get("path")
+                if isinstance(name, str) and isinstance(path, str):
+                    parts.append(f"[Skill] {name} ({path})")
+            elif item_type == "mention":
+                name = value.get("name")
+                path = value.get("path")
+                if isinstance(name, str) and isinstance(path, str):
+                    parts.append(f"[Mention] {name} ({path})")
 
             text_value = value.get("text")
             if isinstance(text_value, str) and text_value.strip():

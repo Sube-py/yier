@@ -12,9 +12,16 @@ from pydantic import BaseModel
 
 from codex_app_server import (
     AppServerClient,
+    ImageInput,
+    Input,
+    LocalImageInput,
+    MentionInput,
+    SkillInput,
     Thread as CodexThread,
     ThreadResumeParams,
     ThreadStartParams,
+    TextInput,
+    TurnHandle,
 )
 from codex_app_server.generated.v2_all import (
     AgentMessageDeltaNotification,
@@ -71,6 +78,7 @@ from codex_app_server.models import Notification
 from yier_agents import Message
 
 from yier_web.agent_backends.base import ChatBackend, ChatSessionContext, StreamEmitter
+from yier_web.attachments import AttachmentStorageError
 from yier_web.codex.runtime import (
     CodexSessionRuntime,
     PendingApprovalState,
@@ -220,7 +228,7 @@ class CodexAppServerBackend(ChatBackend):
     async def stream_chat(
         self,
         context: ChatSessionContext,
-        user_message: str,
+        user_message: list[dict[str, Any]] | dict[str, Any] | str,
         emit: StreamEmitter,
     ) -> str:
         runtime = await self._ensure_runtime(context)
@@ -346,10 +354,12 @@ class CodexAppServerBackend(ChatBackend):
         if not resolved_turn_id:
             raise RuntimeError("No active Codex turn found for steer request.")
         response = await asyncio.to_thread(
-            runtime.client.turn_steer,
-            runtime.thread_id,
-            resolved_turn_id,
-            input_payload,
+            TurnHandle(
+                runtime.client,
+                runtime.thread_id,
+                resolved_turn_id,
+            ).steer,
+            self._sdk_input_from_payload(input_payload),
         )
         return self._safe_model_dump(response)
 
@@ -416,9 +426,11 @@ class CodexAppServerBackend(ChatBackend):
         if not resolved_turn_id:
             raise RuntimeError("No active Codex turn found for interrupt request.")
         response = await asyncio.to_thread(
-            runtime.client.turn_interrupt,
-            runtime.thread_id,
-            resolved_turn_id,
+            TurnHandle(
+                runtime.client,
+                runtime.thread_id,
+                resolved_turn_id,
+            ).interrupt,
         )
         return self._safe_model_dump(response)
 
@@ -719,7 +731,7 @@ class CodexAppServerBackend(ChatBackend):
         self,
         runtime: CodexSessionRuntime,
         context: ChatSessionContext,
-        user_message: str,
+        user_message: list[dict[str, Any]] | dict[str, Any] | str,
     ) -> str:
         response = self._start_turn_blocking(runtime, context, user_message)
         turn_id = self._response_turn_id(response)
@@ -732,7 +744,7 @@ class CodexAppServerBackend(ChatBackend):
         runtime: CodexSessionRuntime,
         context: ChatSessionContext,
         input_payload: list[dict[str, Any]] | dict[str, Any] | str,
-    ) -> TurnStartResponse:
+    ) -> TurnStartResponse | BaseModel | dict[str, Any]:
         assert runtime.client is not None
         assert runtime.thread_id is not None
         runtime.status = "active"
@@ -744,12 +756,29 @@ class CodexAppServerBackend(ChatBackend):
             thread_id=runtime.thread_id,
             input_type=type(turn_input).__name__,
         )
-        response = runtime.client.turn_start(
-            runtime.thread_id,
-            turn_input,
-            params=self._turn_params(context),
-        )
-        turn_id = self._response_turn_id(response)
+        if isinstance(runtime.client, AppServerClient):
+            turn_handle = CodexThread(runtime.client, runtime.thread_id).turn(
+                self._sdk_input_from_payload(turn_input),
+                **self._turn_params(context),
+            )
+            turn_id = turn_handle.id
+            response: TurnStartResponse | dict[str, Any] = {
+                "turn": {
+                    "id": turn_id,
+                    "status": "inProgress",
+                    "items": [],
+                }
+            }
+        else:
+            # Unit tests use lightweight fake clients that implement only the
+            # low-level shape; production runtimes use the public SDK branch.
+            turn_handle = None
+            response = runtime.client.turn_start(
+                runtime.thread_id,
+                turn_input,
+                params=self._turn_params(context),
+            )
+            turn_id = self._response_turn_id(response)
         if not turn_id:
             raise RuntimeError("Codex turn_start response did not include a turn id.")
         _codex_ipc_debug_log(
@@ -758,6 +787,8 @@ class CodexAppServerBackend(ChatBackend):
             thread_id=runtime.thread_id,
             turn_id=turn_id,
         )
+        if turn_handle is not None:
+            runtime.turn_handles[turn_id] = turn_handle
         runtime.turn_snapshots[turn_id] = TurnSnapshotState(
             params=self._build_turn_state_params(context, turn_input),
             turn_started_at_ms=int(time() * 1000),
@@ -785,10 +816,13 @@ class CodexAppServerBackend(ChatBackend):
         assert runtime.thread_id is not None
         finish_reason = "stop"
         runtime.streaming_turn_id = turn_id
-        runtime.client.acquire_turn_consumer(turn_id)
         try:
-            while True:
-                notification = runtime.client.next_notification()
+            turn_handle = runtime.turn_handles.get(turn_id) or TurnHandle(
+                runtime.client,
+                runtime.thread_id,
+                turn_id,
+            )
+            for notification in turn_handle.stream():
                 notification_thread_id = self._notification_value(notification, "thread_id")
                 if notification_thread_id and notification_thread_id != runtime.thread_id:
                     continue
@@ -803,7 +837,7 @@ class CodexAppServerBackend(ChatBackend):
 
                 self._handle_turn_notification(runtime, context, notification)
         finally:
-            runtime.client.release_turn_consumer(turn_id)
+            runtime.turn_handles.pop(turn_id, None)
             runtime.streaming_turn_id = None
 
         return finish_reason
@@ -828,6 +862,53 @@ class CodexAppServerBackend(ChatBackend):
             {"type": "text", "text": plan_text},
             *input_payload,
         ]
+
+    def _sdk_input_from_payload(
+        self,
+        input_payload: list[dict[str, Any]] | dict[str, Any] | str,
+    ) -> Input:
+        if isinstance(input_payload, str):
+            return TextInput(input_payload)
+        if isinstance(input_payload, dict):
+            return self._sdk_input_item_from_payload(input_payload)
+
+        items = [
+            self._sdk_input_item_from_payload(item)
+            for item in input_payload
+            if isinstance(item, dict)
+        ]
+        if not items:
+            return TextInput("")
+        return items
+
+    def _sdk_input_item_from_payload(self, item: dict[str, Any]) -> Any:
+        item_type = item.get("type")
+        if item_type == "text":
+            text = item.get("text")
+            return TextInput(text if isinstance(text, str) else "")
+        if item_type == "image":
+            url = item.get("url")
+            if not isinstance(url, str) or not url.strip():
+                raise ValueError("Codex image input requires a non-empty url.")
+            return ImageInput(url.strip())
+        if item_type == "localImage":
+            path = item.get("path")
+            if not isinstance(path, str) or not path.strip():
+                raise ValueError("Codex localImage input requires a non-empty path.")
+            return LocalImageInput(path.strip())
+        if item_type == "skill":
+            name = item.get("name")
+            path = item.get("path")
+            if not isinstance(name, str) or not name.strip() or not isinstance(path, str) or not path.strip():
+                raise ValueError("Codex skill input requires non-empty name and path.")
+            return SkillInput(name.strip(), path.strip())
+        if item_type == "mention":
+            name = item.get("name")
+            path = item.get("path")
+            if not isinstance(name, str) or not name.strip() or not isinstance(path, str) or not path.strip():
+                raise ValueError("Codex mention input requires non-empty name and path.")
+            return MentionInput(name.strip(), path.strip())
+        raise ValueError(f"Unsupported Codex input item type: {item_type}")
 
     def _handle_thread_notification(
         self,
@@ -1290,6 +1371,38 @@ class CodexAppServerBackend(ChatBackend):
                     "iteration": 0,
                 },
             )
+            return
+
+        if isinstance(item, ImageGenerationThreadItem):
+            self._emit_from_thread(
+                runtime,
+                "tool_call_start",
+                {
+                    "session_id": context.session_id,
+                    "tool_name": "image_generation",
+                    "tool_call_id": item.id,
+                    "arguments": {
+                        "revised_prompt": item.revised_prompt,
+                    },
+                    "iteration": 0,
+                },
+            )
+            return
+
+        if isinstance(item, ImageViewThreadItem):
+            self._emit_from_thread(
+                runtime,
+                "tool_call_start",
+                {
+                    "session_id": context.session_id,
+                    "tool_name": "image_view",
+                    "tool_call_id": item.id,
+                    "arguments": {
+                        "path": item.path,
+                    },
+                    "iteration": 0,
+                },
+            )
 
     def _handle_item_completed(
         self,
@@ -1463,6 +1576,52 @@ class CodexAppServerBackend(ChatBackend):
                     "result": f"Searched the web for {item.query}.",
                     "is_error": False,
                     "metadata": {},
+                    "raw": None,
+                    "iteration": 0,
+                },
+            )
+            return
+
+        if isinstance(item, ImageViewThreadItem):
+            preview = self._preview_metadata_for_local_image(context.session_id, item.path)
+            self._emit_from_thread(
+                runtime,
+                "tool_call_end",
+                {
+                    "session_id": context.session_id,
+                    "tool_name": "image_view",
+                    "tool_call_id": item.id,
+                    "result": f"Viewed image: {item.path}",
+                    "is_error": False,
+                    "metadata": {
+                        "path": item.path,
+                        **preview,
+                    },
+                    "raw": None,
+                    "iteration": 0,
+                },
+            )
+            return
+
+        if isinstance(item, ImageGenerationThreadItem):
+            result = item.saved_path or item.result
+            preview = self._preview_metadata_for_local_image(context.session_id, result)
+            self._emit_from_thread(
+                runtime,
+                "tool_call_end",
+                {
+                    "session_id": context.session_id,
+                    "tool_name": "image_generation",
+                    "tool_call_id": item.id,
+                    "result": f"Generated image: {result}",
+                    "is_error": item.status != "completed",
+                    "metadata": {
+                        "status": item.status,
+                        "saved_path": item.saved_path,
+                        "result": item.result,
+                        "revised_prompt": item.revised_prompt,
+                        **preview,
+                    },
                     "raw": None,
                     "iteration": 0,
                 },
@@ -1735,6 +1894,34 @@ class CodexAppServerBackend(ChatBackend):
         if normalized_decision == "cancel":
             return {"decision": "cancel"}
         return {"decision": "accept"}
+
+    def _preview_metadata_for_local_image(
+        self,
+        session_id: str,
+        path: str | None,
+    ) -> dict[str, Any]:
+        if not isinstance(path, str) or not path.strip():
+            return {}
+        try:
+            preview = self.chat_service.register_local_image_preview(session_id, path)
+        except AttachmentStorageError:
+            return {}
+        if not isinstance(preview, dict):
+            return {}
+        metadata: dict[str, Any] = {}
+        preview_url = preview.get("preview_url")
+        if isinstance(preview_url, str) and preview_url:
+            metadata["preview_url"] = preview_url
+        name = preview.get("name")
+        if isinstance(name, str) and name:
+            metadata["preview_name"] = name
+        mime_type = preview.get("mime_type")
+        if isinstance(mime_type, str) and mime_type:
+            metadata["mime_type"] = mime_type
+        size = preview.get("size")
+        if isinstance(size, int):
+            metadata["size"] = size
+        return metadata
 
     def _thread_params(self, context: ChatSessionContext) -> dict[str, Any]:
         settings = self.chat_service.config_service.load_web_settings().codex
@@ -2440,17 +2627,22 @@ class CodexAppServerBackend(ChatBackend):
             return
 
         if isinstance(item, ImageViewThreadItem):
-            self._append_activity_event(
+            self._append_tool_activity_events(
+                context.session_id,
                 activity_events,
-                "plan",
-                {
-                    "session_id": context.session_id,
-                    "item_id": item.id,
-                    "content": f"Viewed image: {item.path}",
-                    "iteration": 0,
-                },
                 activity_event_counter=activity_event_counter,
                 sequence_counter=sequence_counter,
+                tool_name="image_view",
+                tool_call_id=item.id,
+                arguments={
+                    "path": item.path,
+                },
+                result=f"Viewed image: {item.path}",
+                is_error=False,
+                metadata={
+                    "path": item.path,
+                    **self._preview_metadata_for_local_image(context.session_id, item.path),
+                },
             )
             return
 
@@ -2472,6 +2664,8 @@ class CodexAppServerBackend(ChatBackend):
                     "status": item.status,
                     "saved_path": item.saved_path,
                     "result": item.result,
+                    "revised_prompt": item.revised_prompt,
+                    **self._preview_metadata_for_local_image(context.session_id, result),
                 },
             )
             return

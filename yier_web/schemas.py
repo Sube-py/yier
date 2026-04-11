@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 MCPRuntimeStatus = Literal[
@@ -27,6 +27,8 @@ CodexReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "xhig
 CodexServiceTier = Literal["", "fast", "flex"]
 CodexApprovalsReviewer = Literal["user", "guardian_subagent"]
 ApprovalDecision = Literal["accept", "accept_for_session", "decline", "cancel"]
+CodexInputItemType = Literal["text", "image", "localImage", "skill", "mention"]
+CodexAttachmentKind = Literal["image", "text", "binary"]
 
 
 class StoredLLMSettings(BaseModel):
@@ -359,14 +361,81 @@ class SessionActivityPageResponse(BaseModel):
     activity_history: ActivityHistoryPayload = Field(default_factory=ActivityHistoryPayload)
 
 
+class CodexInputItem(BaseModel):
+    type: CodexInputItemType
+    text: str | None = None
+    url: str | None = None
+    path: str | None = None
+    name: str | None = None
+    text_elements: list[dict[str, Any]] = Field(default_factory=list)
+
+    @field_validator("text", "url", "path", "name")
+    @classmethod
+    def strip_optional_string(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
+
+
+class AttachmentUploadResponse(BaseModel):
+    id: str
+    name: str
+    mime_type: str
+    size: int
+    kind: CodexAttachmentKind
+    preview_url: str | None = None
+    input_items: list[CodexInputItem] = Field(default_factory=list)
+
+
 class ChatStreamRequest(BaseModel):
     session_id: str
-    message: str
+    message: str | None = None
+    input_items: list[CodexInputItem] = Field(default_factory=list)
+    attachment_ids: list[str] = Field(default_factory=list)
 
-    @field_validator("session_id", "message")
+    @field_validator("session_id")
     @classmethod
-    def strip_fields(cls, value: str) -> str:
+    def strip_session_id(cls, value: str) -> str:
         return value.strip()
+
+    @field_validator("message")
+    @classmethod
+    def strip_message(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
+
+    @field_validator("attachment_ids")
+    @classmethod
+    def strip_attachment_ids(cls, value: list[str]) -> list[str]:
+        return [item.strip() for item in value if item.strip()]
+
+    @model_validator(mode="after")
+    def validate_input(self) -> "ChatStreamRequest":
+        if self.message or self.input_items or self.attachment_ids:
+            return self
+        raise ValueError("message, input_items, or attachment_ids is required.")
+
+
+class CodexTurnControlRequest(BaseModel):
+    turn_id: str | None = None
+    message: str | None = None
+    input_items: list[CodexInputItem] = Field(default_factory=list)
+
+    @field_validator("turn_id", "message")
+    @classmethod
+    def strip_optional_fields(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
+
+
+class CodexTurnControlResponse(BaseModel):
+    ok: bool = True
+    result: dict[str, Any] = Field(default_factory=dict)
 
 
 class ChannelWorkspaceResponse(BaseModel):

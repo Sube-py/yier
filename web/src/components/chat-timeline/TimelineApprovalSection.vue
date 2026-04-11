@@ -210,8 +210,15 @@ function submitApproval(decision: ApprovalDecision) {
         size="small"
         :severity="option.value === 'decline' || option.value === 'cancel' ? 'secondary' : undefined"
         :outlined="option.value === 'decline' || option.value === 'cancel'"
+        :disabled="Boolean(activity.approval.submittedDecision)"
         @click="submitApproval(option.value)"
       />
     </div>
+    <p
+      v-if="activity.approval?.submittedDecision"
+      class="m-0 text-[0.8rem] text-[color:var(--app-text-soft)]"
+    >
+      Submitted {{ activity.approval.submittedDecision }}. Waiting for Codex to continue.
+    </p>
   </div>
 </template>

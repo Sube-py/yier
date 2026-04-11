@@ -65,6 +65,14 @@ export async function apiPost<T>(path: string, payload: unknown): Promise<T> {
   return parseJsonResponse<T>(response)
 }
 
+export async function apiPostForm<T>(path: string, payload: FormData): Promise<T> {
+  const response = await fetch(path, {
+    method: 'POST',
+    body: payload,
+  })
+  return parseJsonResponse<T>(response)
+}
+
 export async function apiPut<T>(path: string, payload: unknown): Promise<T> {
   const response = await fetch(path, {
     method: 'PUT',

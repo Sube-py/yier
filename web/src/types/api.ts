@@ -5,6 +5,8 @@ export type CodexWorkMode = 'plan' | 'build'
 export type CodexGoalLoopStatus = 'idle' | 'running' | 'paused' | 'blocked' | 'completed' | 'failed'
 export type CodexGoalLoopAction = 'start' | 'pause' | 'resume' | 'complete' | 'clear'
 export type ApprovalDecision = 'accept' | 'accept_for_session' | 'decline' | 'cancel'
+export type CodexInputItemType = 'text' | 'image' | 'localImage' | 'skill' | 'mention'
+export type CodexAttachmentKind = 'image' | 'text' | 'binary'
 
 export interface CodexGoalLoopState {
   status: CodexGoalLoopStatus
@@ -247,7 +249,46 @@ export interface ChannelAccountActionResponse {
 
 export interface ChatStreamRequest {
   session_id: string
-  message: string
+  message?: string | null
+  input_items?: CodexInputItem[]
+  attachment_ids?: string[]
+}
+
+export interface CodexInputItem {
+  type: CodexInputItemType
+  text?: string | null
+  url?: string | null
+  path?: string | null
+  name?: string | null
+  text_elements?: Array<Record<string, unknown>>
+}
+
+export interface AttachmentUploadResponse {
+  id: string
+  name: string
+  mime_type: string
+  size: number
+  kind: CodexAttachmentKind
+  preview_url?: string | null
+  input_items: CodexInputItem[]
+}
+
+export interface ComposerAttachmentState extends AttachmentUploadResponse {
+  local_id: string
+  status: 'uploading' | 'ready' | 'error'
+  error?: string | null
+  file?: File | null
+}
+
+export interface CodexTurnControlRequest {
+  turn_id?: string | null
+  message?: string | null
+  input_items?: CodexInputItem[]
+}
+
+export interface CodexTurnControlResponse {
+  ok: boolean
+  result: Record<string, unknown>
 }
 
 export interface CreateSessionRequest {
@@ -1074,6 +1115,15 @@ export interface ApprovalActivityState {
   submittedDecision?: ApprovalDecision | null
 }
 
+export interface ActivityMediaPreview {
+  kind: 'image'
+  url?: string | null
+  label?: string | null
+  path?: string | null
+  mime_type?: string | null
+  size?: number | null
+}
+
 export interface ChatActivity {
   id: string
   sequence?: number
@@ -1089,6 +1139,7 @@ export interface ChatActivity {
   shell: ShellActivityState | null
   tool: ToolActivityState | null
   approval?: ApprovalActivityState | null
+  media?: ActivityMediaPreview | null
 }
 
 export interface EditableMcpServer {

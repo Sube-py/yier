@@ -5,13 +5,12 @@ import subprocess
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol, Self
+from typing import TYPE_CHECKING, Any
 
 from codex_app_server import (
-    AppServerClient,
     AppServerConfig,
-    Codex,
-    Thread as CodexThread,
+    AsyncCodex,
+    AsyncThread,
     ThreadSortKey,
     ThreadSourceKind,
 )
@@ -44,31 +43,6 @@ INTERACTIVE_THREAD_SOURCE_KINDS = [
 ]
 
 
-class _CodexWorkspaceSession(Protocol):
-    _client: AppServerClient
-
-    def __enter__(self) -> Self: ...
-
-    def __exit__(self, exc_type: object, exc: object, tb: object) -> None: ...
-
-    def thread_list(
-        self,
-        *,
-        archived: bool | None = None,
-        cursor: str | None = None,
-        cwd: str | None = None,
-        limit: int | None = None,
-        model_providers: list[str] | None = None,
-        search_term: str | None = None,
-        sort_key: ThreadSortKey | None = None,
-        source_kinds: list[ThreadSourceKind] | None = None,
-    ) -> ThreadListResponse: ...
-
-
-class _CodexWorkspaceFactory(Protocol):
-    def __call__(self, *, config: AppServerConfig) -> _CodexWorkspaceSession: ...
-
-
 @dataclass(slots=True)
 class _IndexEntry:
     thread_name: str | None
@@ -80,7 +54,6 @@ class CodexWorkspaceService:
         self,
         home_dir: Path,
         config_service: "AppConfigService | None" = None,
-        codex_factory: _CodexWorkspaceFactory | None = None,
     ) -> None:
         self.home_dir = home_dir.resolve()
         self.config_service = config_service
@@ -94,10 +67,9 @@ class CodexWorkspaceService:
             / "com.openai.chat"
             / "app_pairing_extensions"
         )
-        self.codex_factory = codex_factory or Codex
 
-    def load_workspace(self) -> CodexWorkspaceResponse:
-        sessions = self.list_active_sessions()
+    async def load_workspace(self) -> CodexWorkspaceResponse:
+        sessions = await self.list_active_sessions()
         projects: dict[str, list[CodexNativeSessionSummary]] = {}
         for session in sessions:
             projects.setdefault(session.project_path, []).append(session)
@@ -126,16 +98,21 @@ class CodexWorkspaceService:
             paired_editors=self.list_paired_editors(),
         )
 
-    def get_active_session(self, thread_id: str) -> CodexNativeSessionSummary | None:
+    async def get_active_session(self, thread_id: str) -> CodexNativeSessionSummary | None:
         normalized_thread_id = thread_id.strip()
         if not normalized_thread_id:
             return None
-        for session in self.list_active_sessions():
+        for session in await self.list_active_sessions():
             if session.thread_id == normalized_thread_id:
                 return session
         return None
 
-    def read_thread(self, thread_id: str, *, include_turns: bool = True) -> ThreadReadResponse | None:
+    async def read_thread(
+        self,
+        thread_id: str,
+        *,
+        include_turns: bool = True,
+    ) -> ThreadReadResponse | None:
         normalized_thread_id = thread_id.strip()
         if not normalized_thread_id:
             return None
@@ -145,15 +122,15 @@ class CodexWorkspaceService:
             return None
 
         try:
-            with self.codex_factory(config=config) as codex:
-                return CodexThread(codex._client, normalized_thread_id).read(
+            async with AsyncCodex(config=config) as codex:
+                return await AsyncThread(codex, normalized_thread_id).read(
                     include_turns=include_turns
                 )
         except Exception:
             return None
 
-    def list_active_sessions(self) -> list[CodexNativeSessionSummary]:
-        sdk_sessions = self._list_active_sessions_from_sdk()
+    async def list_active_sessions(self) -> list[CodexNativeSessionSummary]:
+        sdk_sessions = await self._list_active_sessions_from_sdk()
         if sdk_sessions is not None:
             return sdk_sessions
         return self._list_active_sessions_from_disk()
@@ -192,7 +169,7 @@ class CodexWorkspaceService:
             separators=(",", ":"),
         )
 
-    def _list_active_sessions_from_sdk(self) -> list[CodexNativeSessionSummary] | None:
+    async def _list_active_sessions_from_sdk(self) -> list[CodexNativeSessionSummary] | None:
         config = self._sdk_config()
         if config is None:
             return None
@@ -200,9 +177,9 @@ class CodexWorkspaceService:
         try:
             sessions: dict[str, CodexNativeSessionSummary] = {}
             cursor: str | None = None
-            with self.codex_factory(config=config) as codex:
+            async with AsyncCodex(config=config) as codex:
                 while True:
-                    response = codex.thread_list(
+                    response = await codex.thread_list(
                         archived=False,
                         cursor=cursor,
                         limit=100,

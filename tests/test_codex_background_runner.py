@@ -164,7 +164,7 @@ class FakeChatService:
             "updated_at": 0.0,
         }
 
-    def get_codex_workspace(self) -> CodexWorkspaceResponse:
+    async def get_codex_workspace(self) -> CodexWorkspaceResponse:
         return self.workspace
 
 

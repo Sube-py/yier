@@ -512,7 +512,7 @@ def create_find_codex_projects_tool(
         ctx: ToolContext,
     ) -> ToolOutput:
         del ctx
-        workspace = chat_service.get_codex_workspace()
+        workspace = await chat_service.get_codex_workspace()
         projects: list[dict[str, object]] = []
 
         for project_id, project in enumerate(workspace.projects, start=1):
@@ -588,7 +588,7 @@ def create_find_codex_sessions_tool(
         ctx: ToolContext,
     ) -> ToolOutput:
         del ctx
-        workspace = chat_service.get_codex_workspace()
+        workspace = await chat_service.get_codex_workspace()
         project_entries = list(enumerate(workspace.projects, start=1))
 
         if params.project_id is not None:

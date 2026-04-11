@@ -1006,11 +1006,11 @@ class CodexThreadFollowerBridge:
 
     async def _can_handle_thread_request(self, params: dict[str, Any]) -> bool:
         conversation_id = self._conversation_id(params)
-        return self.chat_service.can_handle_codex_conversation(conversation_id)
+        return await self.chat_service.can_handle_codex_conversation(conversation_id)
 
     async def _handle_start_turn(self, request: dict[str, Any]) -> dict[str, Any]:
         params = self._params(request)
-        session_id = self.chat_service.ensure_codex_conversation_session(
+        session_id = await self.chat_service.ensure_codex_conversation_session(
             self._conversation_id(params)
         )
         turn_start_params = self._turn_start_params(params)
@@ -1045,7 +1045,7 @@ class CodexThreadFollowerBridge:
 
     async def _handle_steer_turn(self, request: dict[str, Any]) -> dict[str, Any]:
         params = self._params(request)
-        session_id = self.chat_service.ensure_codex_conversation_session(
+        session_id = await self.chat_service.ensure_codex_conversation_session(
             self._conversation_id(params)
         )
         turn_id = self._turn_id(params)
@@ -1073,7 +1073,7 @@ class CodexThreadFollowerBridge:
 
     async def _handle_interrupt_turn(self, request: dict[str, Any]) -> dict[str, Any]:
         params = self._params(request)
-        session_id = self.chat_service.ensure_codex_conversation_session(
+        session_id = await self.chat_service.ensure_codex_conversation_session(
             self._conversation_id(params)
         )
         turn_id = self._turn_id(params)
@@ -1096,7 +1096,7 @@ class CodexThreadFollowerBridge:
         self, request: dict[str, Any]
     ) -> dict[str, Any]:
         params = self._params(request)
-        session_id = self.chat_service.ensure_codex_conversation_session(
+        session_id = await self.chat_service.ensure_codex_conversation_session(
             self._conversation_id(params)
         )
         updates = self._model_and_reasoning_updates(params)
@@ -1118,7 +1118,7 @@ class CodexThreadFollowerBridge:
         self, request: dict[str, Any]
     ) -> dict[str, Any]:
         params = self._params(request)
-        session_id = self.chat_service.ensure_codex_conversation_session(
+        session_id = await self.chat_service.ensure_codex_conversation_session(
             self._conversation_id(params)
         )
         collaboration_mode = self._collaboration_mode_value(params)
@@ -1142,7 +1142,7 @@ class CodexThreadFollowerBridge:
         self, request: dict[str, Any]
     ) -> dict[str, Any]:
         params = self._params(request)
-        session_id = self.chat_service.ensure_codex_conversation_session(
+        session_id = await self.chat_service.ensure_codex_conversation_session(
             self._conversation_id(params)
         )
         content = self._message_text(params)
@@ -1197,7 +1197,7 @@ class CodexThreadFollowerBridge:
         self, request: dict[str, Any]
     ) -> dict[str, Any]:
         params = self._params(request)
-        session_id = self.chat_service.ensure_codex_conversation_session(
+        session_id = await self.chat_service.ensure_codex_conversation_session(
             self._conversation_id(params)
         )
         self.chat_service.update_session_backend_state(
@@ -1221,7 +1221,7 @@ class CodexThreadFollowerBridge:
         response_payload_builder: Callable[[dict[str, Any]], dict[str, Any] | None],
     ) -> dict[str, Any]:
         params = self._params(request)
-        session_id = self.chat_service.ensure_codex_conversation_session(
+        session_id = await self.chat_service.ensure_codex_conversation_session(
             self._conversation_id(params)
         )
         request_id = self._approval_request_id(params)

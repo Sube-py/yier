@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -8,68 +9,60 @@ import socket
 from codex_app_server import ThreadSortKey, ThreadSourceKind
 from codex_app_server.generated.v2_all import ThreadListResponse, ThreadReadResponse
 
+import yier_web.codex.sdk.workspace as workspace_module
 from yier_web.codex.sdk.workspace import CodexWorkspaceService
 
 
-class _FakeCodexClient:
-    def __init__(
-        self,
-        responses: list[ThreadListResponse],
-        thread_read_response: ThreadReadResponse | None = None,
-        error: Exception | None = None,
-    ) -> None:
-        self.responses = list(responses)
-        self.thread_read_response = thread_read_response
-        self.error = error
-        self.calls: list[dict[str, object]] = []
-        self._client = self
+def _patch_async_codex(
+    monkeypatch,  # type: ignore[no-untyped-def]
+    *,
+    responses: list[ThreadListResponse] | None = None,
+    thread_read_response: ThreadReadResponse | None = None,
+    error: Exception | None = None,
+):
+    class _FakeAsyncCodex:
+        last_instance: _FakeAsyncCodex | None = None
 
-    def __enter__(self) -> _FakeCodexClient:
-        return self
+        def __init__(self, config) -> None:  # type: ignore[no-untyped-def]
+            self.config = config
+            self.responses = list(responses or [])
+            self.thread_read_response = thread_read_response
+            self.error = error
+            self.calls: list[dict[str, object]] = []
+            type(self).last_instance = self
 
-    def __exit__(self, exc_type, exc, tb) -> None:
-        return None
+        async def __aenter__(self) -> _FakeAsyncCodex:
+            return self
 
-    def thread_list(self, **kwargs: object) -> ThreadListResponse:
-        self.calls.append(kwargs)
-        if self.error is not None:
-            raise self.error
-        return self.responses.pop(0)
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
 
-    def thread_read(self, thread_id: str, *, include_turns: bool = False) -> ThreadReadResponse:
-        self.calls.append(
-            {
-                "thread_id": thread_id,
-                "include_turns": include_turns,
-            }
-        )
-        if self.error is not None:
-            raise self.error
-        assert self.thread_read_response is not None
-        return self.thread_read_response
+        async def thread_list(self, **kwargs: object) -> ThreadListResponse:
+            self.calls.append(kwargs)
+            if self.error is not None:
+                raise self.error
+            return self.responses.pop(0)
 
+    class _FakeAsyncThread:
+        def __init__(self, codex: _FakeAsyncCodex, thread_id: str) -> None:
+            self.codex = codex
+            self.thread_id = thread_id
 
-class _FakeCodexFactory:
-    def __init__(
-        self,
-        responses: list[ThreadListResponse] | None = None,
-        thread_read_response: ThreadReadResponse | None = None,
-        error: Exception | None = None,
-    ) -> None:
-        self.responses = responses or []
-        self.thread_read_response = thread_read_response
-        self.error = error
-        self.last_config = None
-        self.last_client: _FakeCodexClient | None = None
+        async def read(self, *, include_turns: bool = False) -> ThreadReadResponse:
+            self.codex.calls.append(
+                {
+                    "thread_id": self.thread_id,
+                    "include_turns": include_turns,
+                }
+            )
+            if self.codex.error is not None:
+                raise self.codex.error
+            assert self.codex.thread_read_response is not None
+            return self.codex.thread_read_response
 
-    def __call__(self, *, config) -> _FakeCodexClient:  # type: ignore[no-untyped-def]
-        self.last_config = config
-        self.last_client = _FakeCodexClient(
-            self.responses,
-            thread_read_response=self.thread_read_response,
-            error=self.error,
-        )
-        return self.last_client
+    monkeypatch.setattr(workspace_module, "AsyncCodex", _FakeAsyncCodex)
+    monkeypatch.setattr(workspace_module, "AsyncThread", _FakeAsyncThread)
+    return _FakeAsyncCodex
 
 
 def _thread_payload(
@@ -150,14 +143,18 @@ def _write_codex_session(
     session_file.write_text("\n".join(json.dumps(row) for row in rows), encoding="utf-8")
 
 
-def test_codex_workspace_prefers_sdk_thread_list_and_groups_by_project(tmp_path: Path) -> None:
+def test_codex_workspace_prefers_sdk_thread_list_and_groups_by_project(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+) -> None:
     home_dir = tmp_path / "home"
     project_alpha = tmp_path / "project-alpha"
     project_beta = tmp_path / "project-beta"
     project_alpha.mkdir()
     project_beta.mkdir()
 
-    factory = _FakeCodexFactory(
+    fake_codex = _patch_async_codex(
+        monkeypatch,
         responses=[
             _thread_list_response(
                 [
@@ -195,7 +192,7 @@ def test_codex_workspace_prefers_sdk_thread_list_and_groups_by_project(tmp_path:
         ]
     )
 
-    workspace = CodexWorkspaceService(home_dir, codex_factory=factory).load_workspace()
+    workspace = asyncio.run(CodexWorkspaceService(home_dir).load_workspace())
 
     assert [project.project for project in workspace.projects] == ["project-alpha", "project-beta"]
     assert [session.thread_id for session in workspace.projects[0].sessions] == [
@@ -205,12 +202,19 @@ def test_codex_workspace_prefers_sdk_thread_list_and_groups_by_project(tmp_path:
     assert workspace.projects[0].sessions[0].status == "idle"
     assert workspace.projects[0].session_count == 2
     assert workspace.projects[1].sessions[0].title == "Beta 1"
-    assert factory.last_config is not None
-    assert factory.last_config.launch_args_override == ("codex", "app-server", "--listen", "stdio://")
-    assert factory.last_client is not None
-    assert [call["cursor"] for call in factory.last_client.calls] == [None, "cursor-2"]
-    assert all(call["archived"] is False for call in factory.last_client.calls)
-    assert all(call["sort_key"] == ThreadSortKey.updated_at for call in factory.last_client.calls)
+    assert fake_codex.last_instance is not None
+    assert fake_codex.last_instance.config.launch_args_override == (
+        "codex",
+        "app-server",
+        "--listen",
+        "stdio://",
+    )
+    assert [call["cursor"] for call in fake_codex.last_instance.calls] == [None, "cursor-2"]
+    assert all(call["archived"] is False for call in fake_codex.last_instance.calls)
+    assert all(
+        call["sort_key"] == ThreadSortKey.updated_at
+        for call in fake_codex.last_instance.calls
+    )
     assert all(
         call["source_kinds"]
         == [
@@ -219,11 +223,14 @@ def test_codex_workspace_prefers_sdk_thread_list_and_groups_by_project(tmp_path:
             ThreadSourceKind.exec,
             ThreadSourceKind.app_server,
         ]
-        for call in factory.last_client.calls
+        for call in fake_codex.last_instance.calls
     )
 
 
-def test_codex_workspace_falls_back_to_local_disk_when_sdk_list_fails(tmp_path: Path) -> None:
+def test_codex_workspace_falls_back_to_local_disk_when_sdk_list_fails(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+) -> None:
     home_dir = tmp_path / "home"
     project_alpha = tmp_path / "project-alpha"
     project_beta = tmp_path / "project-beta"
@@ -270,10 +277,8 @@ def test_codex_workspace_falls_back_to_local_disk_when_sdk_list_fails(tmp_path: 
         encoding="utf-8",
     )
 
-    workspace = CodexWorkspaceService(
-        home_dir,
-        codex_factory=_FakeCodexFactory(error=RuntimeError("sdk unavailable")),
-    ).load_workspace()
+    _patch_async_codex(monkeypatch, error=RuntimeError("sdk unavailable"))
+    workspace = asyncio.run(CodexWorkspaceService(home_dir).load_workspace())
 
     assert [project.project for project in workspace.projects] == ["project-alpha", "project-beta"]
     assert workspace.projects[0].sessions[0].thread_id == "thread-alpha-1"
@@ -281,12 +286,16 @@ def test_codex_workspace_falls_back_to_local_disk_when_sdk_list_fails(tmp_path: 
     assert workspace.projects[1].sessions[0].title == "Beta 1"
 
 
-def test_codex_workspace_extracts_custom_sdk_session_source(tmp_path: Path) -> None:
+def test_codex_workspace_extracts_custom_sdk_session_source(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+) -> None:
     home_dir = tmp_path / "home"
     project_root = tmp_path / "project"
     project_root.mkdir()
 
-    factory = _FakeCodexFactory(
+    _patch_async_codex(
+        monkeypatch,
         responses=[
             _thread_list_response(
                 [
@@ -306,17 +315,21 @@ def test_codex_workspace_extracts_custom_sdk_session_source(tmp_path: Path) -> N
         ]
     )
 
-    workspace = CodexWorkspaceService(home_dir, codex_factory=factory).load_workspace()
+    workspace = asyncio.run(CodexWorkspaceService(home_dir).load_workspace())
 
     assert workspace.projects[0].sessions[0].source == "yierShell"
 
 
-def test_codex_workspace_reads_thread_from_sdk(tmp_path: Path) -> None:
+def test_codex_workspace_reads_thread_from_sdk(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+) -> None:
     home_dir = tmp_path / "home"
     project_root = tmp_path / "project"
     project_root.mkdir()
 
-    factory = _FakeCodexFactory(
+    fake_codex = _patch_async_codex(
+        monkeypatch,
         thread_read_response=_thread_read_response(
             _thread_payload(
                 thread_id="thread-alpha-1",
@@ -329,15 +342,17 @@ def test_codex_workspace_reads_thread_from_sdk(tmp_path: Path) -> None:
         )
     )
 
-    response = CodexWorkspaceService(home_dir, codex_factory=factory).read_thread(
-        "thread-alpha-1",
-        include_turns=True,
+    response = asyncio.run(
+        CodexWorkspaceService(home_dir).read_thread(
+            "thread-alpha-1",
+            include_turns=True,
+        )
     )
 
     assert response is not None
     assert response.thread.id == "thread-alpha-1"
-    assert factory.last_client is not None
-    assert factory.last_client.calls == [
+    assert fake_codex.last_instance is not None
+    assert fake_codex.last_instance.calls == [
         {
             "thread_id": "thread-alpha-1",
             "include_turns": True,

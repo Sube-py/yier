@@ -75,10 +75,10 @@ class FakeChatService:
     async def _publish_event(self, event: str, data: dict[str, Any]) -> None:
         self.published_events.append((event, data))
 
-    def can_handle_codex_conversation(self, conversation_id: str) -> bool:
+    async def can_handle_codex_conversation(self, conversation_id: str) -> bool:
         return conversation_id == "thread-1"
 
-    def ensure_codex_conversation_session(self, conversation_id: str) -> str:
+    async def ensure_codex_conversation_session(self, conversation_id: str) -> str:
         if conversation_id != "thread-1":
             raise RuntimeError("unknown conversation")
         return conversation_id

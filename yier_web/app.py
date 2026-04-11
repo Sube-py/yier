@@ -404,7 +404,7 @@ async def list_sessions(state: State) -> SessionListResponse:
 
 @get("/codex/workspace")
 async def get_codex_workspace(state: State) -> CodexWorkspaceResponse:
-    return get_services(state).chat_service.get_codex_workspace()
+    return await get_services(state).chat_service.get_codex_workspace()
 
 
 @post("/codex/sessions")
@@ -427,7 +427,9 @@ async def create_codex_session(
 
 @post("/codex/sessions/open")
 async def open_codex_session(data: OpenCodexSessionRequest, state: State) -> OpenCodexSessionResponse:
-    session_id = get_services(state).chat_service.open_codex_native_session(data.thread_id)
+    session_id = await get_services(state).chat_service.open_codex_native_session(
+        data.thread_id
+    )
     if session_id is None:
         raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail="Codex session not found.")
     return OpenCodexSessionResponse(session_id=session_id)
@@ -440,7 +442,7 @@ async def get_codex_session(
     activity_limit: int | None = None,
 ) -> SessionTranscriptResponse:
     services = get_services(state)
-    transcript = services.chat_service.load_codex_session_transcript_from_sdk(
+    transcript = await services.chat_service.load_codex_session_transcript_from_sdk(
         session_id,
         activity_limit=activity_limit,
     )
@@ -479,7 +481,7 @@ async def get_codex_session_activity_events(
     before: int | None = None,
     limit: int | None = None,
 ) -> SessionActivityPageResponse:
-    activity_page = get_services(state).chat_service.get_codex_session_activity_page_from_sdk(
+    activity_page = await get_services(state).chat_service.get_codex_session_activity_page_from_sdk(
         session_id,
         before=before,
         limit=limit,

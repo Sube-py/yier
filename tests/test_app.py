@@ -224,7 +224,7 @@ class FakeChatService:
             codex_turn_timings=[],
         )
 
-    def load_codex_session_transcript_from_sdk(
+    async def load_codex_session_transcript_from_sdk(
         self,
         session_id: str,
         *,
@@ -265,13 +265,13 @@ class FakeChatService:
             return self.session_summaries
         return [item for item in self.session_summaries if item["source"] == source]
 
-    def get_codex_workspace(self) -> CodexWorkspaceResponse:
+    async def get_codex_workspace(self) -> CodexWorkspaceResponse:
         return CodexWorkspaceResponse(projects=[])
 
-    def open_codex_native_session(self, thread_id: str) -> str | None:
+    async def open_codex_native_session(self, thread_id: str) -> str | None:
         return thread_id if thread_id else None
 
-    def get_codex_session_activity_page_from_sdk(
+    async def get_codex_session_activity_page_from_sdk(
         self,
         session_id: str,
         *,

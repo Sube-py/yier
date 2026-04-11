@@ -833,16 +833,18 @@ class ChatService:
             "status": str(metadata["backend_state"].get("status") or "active"),
         }
 
-    def can_handle_codex_conversation(self, conversation_id: str) -> bool:
+    async def can_handle_codex_conversation(self, conversation_id: str) -> bool:
         normalized_conversation_id = conversation_id.strip()
         if not normalized_conversation_id:
             return False
         metadata = self.get_session_metadata(normalized_conversation_id)
         if metadata["backend_id"] == "codex":
             return True
-        return self.codex_workspace.get_active_session(normalized_conversation_id) is not None
+        return (
+            await self.codex_workspace.get_active_session(normalized_conversation_id)
+        ) is not None
 
-    def ensure_codex_conversation_session(self, conversation_id: str) -> str:
+    async def ensure_codex_conversation_session(self, conversation_id: str) -> str:
         normalized_conversation_id = conversation_id.strip()
         if not normalized_conversation_id:
             raise RuntimeError("Missing conversation id.")
@@ -854,7 +856,7 @@ class ChatService:
                 raise RuntimeError("Conversation is not backed by Codex.")
             return normalized_conversation_id
 
-        session_id = self.open_codex_native_session(normalized_conversation_id)
+        session_id = await self.open_codex_native_session(normalized_conversation_id)
         if session_id is None:
             raise RuntimeError(f"Codex conversation not found: {normalized_conversation_id}")
         return session_id
@@ -990,8 +992,8 @@ class ChatService:
             },
         )
 
-    def get_codex_workspace(self) -> CodexWorkspaceResponse:
-        workspace = self.codex_workspace.load_workspace()
+    async def get_codex_workspace(self) -> CodexWorkspaceResponse:
+        workspace = await self.codex_workspace.load_workspace()
         projects = []
         for project in workspace.projects:
             sessions = []
@@ -1012,8 +1014,8 @@ class ChatService:
             projects.append(project.model_copy(update={"sessions": sessions}))
         return workspace.model_copy(update={"projects": projects})
 
-    def open_codex_native_session(self, thread_id: str) -> str | None:
-        native_session = self.codex_workspace.get_active_session(thread_id)
+    async def open_codex_native_session(self, thread_id: str) -> str | None:
+        native_session = await self.codex_workspace.get_active_session(thread_id)
         if native_session is None:
             return None
 
@@ -1226,7 +1228,7 @@ class ChatService:
 
         return sorted(summaries, key=lambda item: item.updated_at, reverse=True)
 
-    def load_codex_session_transcript_from_sdk(
+    async def load_codex_session_transcript_from_sdk(
         self,
         session_id: str,
         *,
@@ -1241,7 +1243,7 @@ class ChatService:
         if not isinstance(backend, CodexAppServerBackend):
             return None
 
-        response = self.codex_workspace.read_thread(thread_id, include_turns=True)
+        response = await self.codex_workspace.read_thread(thread_id, include_turns=True)
         if response is None:
             return None
 
@@ -1271,14 +1273,14 @@ class ChatService:
             codex_turn_timings=view.get("codex_turn_timings", []),
         )
 
-    def get_codex_session_activity_page_from_sdk(
+    async def get_codex_session_activity_page_from_sdk(
         self,
         session_id: str,
         *,
         before: int | None = None,
         limit: int | None = None,
     ) -> tuple[list[dict[str, Any]], dict[str, int | None]] | None:
-        transcript = self.load_codex_session_transcript_from_sdk(session_id)
+        transcript = await self.load_codex_session_transcript_from_sdk(session_id)
         if transcript is None:
             return None
         return self._paginate_activity_events(

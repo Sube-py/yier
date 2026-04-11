@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 import threading
 from typing import Any
 
-from codex_app_server import AppServerClient, TurnHandle
+from codex_app_server import AsyncAppServerClient
 
 from yier_web.agent_backends.base import StreamEmitter
 
@@ -33,14 +33,15 @@ class TurnSnapshotState:
 @dataclass(slots=True)
 class CodexSessionRuntime:
     session_id: str
-    client: AppServerClient | None = None
+    client: AsyncAppServerClient | None = None
     thread_id: str | None = None
     status: str = "idle"
     active_flags: list[str] = field(default_factory=list)
     pending_requests: dict[str, PendingApprovalState] = field(default_factory=dict)
-    turn_handles: dict[str, TurnHandle] = field(default_factory=dict)
+    turn_handles: dict[str, Any] = field(default_factory=dict)
     turn_snapshots: dict[str, TurnSnapshotState] = field(default_factory=dict)
     assistant_buffers: dict[str, str] = field(default_factory=dict)
+    pending_emit_tasks: list[Any] = field(default_factory=list)
     realtime_transcript_buffers: dict[str, str] = field(default_factory=dict)
     reasoning_buffers: dict[str, dict[str, str]] = field(default_factory=dict)
     plan_buffers: dict[str, str] = field(default_factory=dict)

@@ -165,7 +165,7 @@ class FakeChatService:
     def edit_last_codex_user_turn(self, session_id: str, content: str) -> None:
         self.updated_backend_states.append((session_id, {"edited_content": content}))
 
-    def build_codex_ipc_conversation_state(self, session_id: str) -> dict[str, Any]:
+    async def build_codex_ipc_conversation_state(self, session_id: str) -> dict[str, Any]:
         return {
             "id": session_id,
             "hostId": "local",
@@ -370,76 +370,79 @@ def test_codex_thread_follower_bridge_handles_start_turn_and_broadcast(tmp_path:
             assert request_response["result"]["result"]["turn"]["id"] == "turn-started-1"
             assert fake_chat_service.started_turns == [("thread-1", "Implement syncing")]
 
-            fake_chat_service.build_codex_ipc_conversation_state = lambda session_id: {  # type: ignore[method-assign]
-                "id": session_id,
-                "hostId": "local",
-                "turns": [
-                    {
-                        "id": "turn-started-1",
-                        "turnId": "turn-started-1",
-                        "status": "inProgress",
-                        "items": [
-                            {
-                                "type": "userMessage",
-                                "id": "item-user-1",
-                                "content": [
+            async def fake_build_codex_ipc_conversation_state(session_id: str) -> dict[str, Any]:
+                return {
+                    "id": session_id,
+                    "hostId": "local",
+                    "turns": [
+                        {
+                            "id": "turn-started-1",
+                            "turnId": "turn-started-1",
+                            "status": "inProgress",
+                            "items": [
+                                {
+                                    "type": "userMessage",
+                                    "id": "item-user-1",
+                                    "content": [
+                                        {
+                                            "type": "text",
+                                            "text": "Implement syncing",
+                                            "text_elements": [],
+                                        }
+                                    ],
+                                }
+                            ],
+                            "error": None,
+                            "diff": None,
+                            "turnStartedAtMs": 100,
+                            "finalAssistantStartedAtMs": None,
+                            "params": {
+                                "threadId": session_id,
+                                "input": [
                                     {
                                         "type": "text",
                                         "text": "Implement syncing",
                                         "text_elements": [],
                                     }
                                 ],
-                            }
-                        ],
-                        "error": None,
-                        "diff": None,
-                        "turnStartedAtMs": 100,
-                        "finalAssistantStartedAtMs": None,
-                        "params": {
-                            "threadId": session_id,
-                            "input": [
-                                {
-                                    "type": "text",
-                                    "text": "Implement syncing",
-                                    "text_elements": [],
-                                }
-                            ],
+                            },
+                        }
+                    ],
+                    "pendingSteers": [],
+                    "requests": [],
+                    "createdAt": 1,
+                    "updatedAt": 2,
+                    "title": "Thread 1",
+                    "source": "chat",
+                    "latestModel": "gpt-test",
+                    "latestReasoningEffort": None,
+                    "previousTurnModel": None,
+                    "latestCollaborationMode": {
+                        "mode": "default",
+                        "settings": {
+                            "model": "gpt-test",
+                            "reasoning_effort": None,
+                            "developer_instructions": None,
                         },
-                    }
-                ],
-                "pendingSteers": [],
-                "requests": [],
-                "createdAt": 1,
-                "updatedAt": 2,
-                "title": "Thread 1",
-                "source": "chat",
-                "latestModel": "gpt-test",
-                "latestReasoningEffort": None,
-                "previousTurnModel": None,
-                "latestCollaborationMode": {
-                    "mode": "default",
-                    "settings": {
-                        "model": "gpt-test",
-                        "reasoning_effort": None,
-                        "developer_instructions": None,
                     },
-                },
-                "hasUnreadTurn": False,
-                "rolloutPath": "",
-                "gitInfo": {
-                    "branch": "main",
-                    "sha": "abc123",
-                    "originUrl": "git@example.com:repo.git",
-                },
-                "resumeState": "resumed",
-                "latestTokenUsageInfo": None,
-                "cwd": "/tmp/project",
-                "threadId": session_id,
-                "threadRuntimeStatus": {
-                    "type": "active",
-                    "activeFlags": ["streaming"],
-                },
-            }
+                    "hasUnreadTurn": False,
+                    "rolloutPath": "",
+                    "gitInfo": {
+                        "branch": "main",
+                        "sha": "abc123",
+                        "originUrl": "git@example.com:repo.git",
+                    },
+                    "resumeState": "resumed",
+                    "latestTokenUsageInfo": None,
+                    "cwd": "/tmp/project",
+                    "threadId": session_id,
+                    "threadRuntimeStatus": {
+                        "type": "active",
+                        "activeFlags": ["streaming"],
+                    },
+                }
+
+            fake_chat_service.build_codex_ipc_conversation_state = fake_build_codex_ipc_conversation_state  # type: ignore[method-assign]
 
             await bridge.notify_stream_event(
                 "run_started",
@@ -725,67 +728,70 @@ def test_codex_thread_follower_bridge_emits_patches_for_assistant_message() -> N
 
         server = await asyncio.start_unix_server(handle_connection, path=socket_path)
         fake_chat_service = FakeChatService()
-        fake_chat_service.build_codex_ipc_conversation_state = lambda session_id: {  # type: ignore[method-assign]
-            "id": session_id,
-            "hostId": "local",
-            "turns": [
-                {
-                    "id": "turn-1",
-                    "turnId": "turn-1",
-                    "status": "inProgress",
-                    "items": [
-                        {
-                            "type": "userMessage",
-                            "id": "item-user-1",
-                            "content": [{"type": "text", "text": "hello", "text_elements": []}],
+        async def fake_build_codex_ipc_conversation_state(session_id: str) -> dict[str, Any]:
+            return {
+                "id": session_id,
+                "hostId": "local",
+                "turns": [
+                    {
+                        "id": "turn-1",
+                        "turnId": "turn-1",
+                        "status": "inProgress",
+                        "items": [
+                            {
+                                "type": "userMessage",
+                                "id": "item-user-1",
+                                "content": [{"type": "text", "text": "hello", "text_elements": []}],
+                            },
+                            {
+                                "type": "agentMessage",
+                                "id": "item-agent-1",
+                                "text": "world",
+                                "phase": "final_answer",
+                                "memoryCitation": None,
+                            },
+                        ],
+                        "error": None,
+                        "diff": None,
+                        "turnStartedAtMs": 100,
+                        "finalAssistantStartedAtMs": 120,
+                        "params": {
+                            "threadId": session_id,
+                            "input": [{"type": "text", "text": "hello", "text_elements": []}],
                         },
-                        {
-                            "type": "agentMessage",
-                            "id": "item-agent-1",
-                            "text": "world",
-                            "phase": "final_answer",
-                            "memoryCitation": None,
-                        },
-                    ],
-                    "error": None,
-                    "diff": None,
-                    "turnStartedAtMs": 100,
-                    "finalAssistantStartedAtMs": 120,
-                    "params": {
-                        "threadId": session_id,
-                        "input": [{"type": "text", "text": "hello", "text_elements": []}],
+                    }
+                ],
+                "pendingSteers": [],
+                "requests": [],
+                "createdAt": 1,
+                "updatedAt": 2,
+                "title": "Thread 1",
+                "source": "chat",
+                "latestModel": "gpt-test",
+                "latestReasoningEffort": None,
+                "previousTurnModel": None,
+                "latestCollaborationMode": {
+                    "mode": "default",
+                    "settings": {
+                        "model": "gpt-test",
+                        "reasoning_effort": None,
+                        "developer_instructions": None,
                     },
-                }
-            ],
-            "pendingSteers": [],
-            "requests": [],
-            "createdAt": 1,
-            "updatedAt": 2,
-            "title": "Thread 1",
-            "source": "chat",
-            "latestModel": "gpt-test",
-            "latestReasoningEffort": None,
-            "previousTurnModel": None,
-            "latestCollaborationMode": {
-                "mode": "default",
-                "settings": {
-                    "model": "gpt-test",
-                    "reasoning_effort": None,
-                    "developer_instructions": None,
                 },
-            },
-            "hasUnreadTurn": True,
-            "rolloutPath": "",
-            "gitInfo": None,
-            "resumeState": "resumed",
-            "latestTokenUsageInfo": None,
-            "cwd": "/tmp/project",
-            "threadId": session_id,
-            "threadRuntimeStatus": {
-                "type": "idle",
-                "activeFlags": [],
-            },
-        }
+                "hasUnreadTurn": True,
+                "rolloutPath": "",
+                "gitInfo": None,
+                "resumeState": "resumed",
+                "latestTokenUsageInfo": None,
+                "cwd": "/tmp/project",
+                "threadId": session_id,
+                "threadRuntimeStatus": {
+                    "type": "idle",
+                    "activeFlags": [],
+                },
+            }
+
+        fake_chat_service.build_codex_ipc_conversation_state = fake_build_codex_ipc_conversation_state  # type: ignore[method-assign]
         bridge = CodexThreadFollowerBridge(
             chat_service=fake_chat_service,  # type: ignore[arg-type]
             socket_path=socket_path,
@@ -947,67 +953,70 @@ def test_codex_thread_follower_bridge_emits_first_assistant_delta_like_codex_app
 
         server = await asyncio.start_unix_server(handle_connection, path=socket_path)
         fake_chat_service = FakeChatService()
-        fake_chat_service.build_codex_ipc_conversation_state = lambda session_id: {  # type: ignore[method-assign]
-            "id": session_id,
-            "hostId": "local",
-            "turns": [
-                {
-                    "id": "turn-1",
-                    "turnId": "turn-1",
-                    "status": "inProgress",
-                    "items": [
-                        {
-                            "type": "userMessage",
-                            "id": "item-user-1",
-                            "content": [{"type": "text", "text": "hello", "text_elements": []}],
+        async def fake_build_codex_ipc_conversation_state(session_id: str) -> dict[str, Any]:
+            return {
+                "id": session_id,
+                "hostId": "local",
+                "turns": [
+                    {
+                        "id": "turn-1",
+                        "turnId": "turn-1",
+                        "status": "inProgress",
+                        "items": [
+                            {
+                                "type": "userMessage",
+                                "id": "item-user-1",
+                                "content": [{"type": "text", "text": "hello", "text_elements": []}],
+                            },
+                            {
+                                "type": "agentMessage",
+                                "id": "item-agent-1",
+                                "text": "world",
+                                "phase": "final_answer",
+                                "memoryCitation": None,
+                            },
+                        ],
+                        "error": None,
+                        "diff": None,
+                        "turnStartedAtMs": 100,
+                        "finalAssistantStartedAtMs": 120,
+                        "params": {
+                            "threadId": session_id,
+                            "input": [{"type": "text", "text": "hello", "text_elements": []}],
                         },
-                        {
-                            "type": "agentMessage",
-                            "id": "item-agent-1",
-                            "text": "world",
-                            "phase": "final_answer",
-                            "memoryCitation": None,
-                        },
-                    ],
-                    "error": None,
-                    "diff": None,
-                    "turnStartedAtMs": 100,
-                    "finalAssistantStartedAtMs": 120,
-                    "params": {
-                        "threadId": session_id,
-                        "input": [{"type": "text", "text": "hello", "text_elements": []}],
+                    }
+                ],
+                "pendingSteers": [],
+                "requests": [],
+                "createdAt": 1,
+                "updatedAt": 2,
+                "title": "Thread 1",
+                "source": "chat",
+                "latestModel": "gpt-test",
+                "latestReasoningEffort": None,
+                "previousTurnModel": None,
+                "latestCollaborationMode": {
+                    "mode": "default",
+                    "settings": {
+                        "model": "gpt-test",
+                        "reasoning_effort": None,
+                        "developer_instructions": None,
                     },
-                }
-            ],
-            "pendingSteers": [],
-            "requests": [],
-            "createdAt": 1,
-            "updatedAt": 2,
-            "title": "Thread 1",
-            "source": "chat",
-            "latestModel": "gpt-test",
-            "latestReasoningEffort": None,
-            "previousTurnModel": None,
-            "latestCollaborationMode": {
-                "mode": "default",
-                "settings": {
-                    "model": "gpt-test",
-                    "reasoning_effort": None,
-                    "developer_instructions": None,
                 },
-            },
-            "hasUnreadTurn": False,
-            "rolloutPath": "",
-            "gitInfo": None,
-            "resumeState": "resumed",
-            "latestTokenUsageInfo": None,
-            "cwd": "/tmp/project",
-            "threadId": session_id,
-            "threadRuntimeStatus": {
-                "type": "active",
-                "activeFlags": [],
-            },
-        }
+                "hasUnreadTurn": False,
+                "rolloutPath": "",
+                "gitInfo": None,
+                "resumeState": "resumed",
+                "latestTokenUsageInfo": None,
+                "cwd": "/tmp/project",
+                "threadId": session_id,
+                "threadRuntimeStatus": {
+                    "type": "active",
+                    "activeFlags": [],
+                },
+            }
+
+        fake_chat_service.build_codex_ipc_conversation_state = fake_build_codex_ipc_conversation_state  # type: ignore[method-assign]
         bridge = CodexThreadFollowerBridge(
             chat_service=fake_chat_service,  # type: ignore[arg-type]
             socket_path=socket_path,
@@ -1111,93 +1120,96 @@ def test_codex_thread_follower_bridge_emits_completion_sequence_before_done_patc
 
         server = await asyncio.start_unix_server(handle_connection, path=socket_path)
         fake_chat_service = FakeChatService()
-        fake_chat_service.build_codex_ipc_conversation_state = lambda session_id: {  # type: ignore[method-assign]
-            "id": session_id,
-            "hostId": "local",
-            "turns": [
-                {
-                    "id": "turn-0",
-                    "turnId": "turn-0",
-                    "status": "completed",
-                    "items": [
-                        {
-                            "type": "userMessage",
-                            "id": "item-user-0",
-                            "content": [{"type": "text", "text": "old", "text_elements": []}],
+        async def fake_build_codex_ipc_conversation_state(session_id: str) -> dict[str, Any]:
+            return {
+                "id": session_id,
+                "hostId": "local",
+                "turns": [
+                    {
+                        "id": "turn-0",
+                        "turnId": "turn-0",
+                        "status": "completed",
+                        "items": [
+                            {
+                                "type": "userMessage",
+                                "id": "item-user-0",
+                                "content": [{"type": "text", "text": "old", "text_elements": []}],
+                            },
+                            {
+                                "type": "agentMessage",
+                                "id": "item-agent-0",
+                                "text": "done",
+                                "phase": "final_answer",
+                            },
+                        ],
+                        "error": None,
+                        "diff": None,
+                        "turnStartedAtMs": 1,
+                        "finalAssistantStartedAtMs": 2,
+                        "params": {
+                            "threadId": session_id,
+                            "input": [{"type": "text", "text": "old", "text_elements": []}],
                         },
-                        {
-                            "type": "agentMessage",
-                            "id": "item-agent-0",
-                            "text": "done",
-                            "phase": "final_answer",
+                    },
+                    {
+                        "id": "turn-1",
+                        "turnId": "turn-1",
+                        "status": "inProgress",
+                        "items": [
+                            {
+                                "type": "userMessage",
+                                "id": "item-user-1",
+                                "content": [{"type": "text", "text": "hello", "text_elements": []}],
+                            },
+                            {
+                                "type": "agentMessage",
+                                "id": "item-agent-1",
+                                "text": "world",
+                                "phase": "final_answer",
+                                "memoryCitation": None,
+                            },
+                        ],
+                        "error": None,
+                        "diff": None,
+                        "turnStartedAtMs": 100,
+                        "finalAssistantStartedAtMs": 120,
+                        "params": {
+                            "threadId": session_id,
+                            "input": [{"type": "text", "text": "hello", "text_elements": []}],
                         },
-                    ],
-                    "error": None,
-                    "diff": None,
-                    "turnStartedAtMs": 1,
-                    "finalAssistantStartedAtMs": 2,
-                    "params": {
-                        "threadId": session_id,
-                        "input": [{"type": "text", "text": "old", "text_elements": []}],
+                    },
+                ],
+                "pendingSteers": [],
+                "requests": [],
+                "createdAt": 1,
+                "updatedAt": 2,
+                "title": "Thread 1",
+                "source": "chat",
+                "latestModel": "gpt-test",
+                "latestReasoningEffort": None,
+                "previousTurnModel": None,
+                "latestCollaborationMode": {
+                    "mode": "default",
+                    "settings": {
+                        "model": "gpt-test",
+                        "reasoning_effort": None,
+                        "developer_instructions": None,
                     },
                 },
-                {
-                    "id": "turn-1",
-                    "turnId": "turn-1",
-                    "status": "inProgress",
-                    "items": [
-                        {
-                            "type": "userMessage",
-                            "id": "item-user-1",
-                            "content": [{"type": "text", "text": "hello", "text_elements": []}],
-                        },
-                        {
-                            "type": "agentMessage",
-                            "id": "item-agent-1",
-                            "text": "world",
-                            "phase": "final_answer",
-                            "memoryCitation": None,
-                        },
-                    ],
-                    "error": None,
-                    "diff": None,
-                    "turnStartedAtMs": 100,
-                    "finalAssistantStartedAtMs": 120,
-                    "params": {
-                        "threadId": session_id,
-                        "input": [{"type": "text", "text": "hello", "text_elements": []}],
-                    },
+                "hasUnreadTurn": False,
+                "rolloutPath": "",
+                "gitInfo": None,
+                "resumeState": "resumed",
+                "latestTokenUsageInfo": {"total": {"totalTokens": 10}},
+                "cwd": "/tmp/project",
+                "threadId": session_id,
+                "threadRuntimeStatus": {
+                    "type": "active",
+                    "activeFlags": [],
                 },
-            ],
-            "pendingSteers": [],
-            "requests": [],
-            "createdAt": 1,
-            "updatedAt": 2,
-            "title": "Thread 1",
-            "source": "chat",
-            "latestModel": "gpt-test",
-            "latestReasoningEffort": None,
-            "previousTurnModel": None,
-            "latestCollaborationMode": {
-                "mode": "default",
-                "settings": {
-                    "model": "gpt-test",
-                    "reasoning_effort": None,
-                    "developer_instructions": None,
-                },
-            },
-            "hasUnreadTurn": False,
-            "rolloutPath": "",
-            "gitInfo": None,
-            "resumeState": "resumed",
-            "latestTokenUsageInfo": {"total": {"totalTokens": 10}},
-            "cwd": "/tmp/project",
-            "threadId": session_id,
-            "threadRuntimeStatus": {
-                "type": "active",
-                "activeFlags": [],
-            },
-        }
+            }
+
+        fake_chat_service.build_codex_ipc_conversation_state = fake_build_codex_ipc_conversation_state  # type: ignore[method-assign]
         bridge = CodexThreadFollowerBridge(
             chat_service=fake_chat_service,  # type: ignore[arg-type]
             socket_path=socket_path,
@@ -1328,18 +1340,23 @@ def test_codex_thread_follower_bridge_emits_latest_token_usage_patch() -> None:
 
         server = await asyncio.start_unix_server(handle_connection, path=socket_path)
         fake_chat_service = FakeChatService()
-        fake_chat_service.build_codex_ipc_conversation_state = lambda session_id: {  # type: ignore[method-assign]
-            **FakeChatService().build_codex_ipc_conversation_state(session_id),
-            "latestTokenUsageInfo": {
-                "total": {
-                    "totalTokens": 42,
-                    "inputTokens": 40,
-                    "outputTokens": 2,
-                    "cachedInputTokens": 0,
-                    "reasoningOutputTokens": 0,
-                }
-            },
-        }
+        async def fake_build_codex_ipc_conversation_state(session_id: str) -> dict[str, Any]:
+            return {
+                **await FakeChatService().build_codex_ipc_conversation_state(session_id),
+                "latestTokenUsageInfo": {
+                    "total": {
+                        "totalTokens": 42,
+                        "inputTokens": 40,
+                        "outputTokens": 2,
+                        "cachedInputTokens": 0,
+                        "reasoningOutputTokens": 0,
+                    }
+                },
+            }
+
+        fake_chat_service.build_codex_ipc_conversation_state = (  # type: ignore[method-assign]
+            fake_build_codex_ipc_conversation_state
+        )
         bridge = CodexThreadFollowerBridge(
             chat_service=fake_chat_service,  # type: ignore[arg-type]
             socket_path=socket_path,

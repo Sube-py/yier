@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -108,7 +109,7 @@ class FakeChatService:
         self.reloaded += 1
         return self.runtime
 
-    def create_session(
+    async def create_session(
         self, backend_id: str | None = None, project_path: str | None = None
     ) -> str:
         return "session-created"
@@ -207,7 +208,7 @@ class FakeChatService:
             },
         )
 
-    def load_session_transcript(
+    async def load_session_transcript(
         self,
         session_id: str,
         *,
@@ -252,13 +253,48 @@ class FakeChatService:
             codex_turn_timings=[{"turn_id": "turn-1"}],
         )
 
-    def load_session_view(
+    async def load_session_view(
         self, session_id: str
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         return (
             self.build_transcript_messages(session_id),
             self.get_session_activity_events(session_id),
         )
+
+    async def build_codex_ipc_conversation_state(self, session_id: str) -> dict[str, Any]:
+        return {
+            "id": session_id,
+            "hostId": "local",
+            "turns": [],
+            "pendingSteers": [],
+            "requests": [],
+            "createdAt": 1,
+            "updatedAt": 2,
+            "title": "Thread",
+            "source": "chat",
+            "latestModel": "",
+            "latestReasoningEffort": None,
+            "previousTurnModel": None,
+            "latestCollaborationMode": {
+                "mode": "default",
+                "settings": {
+                    "model": "",
+                    "reasoning_effort": None,
+                    "developer_instructions": None,
+                },
+            },
+            "hasUnreadTurn": False,
+            "rolloutPath": "",
+            "gitInfo": None,
+            "resumeState": "resumed",
+            "latestTokenUsageInfo": None,
+            "cwd": "/tmp/project",
+            "threadId": session_id,
+            "threadRuntimeStatus": {
+                "type": "idle",
+                "activeFlags": [],
+            },
+        }
 
     def list_session_summaries(self, source: str | None = None) -> list[dict[str, Any]]:
         if source is None:
@@ -1613,466 +1649,497 @@ def test_chat_service_create_codex_session_uses_native_thread_id(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog()
-    )
+    async def scenario() -> None:
+        monkeypatch.setattr(
+            SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog()
+        )
 
-    project_root = tmp_path / "project"
-    project_root.mkdir(parents=True)
-    service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
-    chat_service = ChatService(
-        project_root=project_root,
-        config_service=service,
-        mcp_manager=FakeMCPManager(),  # type: ignore[arg-type]
-    )
-    codex_backend = chat_service.backends["codex"]
-    assert isinstance(codex_backend, CodexAppServerBackend)
+        project_root = tmp_path / "project"
+        project_root.mkdir(parents=True)
+        service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
+        chat_service = ChatService(
+            project_root=project_root,
+            config_service=service,
+            mcp_manager=FakeMCPManager(),  # type: ignore[arg-type]
+        )
+        codex_backend = chat_service.backends["codex"]
+        assert isinstance(codex_backend, CodexAppServerBackend)
 
-    monkeypatch.setattr(
-        codex_backend,
-        "bootstrap_session",
-        lambda project_path, source="chat", channel_meta=None: {
-            "thread_id": "thread-native-42",
-            "status": "idle",
-            "active_flags": [],
-            "detail": None,
-        },
-    )
+        async def fake_bootstrap_session(
+            project_path: Path,
+            source: str = "chat",
+            channel_meta: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            return {
+                "thread_id": "thread-native-42",
+                "status": "idle",
+                "active_flags": [],
+                "detail": None,
+            }
 
-    session_id = chat_service.create_session(backend_id="codex")
-    metadata = chat_service.get_session_metadata(session_id)
+        monkeypatch.setattr(
+            codex_backend,
+            "bootstrap_session",
+            fake_bootstrap_session,
+        )
 
-    assert session_id == "thread-native-42"
-    assert metadata["backend_id"] == "codex"
-    assert metadata["backend_state"]["thread_id"] == "thread-native-42"
-    assert metadata["codex_work_mode"] == "build"
+        session_id = await chat_service.create_session(backend_id="codex")
+        metadata = chat_service.get_session_metadata(session_id)
+
+        assert session_id == "thread-native-42"
+        assert metadata["backend_id"] == "codex"
+        assert metadata["backend_state"]["thread_id"] == "thread-native-42"
+        assert metadata["codex_work_mode"] == "build"
+
+    asyncio.run(scenario())
 
 
 def test_chat_service_build_codex_ipc_conversation_state_prefers_raw_requests_and_runtime_status(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog()
-    )
+    async def scenario() -> None:
+        monkeypatch.setattr(
+            SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog()
+        )
 
-    project_root = tmp_path / "project"
-    project_root.mkdir(parents=True)
-    service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
-    chat_service = ChatService(
-        project_root=project_root,
-        config_service=service,
-        mcp_manager=FakeMCPManager(),  # type: ignore[arg-type]
-    )
-    codex_backend = chat_service.backends["codex"]
-    assert isinstance(codex_backend, CodexAppServerBackend)
+        project_root = tmp_path / "project"
+        project_root.mkdir(parents=True)
+        service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
+        chat_service = ChatService(
+            project_root=project_root,
+            config_service=service,
+            mcp_manager=FakeMCPManager(),  # type: ignore[arg-type]
+        )
+        codex_backend = chat_service.backends["codex"]
+        assert isinstance(codex_backend, CodexAppServerBackend)
 
-    monkeypatch.setattr(
-        codex_backend,
-        "bootstrap_session",
-        lambda project_path, source="chat", channel_meta=None: {
-            "thread_id": "thread-native-7",
-            "status": "idle",
-            "active_flags": [],
-            "detail": None,
-        },
-    )
-    session_id = chat_service.create_session(backend_id="codex")
+        async def fake_bootstrap_session(
+            project_path: Path,
+            source: str = "chat",
+            channel_meta: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            return {
+                "thread_id": "thread-native-7",
+                "status": "idle",
+                "active_flags": [],
+                "detail": None,
+            }
 
-    monkeypatch.setattr(
-        codex_backend,
-        "load_thread_state",
-        lambda context: {
-            "thread": {
-                "id": "thread-native-7",
-                "name": "Native title",
-                "source": "appServer",
-                "cwd": str(project_root),
-                "createdAt": 10,
-                "updatedAt": 12,
-                "status": {
+        async def fake_load_thread_state(context: Any) -> dict[str, Any]:
+            return {
+                "thread": {
+                    "id": "thread-native-7",
+                    "name": "Native title",
+                    "source": "appServer",
+                    "cwd": str(project_root),
+                    "createdAt": 10,
+                    "updatedAt": 12,
+                    "status": {
+                        "type": "active",
+                        "activeFlags": ["waitingOnApproval"],
+                    },
+                    "turns": [{"id": "turn-1", "status": "inProgress", "items": []}],
+                },
+                "threadRuntimeStatus": {
                     "type": "active",
                     "activeFlags": ["waitingOnApproval"],
                 },
-                "turns": [{"id": "turn-1", "status": "inProgress", "items": []}],
-            },
-            "threadRuntimeStatus": {
-                "type": "active",
-                "activeFlags": ["waitingOnApproval"],
-            },
-        },
-    )
-    monkeypatch.setattr(
-        codex_backend,
-        "build_ipc_turns",
-        lambda context, turns: [
-            {
-                "id": "turn-1",
-                "turnId": "turn-1",
-                "status": "inProgress",
-                "items": [],
-                "params": {"threadId": "thread-native-7", "input": []},
-                "turnStartedAtMs": 1000,
-                "finalAssistantStartedAtMs": None,
             }
-        ],
-    )
-    monkeypatch.setattr(
-        codex_backend,
-        "pending_conversation_requests",
-        lambda context: [
+
+        monkeypatch.setattr(codex_backend, "bootstrap_session", fake_bootstrap_session)
+        session_id = await chat_service.create_session(backend_id="codex")
+
+        monkeypatch.setattr(codex_backend, "load_thread_state", fake_load_thread_state)
+        monkeypatch.setattr(
+            codex_backend,
+            "build_ipc_turns",
+            lambda context, turns: [
+                {
+                    "id": "turn-1",
+                    "turnId": "turn-1",
+                    "status": "inProgress",
+                    "items": [],
+                    "params": {"threadId": "thread-native-7", "input": []},
+                    "turnStartedAtMs": 1000,
+                    "finalAssistantStartedAtMs": None,
+                }
+            ],
+        )
+        monkeypatch.setattr(
+            codex_backend,
+            "pending_conversation_requests",
+            lambda context: [
+                {
+                    "id": "req-1",
+                    "method": "item/commandExecution/requestApproval",
+                    "params": {"itemId": "cmd-1"},
+                }
+            ],
+        )
+
+        payload = await chat_service.build_codex_ipc_conversation_state(session_id)
+
+        assert payload["requests"] == [
             {
                 "id": "req-1",
                 "method": "item/commandExecution/requestApproval",
                 "params": {"itemId": "cmd-1"},
             }
-        ],
-    )
-
-    payload = chat_service.build_codex_ipc_conversation_state(session_id)
-
-    assert payload["requests"] == [
-        {
-            "id": "req-1",
-            "method": "item/commandExecution/requestApproval",
-            "params": {"itemId": "cmd-1"},
+        ]
+        assert payload["turns"][0]["turnStartedAtMs"] == 1000
+        assert payload["latestCollaborationMode"] == {
+            "mode": "default",
+            "settings": {
+                "model": "",
+                "reasoning_effort": None,
+                "developer_instructions": None,
+            },
         }
-    ]
-    assert payload["turns"][0]["turnStartedAtMs"] == 1000
-    assert payload["latestCollaborationMode"] == {
-        "mode": "default",
-        "settings": {
-            "model": "",
-            "reasoning_effort": None,
-            "developer_instructions": None,
-        },
-    }
-    assert payload["threadRuntimeStatus"] == {
-        "type": "active",
-        "activeFlags": ["waitingOnApproval"],
-    }
+        assert payload["threadRuntimeStatus"] == {
+            "type": "active",
+            "activeFlags": ["waitingOnApproval"],
+        }
+
+    asyncio.run(scenario())
 
 
 def test_chat_service_build_codex_ipc_conversation_state_infers_waiting_on_approval_flag(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog()
-    )
+    async def scenario() -> None:
+        monkeypatch.setattr(
+            SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog()
+        )
 
-    project_root = tmp_path / "project"
-    project_root.mkdir(parents=True)
-    service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
-    chat_service = ChatService(
-        project_root=project_root,
-        config_service=service,
-        mcp_manager=FakeMCPManager(),  # type: ignore[arg-type]
-    )
-    codex_backend = chat_service.backends["codex"]
-    assert isinstance(codex_backend, CodexAppServerBackend)
+        project_root = tmp_path / "project"
+        project_root.mkdir(parents=True)
+        service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
+        chat_service = ChatService(
+            project_root=project_root,
+            config_service=service,
+            mcp_manager=FakeMCPManager(),  # type: ignore[arg-type]
+        )
+        codex_backend = chat_service.backends["codex"]
+        assert isinstance(codex_backend, CodexAppServerBackend)
 
-    monkeypatch.setattr(
-        codex_backend,
-        "bootstrap_session",
-        lambda project_path, source="chat", channel_meta=None: {
-            "thread_id": "thread-native-9",
-            "status": "idle",
-            "active_flags": [],
-            "detail": None,
-        },
-    )
-    session_id = chat_service.create_session(backend_id="codex")
-
-    monkeypatch.setattr(
-        codex_backend,
-        "load_thread_state",
-        lambda context: {
-            "thread": {
-                "id": "thread-native-9",
-                "name": "Native title",
-                "source": "appServer",
-                "cwd": str(project_root),
-                "createdAt": 10,
-                "updatedAt": 12,
-                "turns": [{"id": "turn-1", "status": "inProgress", "items": []}],
-            },
-            "threadRuntimeStatus": {
-                "type": "idle",
-                "activeFlags": [],
-            },
-        },
-    )
-    monkeypatch.setattr(codex_backend, "build_ipc_turns", lambda context, turns: turns)
-    monkeypatch.setattr(
-        codex_backend,
-        "pending_conversation_requests",
-        lambda context: [
-            {
-                "id": "req-1",
-                "method": "item/commandExecution/requestApproval",
-                "params": {"itemId": "cmd-1"},
+        async def fake_bootstrap_session(
+            project_path: Path,
+            source: str = "chat",
+            channel_meta: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            return {
+                "thread_id": "thread-native-9",
+                "status": "idle",
+                "active_flags": [],
+                "detail": None,
             }
-        ],
-    )
 
-    payload = chat_service.build_codex_ipc_conversation_state(session_id)
+        async def fake_load_thread_state(context: Any) -> dict[str, Any]:
+            return {
+                "thread": {
+                    "id": "thread-native-9",
+                    "name": "Native title",
+                    "source": "appServer",
+                    "cwd": str(project_root),
+                    "createdAt": 10,
+                    "updatedAt": 12,
+                    "turns": [{"id": "turn-1", "status": "inProgress", "items": []}],
+                },
+                "threadRuntimeStatus": {
+                    "type": "idle",
+                    "activeFlags": [],
+                },
+            }
 
-    assert payload["threadRuntimeStatus"] == {
-        "type": "active",
-        "activeFlags": ["waitingOnApproval"],
-    }
+        monkeypatch.setattr(codex_backend, "bootstrap_session", fake_bootstrap_session)
+        session_id = await chat_service.create_session(backend_id="codex")
+
+        monkeypatch.setattr(codex_backend, "load_thread_state", fake_load_thread_state)
+        monkeypatch.setattr(codex_backend, "build_ipc_turns", lambda context, turns: turns)
+        monkeypatch.setattr(
+            codex_backend,
+            "pending_conversation_requests",
+            lambda context: [
+                {
+                    "id": "req-1",
+                    "method": "item/commandExecution/requestApproval",
+                    "params": {"itemId": "cmd-1"},
+                }
+            ],
+        )
+
+        payload = await chat_service.build_codex_ipc_conversation_state(session_id)
+
+        assert payload["threadRuntimeStatus"] == {
+            "type": "active",
+            "activeFlags": ["waitingOnApproval"],
+        }
+
+    asyncio.run(scenario())
 
 
 def test_chat_service_build_codex_ipc_conversation_state_keeps_active_status_for_live_turns(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog()
-    )
+    async def scenario() -> None:
+        monkeypatch.setattr(
+            SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog()
+        )
 
-    project_root = tmp_path / "project"
-    project_root.mkdir(parents=True)
-    service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
-    chat_service = ChatService(
-        project_root=project_root,
-        config_service=service,
-        mcp_manager=FakeMCPManager(),  # type: ignore[arg-type]
-    )
-    codex_backend = chat_service.backends["codex"]
-    assert isinstance(codex_backend, CodexAppServerBackend)
+        project_root = tmp_path / "project"
+        project_root.mkdir(parents=True)
+        service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
+        chat_service = ChatService(
+            project_root=project_root,
+            config_service=service,
+            mcp_manager=FakeMCPManager(),  # type: ignore[arg-type]
+        )
+        codex_backend = chat_service.backends["codex"]
+        assert isinstance(codex_backend, CodexAppServerBackend)
 
-    monkeypatch.setattr(
-        codex_backend,
-        "bootstrap_session",
-        lambda project_path, source="chat", channel_meta=None: {
-            "thread_id": "thread-native-11",
-            "status": "idle",
-            "active_flags": [],
-            "detail": None,
-        },
-    )
-    session_id = chat_service.create_session(backend_id="codex")
-    chat_service.update_session_backend_state(
-        session_id,
-        {"status": "active", "active_flags": []},
-    )
+        async def fake_bootstrap_session(
+            project_path: Path,
+            source: str = "chat",
+            channel_meta: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            return {
+                "thread_id": "thread-native-11",
+                "status": "idle",
+                "active_flags": [],
+                "detail": None,
+            }
 
-    monkeypatch.setattr(
-        codex_backend,
-        "load_thread_state",
-        lambda context: {
-            "thread": {
-                "id": "thread-native-11",
-                "name": "Native title",
-                "source": "appServer",
-                "cwd": str(project_root),
-                "createdAt": 10,
-                "updatedAt": 12,
-                "status": {
+        async def fake_load_thread_state(context: Any) -> dict[str, Any]:
+            return {
+                "thread": {
+                    "id": "thread-native-11",
+                    "name": "Native title",
+                    "source": "appServer",
+                    "cwd": str(project_root),
+                    "createdAt": 10,
+                    "updatedAt": 12,
+                    "status": {
+                        "type": "active",
+                        "activeFlags": [],
+                    },
+                    "turns": [{"id": "turn-live", "status": "inProgress", "items": []}],
+                },
+                "threadRuntimeStatus": {
                     "type": "active",
                     "activeFlags": [],
                 },
-                "turns": [{"id": "turn-live", "status": "inProgress", "items": []}],
-            },
-            "threadRuntimeStatus": {
-                "type": "active",
-                "activeFlags": [],
-            },
-        },
-    )
-    monkeypatch.setattr(
-        codex_backend,
-        "build_ipc_turns",
-        lambda context, turns: [
-            {
-                "id": "turn-live",
-                "turnId": "turn-live",
-                "status": "inProgress",
-                "items": [],
-                "params": {"threadId": "thread-native-11", "input": []},
-                "turnStartedAtMs": 1000,
-                "finalAssistantStartedAtMs": None,
             }
-        ],
-    )
-    monkeypatch.setattr(
-        codex_backend, "pending_conversation_requests", lambda context: []
-    )
 
-    payload = chat_service.build_codex_ipc_conversation_state(session_id)
+        monkeypatch.setattr(codex_backend, "bootstrap_session", fake_bootstrap_session)
+        session_id = await chat_service.create_session(backend_id="codex")
+        chat_service.update_session_backend_state(
+            session_id,
+            {"status": "active", "active_flags": []},
+        )
 
-    assert payload["threadRuntimeStatus"] == {
-        "type": "active",
-        "activeFlags": [],
-    }
+        monkeypatch.setattr(codex_backend, "load_thread_state", fake_load_thread_state)
+        monkeypatch.setattr(
+            codex_backend,
+            "build_ipc_turns",
+            lambda context, turns: [
+                {
+                    "id": "turn-live",
+                    "turnId": "turn-live",
+                    "status": "inProgress",
+                    "items": [],
+                    "params": {"threadId": "thread-native-11", "input": []},
+                    "turnStartedAtMs": 1000,
+                    "finalAssistantStartedAtMs": None,
+                }
+            ],
+        )
+        monkeypatch.setattr(
+            codex_backend, "pending_conversation_requests", lambda context: []
+        )
+
+        payload = await chat_service.build_codex_ipc_conversation_state(session_id)
+
+        assert payload["threadRuntimeStatus"] == {
+            "type": "active",
+            "activeFlags": [],
+        }
+
+    asyncio.run(scenario())
 
 
 def test_chat_service_build_codex_ipc_conversation_state_uses_native_turn_count_while_active(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog()
-    )
+    async def scenario() -> None:
+        monkeypatch.setattr(
+            SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog()
+        )
 
-    project_root = tmp_path / "project"
-    project_root.mkdir(parents=True)
-    service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
-    chat_service = ChatService(
-        project_root=project_root,
-        config_service=service,
-        mcp_manager=FakeMCPManager(),  # type: ignore[arg-type]
-    )
-    codex_backend = chat_service.backends["codex"]
-    assert isinstance(codex_backend, CodexAppServerBackend)
+        project_root = tmp_path / "project"
+        project_root.mkdir(parents=True)
+        service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
+        chat_service = ChatService(
+            project_root=project_root,
+            config_service=service,
+            mcp_manager=FakeMCPManager(),  # type: ignore[arg-type]
+        )
+        codex_backend = chat_service.backends["codex"]
+        assert isinstance(codex_backend, CodexAppServerBackend)
 
-    monkeypatch.setattr(
-        codex_backend,
-        "bootstrap_session",
-        lambda project_path, source="chat", channel_meta=None: {
-            "thread_id": "thread-native-12",
-            "status": "idle",
-            "active_flags": [],
-            "detail": None,
-        },
-    )
-    session_id = chat_service.create_session(backend_id="codex")
-    chat_service.update_session_backend_state(
-        session_id,
-        {"status": "active", "active_flags": []},
-    )
-    chat_service._append_transcript_message(
-        session_id, Message(role="user", content="one")
-    )
-    chat_service._append_transcript_message(
-        session_id, Message(role="assistant", content="two")
-    )
-    chat_service._append_transcript_message(
-        session_id, Message(role="user", content="three")
-    )
+        async def fake_bootstrap_session(
+            project_path: Path,
+            source: str = "chat",
+            channel_meta: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            return {
+                "thread_id": "thread-native-12",
+                "status": "idle",
+                "active_flags": [],
+                "detail": None,
+            }
 
-    monkeypatch.setattr(
-        codex_backend,
-        "load_thread_state",
-        lambda context: {
-            "thread": {
-                "id": "thread-native-12",
-                "name": "Native title",
-                "source": "appServer",
-                "cwd": str(project_root),
-                "createdAt": 10,
-                "updatedAt": 12,
-                "status": {
+        async def fake_load_thread_state(context: Any) -> dict[str, Any]:
+            return {
+                "thread": {
+                    "id": "thread-native-12",
+                    "name": "Native title",
+                    "source": "appServer",
+                    "cwd": str(project_root),
+                    "createdAt": 10,
+                    "updatedAt": 12,
+                    "status": {
+                        "type": "active",
+                        "activeFlags": [],
+                    },
+                    "turns": [
+                        {"id": "turn-1", "status": "completed", "items": []},
+                        {"id": "turn-2", "status": "completed", "items": []},
+                        {"id": "turn-3", "status": "completed", "items": []},
+                        {"id": "turn-4", "status": "completed", "items": []},
+                        {"id": "turn-5", "status": "inProgress", "items": []},
+                    ],
+                },
+                "threadRuntimeStatus": {
                     "type": "active",
                     "activeFlags": [],
                 },
-                "turns": [
-                    {"id": "turn-1", "status": "completed", "items": []},
-                    {"id": "turn-2", "status": "completed", "items": []},
-                    {"id": "turn-3", "status": "completed", "items": []},
-                    {"id": "turn-4", "status": "completed", "items": []},
-                    {"id": "turn-5", "status": "inProgress", "items": []},
-                ],
-            },
-            "threadRuntimeStatus": {
-                "type": "active",
-                "activeFlags": [],
-            },
-        },
-    )
-    monkeypatch.setattr(codex_backend, "build_ipc_turns", lambda context, turns: turns)
-    monkeypatch.setattr(
-        codex_backend, "pending_conversation_requests", lambda context: []
-    )
+            }
 
-    payload = chat_service.build_codex_ipc_conversation_state(session_id)
+        monkeypatch.setattr(codex_backend, "bootstrap_session", fake_bootstrap_session)
+        session_id = await chat_service.create_session(backend_id="codex")
+        chat_service.update_session_backend_state(
+            session_id,
+            {"status": "active", "active_flags": []},
+        )
+        chat_service._append_transcript_message(
+            session_id, Message(role="user", content="one")
+        )
+        chat_service._append_transcript_message(
+            session_id, Message(role="assistant", content="two")
+        )
+        chat_service._append_transcript_message(
+            session_id, Message(role="user", content="three")
+        )
 
-    assert len(payload["turns"]) == 5
-    assert payload["turns"][-1]["id"] == "turn-5"
-    assert payload["turns"][-1]["status"] == "inProgress"
+        monkeypatch.setattr(codex_backend, "load_thread_state", fake_load_thread_state)
+        monkeypatch.setattr(codex_backend, "build_ipc_turns", lambda context, turns: turns)
+        monkeypatch.setattr(
+            codex_backend, "pending_conversation_requests", lambda context: []
+        )
+
+        payload = await chat_service.build_codex_ipc_conversation_state(session_id)
+
+        assert len(payload["turns"]) == 5
+        assert payload["turns"][-1]["id"] == "turn-5"
+        assert payload["turns"][-1]["status"] == "inProgress"
+
+    asyncio.run(scenario())
 
 
 def test_chat_service_background_codex_turn_replays_events_to_ipc_and_broker(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog()
-    )
-
-    project_root = tmp_path / "project"
-    project_root.mkdir(parents=True)
-    service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
-    chat_service = ChatService(
-        project_root=project_root,
-        config_service=service,
-        mcp_manager=FakeMCPManager(),  # type: ignore[arg-type]
-    )
-    codex_backend = chat_service.backends["codex"]
-    assert isinstance(codex_backend, CodexAppServerBackend)
-
-    monkeypatch.setattr(
-        codex_backend,
-        "bootstrap_session",
-        lambda project_path, source="chat", channel_meta=None: {
-            "thread_id": "thread-native-21",
-            "status": "idle",
-            "active_flags": [],
-            "detail": None,
-        },
-    )
-    session_id = chat_service.create_session(backend_id="codex")
-
-    published_events: list[tuple[str, dict[str, Any]]] = []
-    notified_events: list[tuple[str, dict[str, Any]]] = []
-
-    async def fake_start_turn(context: Any, input_payload: Any) -> dict[str, Any]:
-        return {
-            "turn": {
-                "id": "turn-21",
-                "status": "inProgress",
-                "items": [],
-            }
-        }
-
-    async def fake_consume_turn_stream(context: Any, turn_id: str, emit: Any) -> str:
-        await emit(
-            "assistant_message",
-            {
-                "session_id": context.session_id,
-                "item_id": "assistant-1",
-                "content": "good night",
-                "iteration": 0,
-            },
-        )
-        await emit(
-            "turn_completed",
-            {
-                "session_id": context.session_id,
-                "turn_id": turn_id,
-                "status": "completed",
-            },
-        )
-        return "stop"
-
-    async def fake_publish(event: str, data: dict[str, Any]) -> None:
-        published_events.append((event, data))
-
-    async def fake_notify_stream_event(event: str, data: dict[str, Any]) -> None:
-        notified_events.append((event, data))
-
-    monkeypatch.setattr(codex_backend, "start_turn", fake_start_turn)
-    monkeypatch.setattr(codex_backend, "consume_turn_stream", fake_consume_turn_stream)
-    monkeypatch.setattr(chat_service.event_broker, "publish", fake_publish)
-    monkeypatch.setattr(
-        chat_service.codex_ipc_bridge, "notify_stream_event", fake_notify_stream_event
-    )
-
-    import asyncio
-
     async def scenario() -> None:
+        monkeypatch.setattr(
+            SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog()
+        )
+
+        project_root = tmp_path / "project"
+        project_root.mkdir(parents=True)
+        service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
+        chat_service = ChatService(
+            project_root=project_root,
+            config_service=service,
+            mcp_manager=FakeMCPManager(),  # type: ignore[arg-type]
+        )
+        codex_backend = chat_service.backends["codex"]
+        assert isinstance(codex_backend, CodexAppServerBackend)
+
+        async def fake_bootstrap_session(
+            project_path: Path,
+            source: str = "chat",
+            channel_meta: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            return {
+                "thread_id": "thread-native-21",
+                "status": "idle",
+                "active_flags": [],
+                "detail": None,
+            }
+
+        session_id = ""
+        published_events: list[tuple[str, dict[str, Any]]] = []
+        notified_events: list[tuple[str, dict[str, Any]]] = []
+
+        async def fake_start_turn(context: Any, input_payload: Any) -> dict[str, Any]:
+            return {
+                "turn": {
+                    "id": "turn-21",
+                    "status": "inProgress",
+                    "items": [],
+                }
+            }
+
+        async def fake_consume_turn_stream(context: Any, turn_id: str, emit: Any) -> str:
+            await emit(
+                "assistant_message",
+                {
+                    "session_id": context.session_id,
+                    "item_id": "assistant-1",
+                    "content": "good night",
+                    "iteration": 0,
+                },
+            )
+            await emit(
+                "turn_completed",
+                {
+                    "session_id": context.session_id,
+                    "turn_id": turn_id,
+                    "status": "completed",
+                },
+            )
+            return "stop"
+
+        async def fake_publish(event: str, data: dict[str, Any]) -> None:
+            published_events.append((event, data))
+
+        async def fake_notify_stream_event(event: str, data: dict[str, Any]) -> None:
+            notified_events.append((event, data))
+
+        monkeypatch.setattr(codex_backend, "bootstrap_session", fake_bootstrap_session)
+        monkeypatch.setattr(codex_backend, "start_turn", fake_start_turn)
+        monkeypatch.setattr(codex_backend, "consume_turn_stream", fake_consume_turn_stream)
+        monkeypatch.setattr(chat_service.event_broker, "publish", fake_publish)
+        monkeypatch.setattr(
+            chat_service.codex_ipc_bridge, "notify_stream_event", fake_notify_stream_event
+        )
+
+        session_id = await chat_service.create_session(backend_id="codex")
         response = await chat_service.start_codex_turn_in_background(
             session_id, "good night"
         )
@@ -2082,360 +2149,383 @@ def test_chat_service_background_codex_turn_replays_events_to_ipc_and_broker(
         await task
         await asyncio.sleep(0)
 
-    asyncio.run(scenario())
-
-    assert published_events == [
-        (
-            "assistant_message",
+        assert published_events == [
+            (
+                "assistant_message",
+                {
+                    "session_id": session_id,
+                    "item_id": "assistant-1",
+                    "content": "good night",
+                    "iteration": 0,
+                    "sequence": 1,
+                },
+            ),
+            (
+                "turn_completed",
+                {
+                    "session_id": session_id,
+                    "turn_id": "turn-21",
+                    "status": "completed",
+                },
+            ),
+            (
+                "done",
+                {
+                    "session_id": session_id,
+                    "finish_reason": "stop",
+                },
+            ),
+        ]
+        assert notified_events == published_events
+        assert session_id not in chat_service._ipc_stream_tasks
+        assert [
+            message.model_dump(mode="json")
+            for message in chat_service.build_transcript_messages(session_id)
+        ] == [
             {
-                "session_id": session_id,
-                "item_id": "assistant-1",
+                "role": "user",
                 "content": "good night",
-                "iteration": 0,
-                "sequence": 1,
-            },
-        ),
-        (
-            "turn_completed",
-            {
-                "session_id": session_id,
-                "turn_id": "turn-21",
-                "status": "completed",
-            },
-        ),
-        (
-            "done",
-            {
-                "session_id": session_id,
-                "finish_reason": "stop",
-            },
-        ),
-    ]
-    assert notified_events == published_events
-    assert session_id not in chat_service._ipc_stream_tasks
-    assert [
-        message.model_dump(mode="json")
-        for message in chat_service.build_transcript_messages(session_id)
-    ] == [
-        {
-            "role": "user",
-            "content": "good night",
-            "reasoning_content": None,
-            "tool_call_id": None,
-            "sequence": 0,
-            "source": "chat",
-            "channel_meta": None,
-        }
-    ]
+                "reasoning_content": None,
+                "tool_call_id": None,
+                "sequence": 0,
+                "source": "chat",
+                "channel_meta": None,
+            }
+        ]
+
+    asyncio.run(scenario())
 
 
 def test_chat_service_load_session_view_uses_local_snapshot_for_active_codex_session(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog()
-    )
-
-    project_root = tmp_path / "project"
-    project_root.mkdir(parents=True)
-    service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
-    chat_service = ChatService(
-        project_root=project_root,
-        config_service=service,
-        mcp_manager=FakeMCPManager(),  # type: ignore[arg-type]
-    )
-    codex_backend = chat_service.backends["codex"]
-    assert isinstance(codex_backend, CodexAppServerBackend)
-
-    monkeypatch.setattr(
-        codex_backend,
-        "bootstrap_session",
-        lambda project_path, source="chat", channel_meta=None: {
-            "thread_id": "thread-native-22",
-            "status": "idle",
-            "active_flags": [],
-            "detail": None,
-        },
-    )
-    session_id = chat_service.create_session(backend_id="codex")
-    chat_service.update_session_backend_state(session_id, {"status": "active"})
-    chat_service._append_transcript_message(
-        session_id, Message(role="user", content="hello")
-    )
-    chat_service._append_transcript_message(
-        session_id, Message(role="assistant", content="hi")
-    )
-    chat_service.session_ui_store.append_activity_event(
-        session_id,
-        "reasoning",
-        {
-            "session_id": session_id,
-            "item_id": "reasoning-1",
-            "content": "Inspecting runtime state.",
-            "iteration": 0,
-        },
-    )
-    codex_backend._runtimes[session_id] = CodexSessionRuntime(
-        session_id=session_id,
-        thread_id="thread-native-22",
-        status="active",
-    )
-
-    def fail_load_thread_view(
-        context: Any, *, activity_limit: int | None = None
-    ) -> dict[str, Any]:
-        raise AssertionError(
-            "load_thread_view should not run for active Codex sessions"
+    async def scenario() -> None:
+        monkeypatch.setattr(
+            SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog()
         )
 
-    monkeypatch.setattr(codex_backend, "load_thread_view", fail_load_thread_view)
+        project_root = tmp_path / "project"
+        project_root.mkdir(parents=True)
+        service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
+        chat_service = ChatService(
+            project_root=project_root,
+            config_service=service,
+            mcp_manager=FakeMCPManager(),  # type: ignore[arg-type]
+        )
+        codex_backend = chat_service.backends["codex"]
+        assert isinstance(codex_backend, CodexAppServerBackend)
 
-    messages, activity_events = chat_service.load_session_view(session_id)
+        async def fake_bootstrap_session(
+            project_path: Path,
+            source: str = "chat",
+            channel_meta: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            return {
+                "thread_id": "thread-native-22",
+                "status": "idle",
+                "active_flags": [],
+                "detail": None,
+            }
 
-    assert [message.model_dump(mode="json") for message in messages] == [
-        {
-            "role": "user",
-            "content": "hello",
-            "reasoning_content": None,
-            "tool_call_id": None,
-            "sequence": 0,
-            "source": "chat",
-            "channel_meta": None,
-        },
-        {
-            "role": "assistant",
-            "content": "hi",
-            "reasoning_content": None,
-            "tool_call_id": None,
-            "sequence": 1,
-            "source": "chat",
-            "channel_meta": None,
-        },
-    ]
-    assert activity_events == [
-        {
-            "event": "reasoning",
-            "data": {
+        def fail_load_thread_view(
+            context: Any, *, activity_limit: int | None = None
+        ) -> dict[str, Any]:
+            raise AssertionError(
+                "load_thread_view should not run for active Codex sessions"
+            )
+
+        monkeypatch.setattr(codex_backend, "bootstrap_session", fake_bootstrap_session)
+        monkeypatch.setattr(codex_backend, "load_thread_view", fail_load_thread_view)
+
+        session_id = await chat_service.create_session(backend_id="codex")
+        chat_service.update_session_backend_state(session_id, {"status": "active"})
+        chat_service._append_transcript_message(
+            session_id, Message(role="user", content="hello")
+        )
+        chat_service._append_transcript_message(
+            session_id, Message(role="assistant", content="hi")
+        )
+        chat_service.session_ui_store.append_activity_event(
+            session_id,
+            "reasoning",
+            {
                 "session_id": session_id,
                 "item_id": "reasoning-1",
                 "content": "Inspecting runtime state.",
                 "iteration": 0,
             },
-        }
-    ]
+        )
+        codex_backend._runtimes[session_id] = CodexSessionRuntime(
+            session_id=session_id,
+            thread_id="thread-native-22",
+            status="active",
+        )
+
+        messages, activity_events = await chat_service.load_session_view(session_id)
+
+        assert [message.model_dump(mode="json") for message in messages] == [
+            {
+                "role": "user",
+                "content": "hello",
+                "reasoning_content": None,
+                "tool_call_id": None,
+                "sequence": 0,
+                "source": "chat",
+                "channel_meta": None,
+            },
+            {
+                "role": "assistant",
+                "content": "hi",
+                "reasoning_content": None,
+                "tool_call_id": None,
+                "sequence": 1,
+                "source": "chat",
+                "channel_meta": None,
+            },
+        ]
+        assert activity_events == [
+            {
+                "event": "reasoning",
+                "data": {
+                    "session_id": session_id,
+                    "item_id": "reasoning-1",
+                    "content": "Inspecting runtime state.",
+                    "iteration": 0,
+                },
+            }
+        ]
+
+    asyncio.run(scenario())
 
 
 def test_chat_service_load_session_view_prefers_native_thread_view_without_local_runtime(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog()
-    )
+    async def scenario() -> None:
+        monkeypatch.setattr(
+            SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog()
+        )
 
-    project_root = tmp_path / "project"
-    project_root.mkdir(parents=True)
-    service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
-    chat_service = ChatService(
-        project_root=project_root,
-        config_service=service,
-        mcp_manager=FakeMCPManager(),  # type: ignore[arg-type]
-    )
-    codex_backend = chat_service.backends["codex"]
-    assert isinstance(codex_backend, CodexAppServerBackend)
+        project_root = tmp_path / "project"
+        project_root.mkdir(parents=True)
+        service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
+        chat_service = ChatService(
+            project_root=project_root,
+            config_service=service,
+            mcp_manager=FakeMCPManager(),  # type: ignore[arg-type]
+        )
+        codex_backend = chat_service.backends["codex"]
+        assert isinstance(codex_backend, CodexAppServerBackend)
 
-    monkeypatch.setattr(
-        codex_backend,
-        "bootstrap_session",
-        lambda project_path, source="chat", channel_meta=None: {
-            "thread_id": "thread-native-31",
-            "status": "idle",
-            "active_flags": [],
-            "detail": None,
-        },
-    )
-    session_id = chat_service.create_session(backend_id="codex")
-    chat_service.update_session_backend_state(session_id, {"status": "active"})
-    chat_service._append_transcript_message(
-        session_id, Message(role="user", content="local-user")
-    )
-    chat_service._append_transcript_message(
-        session_id,
-        Message(role="assistant", content="local-assistant"),
-    )
+        async def fake_bootstrap_session(
+            project_path: Path,
+            source: str = "chat",
+            channel_meta: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            return {
+                "thread_id": "thread-native-31",
+                "status": "idle",
+                "active_flags": [],
+                "detail": None,
+            }
 
-    monkeypatch.setattr(
-        codex_backend,
-        "load_thread_view",
-        lambda context, activity_limit=None: {
-            "title": "Native Thread",
-            "preview": "remote-preview",
-            "updated_at": 1234,
-            "messages": [
-                Message(role="user", content="remote-user"),
-                Message(role="assistant", content="remote-assistant"),
-            ],
-            "activity_events": [
-                {
-                    "event": "reasoning",
-                    "data": {"session_id": session_id, "content": "remote"},
-                }
-            ],
-            "activity_history": {
-                "total_count": 1,
-                "returned_count": 1,
-                "next_before": None,
-            },
-            "codex_turn_timings": [],
-        },
-    )
+        monkeypatch.setattr(codex_backend, "bootstrap_session", fake_bootstrap_session)
 
-    messages, activity_events = chat_service.load_session_view(session_id)
+        session_id = await chat_service.create_session(backend_id="codex")
+        chat_service.update_session_backend_state(session_id, {"status": "active"})
+        chat_service._append_transcript_message(
+            session_id, Message(role="user", content="local-user")
+        )
+        chat_service._append_transcript_message(
+            session_id,
+            Message(role="assistant", content="local-assistant"),
+        )
 
-    assert [(message.role, message.content) for message in messages] == [
-        ("user", "remote-user"),
-        ("assistant", "remote-assistant"),
-    ]
-    assert activity_events == [
-        {
-            "event": "reasoning",
-            "data": {"session_id": session_id, "content": "remote"},
-        }
-    ]
+        async def fake_load_thread_view(context: Any, activity_limit=None) -> dict[str, Any]:
+            return {
+                "title": "Native Thread",
+                "preview": "remote-preview",
+                "updated_at": 1234,
+                "messages": [
+                    Message(role="user", content="remote-user"),
+                    Message(role="assistant", content="remote-assistant"),
+                ],
+                "activity_events": [
+                    {
+                        "event": "reasoning",
+                        "data": {"session_id": session_id, "content": "remote"},
+                    }
+                ],
+                "activity_history": {
+                    "total_count": 1,
+                    "returned_count": 1,
+                    "next_before": None,
+                },
+                "codex_turn_timings": [],
+            }
+
+        monkeypatch.setattr(
+            codex_backend,
+            "load_thread_view",
+            fake_load_thread_view,
+        )
+
+        messages, activity_events = await chat_service.load_session_view(session_id)
+
+        assert [(message.role, message.content) for message in messages] == [
+            ("user", "remote-user"),
+            ("assistant", "remote-assistant"),
+        ]
+        assert activity_events == [
+            {
+                "event": "reasoning",
+                "data": {"session_id": session_id, "content": "remote"},
+            }
+        ]
+
+    asyncio.run(scenario())
 
 
 def test_chat_service_load_session_view_prefers_cached_ipc_state_for_remote_codex_updates(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog()
-    )
+    async def scenario() -> None:
+        monkeypatch.setattr(
+            SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog()
+        )
 
-    project_root = tmp_path / "project"
-    project_root.mkdir(parents=True)
-    service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
-    chat_service = ChatService(
-        project_root=project_root,
-        config_service=service,
-        mcp_manager=FakeMCPManager(),  # type: ignore[arg-type]
-    )
-    codex_backend = chat_service.backends["codex"]
-    assert isinstance(codex_backend, CodexAppServerBackend)
+        project_root = tmp_path / "project"
+        project_root.mkdir(parents=True)
+        service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
+        chat_service = ChatService(
+            project_root=project_root,
+            config_service=service,
+            mcp_manager=FakeMCPManager(),  # type: ignore[arg-type]
+        )
+        codex_backend = chat_service.backends["codex"]
+        assert isinstance(codex_backend, CodexAppServerBackend)
 
-    monkeypatch.setattr(
-        codex_backend,
-        "bootstrap_session",
-        lambda project_path, source="chat", channel_meta=None: {
-            "thread_id": "thread-native-41",
-            "status": "idle",
-            "active_flags": [],
-            "detail": None,
-        },
-    )
-    session_id = chat_service.create_session(backend_id="codex")
-    chat_service.update_session_backend_state(session_id, {"status": "idle"})
+        async def fake_bootstrap_session(
+            project_path: Path,
+            source: str = "chat",
+            channel_meta: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            return {
+                "thread_id": "thread-native-41",
+                "status": "idle",
+                "active_flags": [],
+                "detail": None,
+            }
 
-    monkeypatch.setattr(
-        codex_backend,
-        "load_thread_view",
-        lambda context, activity_limit=None: {
-            "title": "Stale Native Thread",
-            "preview": "stale-preview",
-            "updated_at": 10.0,
-            "messages": [
-                Message(role="assistant", content="stale-assistant"),
-            ],
-            "activity_events": [],
-            "activity_history": {
-                "total_count": 0,
-                "returned_count": 0,
-                "next_before": None,
+        monkeypatch.setattr(codex_backend, "bootstrap_session", fake_bootstrap_session)
+
+        session_id = await chat_service.create_session(backend_id="codex")
+        chat_service.update_session_backend_state(session_id, {"status": "idle"})
+
+        monkeypatch.setattr(
+            codex_backend,
+            "load_thread_view",
+            lambda context, activity_limit=None: {
+                "title": "Stale Native Thread",
+                "preview": "stale-preview",
+                "updated_at": 10.0,
+                "messages": [
+                    Message(role="assistant", content="stale-assistant"),
+                ],
+                "activity_events": [],
+                "activity_history": {
+                    "total_count": 0,
+                    "returned_count": 0,
+                    "next_before": None,
+                },
+                "codex_turn_timings": [],
             },
-            "codex_turn_timings": [],
-        },
-    )
+        )
 
-    chat_service.apply_codex_ipc_stream_change(
-        session_id,
-        {
-            "type": "patches",
-            "patches": [
-                {
-                    "op": "replace",
-                    "path": ["turns"],
-                    "value": [
-                        {
-                            "id": "turn-1",
-                            "turnId": "turn-1",
-                            "status": "inProgress",
-                            "items": [],
-                            "error": None,
-                            "diff": None,
-                            "params": {
-                                "threadId": session_id,
-                                "input": [
-                                    {
-                                        "type": "text",
-                                        "text": "hello",
-                                        "text_elements": [],
-                                    }
-                                ],
-                            },
-                        }
-                    ],
-                },
-                {
-                    "op": "replace",
-                    "path": ["updatedAt"],
-                    "value": 123000,
-                },
-                {
-                    "op": "replace",
-                    "path": ["title"],
-                    "value": "Remote Thread",
-                },
-            ],
-        },
-    )
-    chat_service.apply_codex_ipc_stream_change(
-        session_id,
-        {
-            "type": "patches",
-            "patches": [
-                {
-                    "op": "add",
-                    "path": ["turns", 0, "items", 0],
-                    "value": {
-                        "type": "userMessage",
-                        "id": "item-user-1",
-                        "content": [
-                            {"type": "text", "text": "hello", "text_elements": []}
+        chat_service.apply_codex_ipc_stream_change(
+            session_id,
+            {
+                "type": "patches",
+                "patches": [
+                    {
+                        "op": "replace",
+                        "path": ["turns"],
+                        "value": [
+                            {
+                                "id": "turn-1",
+                                "turnId": "turn-1",
+                                "status": "inProgress",
+                                "items": [],
+                                "error": None,
+                                "diff": None,
+                                "params": {
+                                    "threadId": session_id,
+                                    "input": [
+                                        {
+                                            "type": "text",
+                                            "text": "hello",
+                                            "text_elements": [],
+                                        }
+                                    ],
+                                },
+                            }
                         ],
                     },
-                },
-                {
-                    "op": "add",
-                    "path": ["turns", 0, "items", 1],
-                    "value": {
-                        "type": "agentMessage",
-                        "id": "item-agent-1",
-                        "text": "world",
-                        "phase": "final_answer",
+                    {
+                        "op": "replace",
+                        "path": ["updatedAt"],
+                        "value": 123000,
                     },
-                },
-            ],
-        },
-    )
+                    {
+                        "op": "replace",
+                        "path": ["title"],
+                        "value": "Remote Thread",
+                    },
+                ],
+            },
+        )
+        chat_service.apply_codex_ipc_stream_change(
+            session_id,
+            {
+                "type": "patches",
+                "patches": [
+                    {
+                        "op": "add",
+                        "path": ["turns", 0, "items", 0],
+                        "value": {
+                            "type": "userMessage",
+                            "id": "item-user-1",
+                            "content": [
+                                {"type": "text", "text": "hello", "text_elements": []}
+                            ],
+                        },
+                    },
+                    {
+                        "op": "add",
+                        "path": ["turns", 0, "items", 1],
+                        "value": {
+                            "type": "agentMessage",
+                            "id": "item-agent-1",
+                            "text": "world",
+                            "phase": "final_answer",
+                        },
+                    },
+                ],
+            },
+        )
 
-    messages, activity_events = chat_service.load_session_view(session_id)
+        messages, activity_events = await chat_service.load_session_view(session_id)
 
-    assert [(message.role, message.content) for message in messages] == [
-        ("user", "hello"),
-        ("assistant", "world"),
-    ]
-    assert activity_events == []
+        assert [(message.role, message.content) for message in messages] == [
+            ("user", "hello"),
+            ("assistant", "world"),
+        ]
+        assert activity_events == []
+
+    asyncio.run(scenario())
 
 
 def test_chat_service_run_command_tool_supports_shell_pipes(
@@ -2820,41 +2910,44 @@ def test_chat_service_load_session_transcript_limits_activity_events(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog()
-    )
-
-    project_root = tmp_path / "project"
-    project_root.mkdir(parents=True)
-    service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
-    chat_service = ChatService(
-        project_root=project_root,
-        config_service=service,
-        mcp_manager=FakeMCPManager(),  # type: ignore[arg-type]
-    )
-
-    for index in range(5):
-        chat_service.session_ui_store.append_activity_event(
-            "session-1",
-            "reasoning",
-            {
-                "session_id": "session-1",
-                "item_id": f"reasoning-{index}",
-                "content": f"step {index}",
-            },
+    async def scenario() -> None:
+        monkeypatch.setattr(
+            SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog()
         )
 
-    transcript = chat_service.load_session_transcript("session-1", activity_limit=2)
+        project_root = tmp_path / "project"
+        project_root.mkdir(parents=True)
+        service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
+        chat_service = ChatService(
+            project_root=project_root,
+            config_service=service,
+            mcp_manager=FakeMCPManager(),  # type: ignore[arg-type]
+        )
 
-    assert [event["data"]["item_id"] for event in transcript.activity_events] == [
-        "reasoning-3",
-        "reasoning-4",
-    ]
-    assert transcript.activity_history == {
-        "total_count": 5,
-        "returned_count": 2,
-        "next_before": 3,
-    }
+        for index in range(5):
+            chat_service.session_ui_store.append_activity_event(
+                "session-1",
+                "reasoning",
+                {
+                    "session_id": "session-1",
+                    "item_id": f"reasoning-{index}",
+                    "content": f"step {index}",
+                },
+            )
+
+        transcript = await chat_service.load_session_transcript("session-1", activity_limit=2)
+
+        assert [event["data"]["item_id"] for event in transcript.activity_events] == [
+            "reasoning-3",
+            "reasoning-4",
+        ]
+        assert transcript.activity_history == {
+            "total_count": 5,
+            "returned_count": 2,
+            "next_before": 3,
+        }
+
+    asyncio.run(scenario())
 
 
 def test_chat_service_get_session_activity_page_uses_before_cursor(

@@ -313,7 +313,7 @@ class ChatService:
                 },
             )
 
-    def create_session(
+    async def create_session(
         self,
         backend_id: str | None = None,
         project_path: str | None = None,
@@ -326,7 +326,9 @@ class ChatService:
         if resolved_backend_id == "codex":
             backend = self.backends.get("codex")
             if isinstance(backend, CodexAppServerBackend):
-                bootstrap = backend.bootstrap_session(Path(resolved_project_path))
+                bootstrap = await backend.bootstrap_session(
+                    Path(resolved_project_path),
+                )
                 session_id = bootstrap["thread_id"]
                 self.ensure_session_metadata(
                     session_id,
@@ -786,10 +788,11 @@ class ChatService:
         if not isinstance(backend, CodexAppServerBackend):
             raise RuntimeError("Codex backend is not available.")
 
-        bootstrap = backend.bootstrap_session(
+        bootstrap = await asyncio.to_thread(
+            backend.bootstrap_session,
             resolved_project_path,
-            source=caller_metadata["source"],
-            channel_meta=caller_metadata["channel_meta"],
+            caller_metadata["source"],
+            caller_metadata["channel_meta"],
         )
         session_id = str(bootstrap["thread_id"])
         self.ensure_session_metadata(
@@ -1352,13 +1355,13 @@ class ChatService:
             limit=limit,
         )
 
-    def load_session_transcript(
+    async def load_session_transcript(
         self,
         session_id: str,
         *,
         activity_limit: int | None = None,
     ) -> SessionTranscriptView:
-        native_view = self._native_codex_session_view(
+        native_view = await self._native_codex_session_view(
             session_id,
             activity_limit=activity_limit,
         )
@@ -1374,14 +1377,14 @@ class ChatService:
             messages=messages,
             activity_events=activity_events,
             activity_history=activity_history,
-            codex_turn_timings=self._fallback_codex_turn_timings(session_id),
+            codex_turn_timings=await self._fallback_codex_turn_timings(session_id),
         )
 
-    def load_session_view(
+    async def load_session_view(
         self,
         session_id: str,
     ) -> tuple[list[StoredSessionMessage], list[dict[str, Any]]]:
-        transcript = self.load_session_transcript(session_id)
+        transcript = await self.load_session_transcript(session_id)
         return (transcript.messages, transcript.activity_events)
 
     def _codex_turn_timings_from_turns(
@@ -1413,17 +1416,17 @@ class ChatService:
             )
         return codex_turn_timings
 
-    def _fallback_codex_turn_timings(
+    async def _fallback_codex_turn_timings(
         self,
         session_id: str,
     ) -> list[dict[str, int | str | None]]:
         metadata = self.get_session_metadata(session_id)
         if metadata["backend_id"] != "codex":
             return []
-        conversation_state = self.build_codex_ipc_conversation_state(session_id)
+        conversation_state = await self.build_codex_ipc_conversation_state(session_id)
         return self._codex_turn_timings_from_turns(conversation_state.get("turns"))
 
-    def _native_codex_session_view(
+    async def _native_codex_session_view(
         self,
         session_id: str,
         *,
@@ -1447,7 +1450,7 @@ class ChatService:
                 messages=self.build_transcript_messages(session_id),
                 activity_events=activity_events,
                 activity_history=activity_history,
-                codex_turn_timings=self._fallback_codex_turn_timings(session_id),
+                codex_turn_timings=await self._fallback_codex_turn_timings(session_id),
             )
 
         cached_ipc_view = self._cached_codex_ipc_session_view(
@@ -1457,7 +1460,7 @@ class ChatService:
         if cached_ipc_view is not None:
             return cached_ipc_view
 
-        view = backend.load_thread_view(context, activity_limit=activity_limit)
+        view = await backend.load_thread_view(context, activity_limit=activity_limit)
         self.ensure_session_metadata(
             session_id,
             source=context.source,
@@ -2022,8 +2025,8 @@ class ChatService:
             self.transcript_store.save(session_id, transcript)
             return
 
-    def build_codex_ipc_conversation_state(self, session_id: str) -> dict[str, Any]:
-        return self.codex_conversation_state.build_conversation_state(session_id)
+    async def build_codex_ipc_conversation_state(self, session_id: str) -> dict[str, Any]:
+        return await self.codex_conversation_state.build_conversation_state(session_id)
 
     def apply_codex_ipc_stream_change(
         self,

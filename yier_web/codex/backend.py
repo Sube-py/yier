@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from copy import deepcopy
+import inspect
 import logging
 import os
 from pathlib import Path
@@ -11,17 +12,16 @@ from typing import TYPE_CHECKING, Any, TypedDict
 from pydantic import BaseModel
 
 from codex_app_server import (
-    AppServerClient,
+    AsyncAppServerClient,
     ImageInput,
     Input,
     LocalImageInput,
     MentionInput,
     SkillInput,
-    Thread as CodexThread,
+    AsyncThread as CodexThread,
     ThreadResumeParams,
     ThreadStartParams,
     TextInput,
-    TurnHandle,
 )
 from codex_app_server.generated.v2_all import (
     AgentMessageDeltaNotification,
@@ -93,7 +93,10 @@ from yier_web.codex.sdk.config import (
     normalize_codex_thread_sandbox_mode,
     normalize_codex_turn_sandbox_policy_type,
 )
-from yier_web.codex.sdk.client import ApprovalAwareAppServerClient
+from yier_web.codex.sdk.client import (
+    ApprovalAwareAppServerClient,
+    ApprovalAwareAsyncTurnHandle,
+)
 from yier_web.schemas import StoredSessionMessage
 
 if TYPE_CHECKING:
@@ -101,6 +104,12 @@ if TYPE_CHECKING:
 
 CODEX_IPC_DEBUG_ENV = "YIER_CODEX_IPC_DEBUG"
 logger = logging.getLogger(__name__)
+
+
+async def _maybe_await(value: Any) -> Any:
+    if inspect.isawaitable(value):
+        return await value
+    return value
 
 type CodexThreadItemRoot = (
     UserMessageThreadItem
@@ -190,7 +199,7 @@ class CodexAppServerBackend(ChatBackend):
         if runtime is not None:
             await self._close_runtime(runtime)
 
-    def bootstrap_session(
+    async def bootstrap_session(
         self,
         project_path: Path,
         source: str = "chat",
@@ -205,12 +214,11 @@ class CodexAppServerBackend(ChatBackend):
         )
         runtime = CodexSessionRuntime(session_id="")
         try:
-            runtime.client = self._start_client(runtime, context)
-            self._start_thread_blocking(runtime, context, persist=False)
+            await self._bootstrap_runtime(runtime, context, persist=False)
         except Exception:
             if runtime.client is not None:
                 try:
-                    runtime.client.close()
+                    await _maybe_await(runtime.client.close())
                 except (AppServerError, TransportClosedError):
                     pass
             raise
@@ -224,6 +232,16 @@ class CodexAppServerBackend(ChatBackend):
             "active_flags": list(runtime.active_flags),
             "detail": runtime.detail,
         }
+
+    async def _bootstrap_runtime(
+        self,
+        runtime: CodexSessionRuntime,
+        context: ChatSessionContext,
+        *,
+        persist: bool,
+    ) -> None:
+        runtime.client = await _maybe_await(self._start_client(runtime, context))
+        await self._start_thread(runtime, context, persist=persist)
 
     async def stream_chat(
         self,
@@ -240,8 +258,7 @@ class CodexAppServerBackend(ChatBackend):
                 session_id=context.session_id,
                 thread_id=runtime.thread_id,
             )
-            response = await asyncio.to_thread(
-                self._start_turn_blocking,
+            response = await self._start_turn(
                 runtime,
                 context,
                 user_message,
@@ -263,8 +280,7 @@ class CodexAppServerBackend(ChatBackend):
                     "turn_id": turn_id,
                 },
             )
-            return await asyncio.to_thread(
-                self._consume_turn_stream_blocking,
+            return await self._consume_turn_stream(
                 runtime,
                 context,
                 turn_id,
@@ -346,21 +362,14 @@ class CodexAppServerBackend(ChatBackend):
         runtime = await self._ensure_runtime(context)
         assert runtime.client is not None
         assert runtime.thread_id is not None
-        resolved_turn_id = turn_id or await asyncio.to_thread(
-            self._resolve_active_turn_id_blocking,
+        resolved_turn_id = turn_id or await self._resolve_active_turn_id(
             runtime,
             context,
         )
         if not resolved_turn_id:
             raise RuntimeError("No active Codex turn found for steer request.")
-        response = await asyncio.to_thread(
-            TurnHandle(
-                runtime.client,
-                runtime.thread_id,
-                resolved_turn_id,
-            ).steer,
-            self._sdk_input_from_payload(input_payload),
-        )
+        turn_handle = self._turn_handle(runtime, resolved_turn_id)
+        response = await turn_handle.steer(self._sdk_input_from_payload(input_payload))
         return self._safe_model_dump(response)
 
     async def start_turn(
@@ -375,8 +384,7 @@ class CodexAppServerBackend(ChatBackend):
             thread_id=runtime.thread_id,
             input_type=type(input_payload).__name__,
         )
-        response = await asyncio.to_thread(
-            self._start_turn_blocking,
+        response = await self._start_turn(
             runtime,
             context,
             input_payload,
@@ -400,8 +408,7 @@ class CodexAppServerBackend(ChatBackend):
         runtime.loop = asyncio.get_running_loop()
         runtime.emit = emit
         try:
-            return await asyncio.to_thread(
-                self._consume_turn_stream_blocking,
+            return await self._consume_turn_stream(
                 runtime,
                 context,
                 turn_id,
@@ -418,20 +425,14 @@ class CodexAppServerBackend(ChatBackend):
         runtime = await self._ensure_runtime(context)
         assert runtime.client is not None
         assert runtime.thread_id is not None
-        resolved_turn_id = turn_id or await asyncio.to_thread(
-            self._resolve_active_turn_id_blocking,
+        resolved_turn_id = turn_id or await self._resolve_active_turn_id(
             runtime,
             context,
         )
         if not resolved_turn_id:
             raise RuntimeError("No active Codex turn found for interrupt request.")
-        response = await asyncio.to_thread(
-            TurnHandle(
-                runtime.client,
-                runtime.thread_id,
-                resolved_turn_id,
-            ).interrupt,
-        )
+        turn_handle = self._turn_handle(runtime, resolved_turn_id)
+        response = await turn_handle.interrupt()
         return self._safe_model_dump(response)
 
     async def respond_to_raw_request(
@@ -450,27 +451,16 @@ class CodexAppServerBackend(ChatBackend):
         pending.event.set()
         return True
 
-    def load_thread_state(self, context: ChatSessionContext) -> dict[str, Any]:
-        runtime = self._ensure_runtime_blocking(context)
+    async def load_thread_state(self, context: ChatSessionContext) -> dict[str, Any]:
+        runtime = await self._ensure_runtime(context)
         assert runtime.client is not None
         assert runtime.thread_id is not None
         if runtime.streaming_turn_id is not None:
             cached_payload = self._cached_thread_state_payload(runtime)
             if cached_payload is not None:
                 return cached_payload
-        response = CodexThread(runtime.client, runtime.thread_id).read(include_turns=True)
-        runtime.status = self._thread_status_value(response.thread.status)
-        runtime.active_flags = self._thread_active_flags(response.thread.status)
-        self._cache_thread_state(runtime, response.thread)
-        self.chat_service.update_session_backend_state(
-            context.session_id,
-            {
-                "thread_id": runtime.thread_id,
-                "status": runtime.status,
-                "active_flags": runtime.active_flags,
-                "detail": runtime.detail,
-            },
-        )
+        response = await self._read_thread(runtime, include_turns=True)
+        self._update_runtime_from_thread(context, runtime, response.thread)
         return {
             "thread": self._safe_model_dump(response.thread),
             "threadRuntimeStatus": self._thread_runtime_status_payload(
@@ -551,28 +541,17 @@ class CodexAppServerBackend(ChatBackend):
         )
         return normalized_turns
 
-    def load_thread_view(
+    async def load_thread_view(
         self,
         context: ChatSessionContext,
         *,
         activity_limit: int | None = None,
     ) -> CodexThreadViewPayload:
-        runtime = self._ensure_runtime_blocking(context)
+        runtime = await self._ensure_runtime(context)
         assert runtime.client is not None
         assert runtime.thread_id is not None
-        response = CodexThread(runtime.client, runtime.thread_id).read(include_turns=True)
-        runtime.status = self._thread_status_value(response.thread.status)
-        runtime.active_flags = self._thread_active_flags(response.thread.status)
-        self._cache_thread_state(runtime, response.thread)
-        self.chat_service.update_session_backend_state(
-            context.session_id,
-            {
-                "thread_id": runtime.thread_id,
-                "status": runtime.status,
-                "active_flags": runtime.active_flags,
-                "detail": runtime.detail,
-            },
-        )
+        response = await self._read_thread(runtime, include_turns=True)
+        self._update_runtime_from_thread(context, runtime, response.thread)
         return self._thread_view_payload(
             context,
             response.thread,
@@ -603,40 +582,23 @@ class CodexAppServerBackend(ChatBackend):
         if runtime is None:
             runtime = CodexSessionRuntime(session_id=context.session_id)
             self._runtimes[context.session_id] = runtime
-            runtime.client = await asyncio.to_thread(self._start_client, runtime, context)
+            runtime.client = await _maybe_await(self._start_client(runtime, context))
 
         if runtime.thread_id:
             return runtime
 
         thread_id = context.backend_state.get("thread_id")
         if isinstance(thread_id, str) and thread_id:
-            await asyncio.to_thread(self._resume_thread_blocking, runtime, context, thread_id)
+            await self._resume_thread(runtime, context, thread_id)
         else:
-            await asyncio.to_thread(self._start_thread_blocking, runtime, context)
+            await self._start_thread(runtime, context)
         return runtime
 
-    def _ensure_runtime_blocking(self, context: ChatSessionContext) -> CodexSessionRuntime:
-        runtime = self._runtimes.get(context.session_id)
-        if runtime is None:
-            runtime = CodexSessionRuntime(session_id=context.session_id)
-            self._runtimes[context.session_id] = runtime
-            runtime.client = self._start_client(runtime, context)
-
-        if runtime.thread_id:
-            return runtime
-
-        thread_id = context.backend_state.get("thread_id")
-        if isinstance(thread_id, str) and thread_id:
-            self._resume_thread_blocking(runtime, context, thread_id)
-        else:
-            self._start_thread_blocking(runtime, context)
-        return runtime
-
-    def _start_client(
+    async def _start_client(
         self,
         runtime: CodexSessionRuntime,
         context: ChatSessionContext,
-    ) -> AppServerClient:
+    ) -> AsyncAppServerClient:
         codex_settings = self.chat_service.config_service.load_web_settings().codex
         launcher_command = codex_settings.launcher_command or DEFAULT_CODEX_LAUNCHER
         client = ApprovalAwareAppServerClient(
@@ -654,11 +616,11 @@ class CodexAppServerBackend(ChatBackend):
                 params,
             ),
         )
-        client.start()
-        client.initialize()
+        await client.start()
+        await client.initialize()
         return client
 
-    def _start_thread_blocking(
+    async def _start_thread(
         self,
         runtime: CodexSessionRuntime,
         context: ChatSessionContext,
@@ -666,55 +628,41 @@ class CodexAppServerBackend(ChatBackend):
         persist: bool = True,
     ) -> None:
         assert runtime.client is not None
-        response: ThreadStartResponse = runtime.client.thread_start(
-            ThreadStartParams(**self._thread_params(context))
+        response: ThreadStartResponse = await _maybe_await(
+            runtime.client.thread_start(
+                ThreadStartParams(**self._thread_params(context))
+            )
         )
         runtime.thread_id = response.thread.id
-        runtime.status = self._thread_status_value(response.thread.status)
-        runtime.active_flags = self._thread_active_flags(response.thread.status)
-        self._cache_thread_state(runtime, response.thread)
+        self._apply_thread_snapshot(runtime, response.thread)
         if persist and context.session_id:
-            self.chat_service.update_session_backend_state(
-                context.session_id,
-                {
-                    "thread_id": runtime.thread_id,
-                    "status": runtime.status,
-                    "active_flags": runtime.active_flags,
-                },
-            )
+            self._persist_runtime_status(context, runtime)
 
-    def _resume_thread_blocking(
+    async def _resume_thread(
         self,
         runtime: CodexSessionRuntime,
         context: ChatSessionContext,
         thread_id: str,
     ) -> None:
         assert runtime.client is not None
-        response: ThreadResumeResponse = runtime.client.thread_resume(
-            thread_id,
-            ThreadResumeParams(thread_id=thread_id, **self._thread_params(context)),
+        response: ThreadResumeResponse = await _maybe_await(
+            runtime.client.thread_resume(
+                thread_id,
+                ThreadResumeParams(thread_id=thread_id, **self._thread_params(context)),
+            )
         )
         runtime.thread_id = response.thread.id
-        runtime.status = self._thread_status_value(response.thread.status)
-        runtime.active_flags = self._thread_active_flags(response.thread.status)
-        self._cache_thread_state(runtime, response.thread)
-        self.chat_service.update_session_backend_state(
-            context.session_id,
-            {
-                "thread_id": runtime.thread_id,
-                "status": runtime.status,
-                "active_flags": runtime.active_flags,
-            },
-        )
+        self._apply_thread_snapshot(runtime, response.thread)
+        self._persist_runtime_status(context, runtime)
 
-    def _resolve_active_turn_id_blocking(
+    async def _resolve_active_turn_id(
         self,
         runtime: CodexSessionRuntime,
         context: ChatSessionContext,
     ) -> str | None:
         assert runtime.client is not None
         assert runtime.thread_id is not None
-        response = CodexThread(runtime.client, runtime.thread_id).read(include_turns=True)
+        response = await self._read_thread(runtime, include_turns=True)
         turns = list(response.thread.turns)
         for turn in reversed(turns):
             status = self._turn_status_value(turn.status)
@@ -727,19 +675,64 @@ class CodexAppServerBackend(ChatBackend):
                 return turn_id
         return None
 
-    def _run_turn_blocking(
+    async def _start_runtime_turn(
         self,
         runtime: CodexSessionRuntime,
         context: ChatSessionContext,
-        user_message: list[dict[str, Any]] | dict[str, Any] | str,
-    ) -> str:
-        response = self._start_turn_blocking(runtime, context, user_message)
-        turn_id = self._response_turn_id(response)
-        if not turn_id:
-            raise RuntimeError("Codex turn_start response did not include a turn id.")
-        return self._consume_turn_stream_blocking(runtime, context, turn_id)
+        turn_input: list[dict[str, Any]] | dict[str, Any] | str,
+    ) -> tuple[Any | None, TurnStartResponse | BaseModel | dict[str, Any], str | None]:
+        if isinstance(runtime.client, AsyncAppServerClient):
+            return await self._start_public_sdk_turn(runtime, context, turn_input)
+        return await self._start_low_level_turn(runtime, context, turn_input)
 
-    def _start_turn_blocking(
+    async def _start_public_sdk_turn(
+        self,
+        runtime: CodexSessionRuntime,
+        context: ChatSessionContext,
+        turn_input: list[dict[str, Any]] | dict[str, Any] | str,
+    ) -> tuple[Any, dict[str, Any], str]:
+        assert runtime.client is not None
+        assert runtime.thread_id is not None
+        thread_handle = self._thread_handle(runtime.client, runtime.thread_id)
+        turn_handle = await _maybe_await(
+            thread_handle.turn(
+                self._sdk_input_from_payload(turn_input),
+                **self._turn_params(context),
+            )
+        )
+        turn_id = turn_handle.id
+        return (
+            turn_handle,
+            {
+                "turn": {
+                    "id": turn_id,
+                    "status": "inProgress",
+                    "items": [],
+                }
+            },
+            turn_id,
+        )
+
+    async def _start_low_level_turn(
+        self,
+        runtime: CodexSessionRuntime,
+        context: ChatSessionContext,
+        turn_input: list[dict[str, Any]] | dict[str, Any] | str,
+    ) -> tuple[None, TurnStartResponse | BaseModel | dict[str, Any], str | None]:
+        assert runtime.client is not None
+        assert runtime.thread_id is not None
+        # Unit tests use lightweight fake clients that implement only the
+        # low-level shape; production runtimes use the public SDK branch.
+        response = await _maybe_await(
+            runtime.client.turn_start(
+                runtime.thread_id,
+                turn_input,
+                params=self._turn_params(context),
+            )
+        )
+        return (None, response, self._response_turn_id(response))
+
+    async def _start_turn(
         self,
         runtime: CodexSessionRuntime,
         context: ChatSessionContext,
@@ -751,38 +744,20 @@ class CodexAppServerBackend(ChatBackend):
         runtime.detail = None
         turn_input = self._normalize_turn_input_payload(context, input_payload)
         _codex_ipc_debug_log(
-            "_start_turn_blocking before client.turn_start",
+            "_start_turn before client.turn_start",
             session_id=context.session_id,
             thread_id=runtime.thread_id,
             input_type=type(turn_input).__name__,
         )
-        if isinstance(runtime.client, AppServerClient):
-            turn_handle = CodexThread(runtime.client, runtime.thread_id).turn(
-                self._sdk_input_from_payload(turn_input),
-                **self._turn_params(context),
-            )
-            turn_id = turn_handle.id
-            response: TurnStartResponse | dict[str, Any] = {
-                "turn": {
-                    "id": turn_id,
-                    "status": "inProgress",
-                    "items": [],
-                }
-            }
-        else:
-            # Unit tests use lightweight fake clients that implement only the
-            # low-level shape; production runtimes use the public SDK branch.
-            turn_handle = None
-            response = runtime.client.turn_start(
-                runtime.thread_id,
-                turn_input,
-                params=self._turn_params(context),
-            )
-            turn_id = self._response_turn_id(response)
+        turn_handle, response, turn_id = await self._start_runtime_turn(
+            runtime,
+            context,
+            turn_input,
+        )
         if not turn_id:
             raise RuntimeError("Codex turn_start response did not include a turn id.")
         _codex_ipc_debug_log(
-            "_start_turn_blocking after client.turn_start",
+            "_start_turn after client.turn_start",
             session_id=context.session_id,
             thread_id=runtime.thread_id,
             turn_id=turn_id,
@@ -806,7 +781,7 @@ class CodexAppServerBackend(ChatBackend):
         )
         return response
 
-    def _consume_turn_stream_blocking(
+    async def _consume_turn_stream(
         self,
         runtime: CodexSessionRuntime,
         context: ChatSessionContext,
@@ -817,26 +792,26 @@ class CodexAppServerBackend(ChatBackend):
         finish_reason = "stop"
         runtime.streaming_turn_id = turn_id
         try:
-            turn_handle = runtime.turn_handles.get(turn_id) or TurnHandle(
-                runtime.client,
-                runtime.thread_id,
-                turn_id,
-            )
-            for notification in turn_handle.stream():
+            turn_handle = self._turn_handle(runtime, turn_id)
+            async for notification in turn_handle.stream():
                 notification_thread_id = self._notification_value(notification, "thread_id")
                 if notification_thread_id and notification_thread_id != runtime.thread_id:
                     continue
                 if not self._notification_belongs_to_turn(notification, turn_id):
                     if notification.method.startswith("thread/"):
                         self._handle_thread_notification(runtime, context, notification)
+                        await self._flush_pending_runtime_emits(runtime)
                     continue
 
                 if notification.method == "turn/completed":
                     finish_reason = self._handle_turn_completed(runtime, context, notification)
+                    await self._flush_pending_runtime_emits(runtime)
                     break
 
                 self._handle_turn_notification(runtime, context, notification)
+                await self._flush_pending_runtime_emits(runtime)
         finally:
+            await self._flush_pending_runtime_emits(runtime)
             runtime.turn_handles.pop(turn_id, None)
             runtime.streaming_turn_id = None
 
@@ -2242,9 +2217,76 @@ class CodexAppServerBackend(ChatBackend):
             pending.event.set()
         if runtime.client is not None:
             try:
-                await asyncio.to_thread(runtime.client.close)
+                await _maybe_await(runtime.client.close())
             except (AppServerError, TransportClosedError):
                 pass
+
+    async def _read_thread(
+        self,
+        runtime: CodexSessionRuntime,
+        *,
+        include_turns: bool,
+    ) -> Any:
+        assert runtime.client is not None
+        assert runtime.thread_id is not None
+        thread_handle = self._thread_handle(runtime.client, runtime.thread_id)
+        return await _maybe_await(thread_handle.read(include_turns=include_turns))
+
+    def _thread_handle(self, client: Any, thread_id: str) -> Any:
+        thread_factory = getattr(client, "thread", None)
+        if callable(thread_factory):
+            return thread_factory(thread_id)
+        return CodexThread(client, thread_id)
+
+    def _turn_handle(
+        self,
+        runtime: CodexSessionRuntime,
+        turn_id: str,
+    ) -> Any:
+        stored_handle = runtime.turn_handles.get(turn_id)
+        if stored_handle is not None:
+            return stored_handle
+        assert runtime.client is not None
+        assert runtime.thread_id is not None
+        return ApprovalAwareAsyncTurnHandle(
+            runtime.client,
+            runtime.thread_id,
+            turn_id,
+        )
+
+    def _update_runtime_from_thread(
+        self,
+        context: ChatSessionContext,
+        runtime: CodexSessionRuntime,
+        thread: Any,
+    ) -> None:
+        self._apply_thread_snapshot(runtime, thread)
+        self._persist_runtime_status(context, runtime, include_detail=True)
+
+    def _apply_thread_snapshot(
+        self,
+        runtime: CodexSessionRuntime,
+        thread: Any,
+    ) -> None:
+        runtime.status = self._thread_status_value(thread.status)
+        runtime.active_flags = self._thread_active_flags(thread.status)
+        self._cache_thread_state(runtime, thread)
+
+    def _persist_runtime_status(
+        self,
+        context: ChatSessionContext,
+        runtime: CodexSessionRuntime,
+        *,
+        include_detail: bool = False,
+    ) -> None:
+        updates: dict[str, Any] = {
+            "thread_id": runtime.thread_id,
+            "status": runtime.status,
+            "active_flags": runtime.active_flags,
+        }
+        if include_detail:
+            updates["detail"] = runtime.detail
+        self.chat_service.update_session_backend_state(context.session_id, updates)
 
     def _emit_from_thread(
         self,
@@ -2256,9 +2298,34 @@ class CodexAppServerBackend(ChatBackend):
     ) -> None:
         if runtime.loop is None or runtime.emit is None:
             return
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            running_loop = None
+
+        if running_loop is runtime.loop:
+            task = running_loop.create_task(runtime.emit(event, data))
+            if wait:
+                raise RuntimeError(
+                    "Cannot synchronously wait for Codex stream emit on the active event loop."
+                )
+            runtime.pending_emit_tasks.append(task)
+            return
+
         future = asyncio.run_coroutine_threadsafe(runtime.emit(event, data), runtime.loop)
         if wait:
             future.result()
+            return
+        runtime.pending_emit_tasks.append(future)
+
+    async def _flush_pending_runtime_emits(self, runtime: CodexSessionRuntime) -> None:
+        pending = list(runtime.pending_emit_tasks)
+        runtime.pending_emit_tasks.clear()
+        for task in pending:
+            if isinstance(task, asyncio.Future):
+                await task
+            else:
+                await asyncio.wrap_future(task)
 
     def _codex_work_mode(self, context: ChatSessionContext) -> str:
         metadata = self.chat_service.get_session_metadata(context.session_id)

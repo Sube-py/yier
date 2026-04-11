@@ -14,7 +14,7 @@ class CodexConversationStateService:
     def __init__(self, chat_service: "ChatService") -> None:
         self.chat_service = chat_service
 
-    def build_conversation_state(self, session_id: str) -> dict[str, Any]:
+    async def build_conversation_state(self, session_id: str) -> dict[str, Any]:
         chat_service = self.chat_service
         metadata = chat_service.get_session_metadata(session_id)
         context = chat_service.get_session_context(session_id)
@@ -22,7 +22,7 @@ class CodexConversationStateService:
         runtime = chat_service.get_backend_runtime(session_id)
         backend_state = metadata["backend_state"]
         current_timestamp_ms = int(time() * 1000)
-        native_state = self._native_conversation_state(session_id)
+        native_state = await self._native_conversation_state(session_id)
         latest_model = backend_state.get("model") or ""
         latest_reasoning_effort = backend_state.get("reasoning_effort")
 
@@ -275,7 +275,7 @@ class CodexConversationStateService:
             raise TypeError("Patch parent must be a dict or list.")
         current.pop(last_segment, None)
 
-    def _native_conversation_state(self, session_id: str) -> dict[str, Any] | None:
+    async def _native_conversation_state(self, session_id: str) -> dict[str, Any] | None:
         context = self.chat_service.get_session_context(session_id)
         if context.backend_id != "codex":
             return None
@@ -286,7 +286,7 @@ class CodexConversationStateService:
         if not isinstance(thread_id, str) or not thread_id:
             return None
         try:
-            native_state = backend.load_thread_state(context)
+            native_state = await backend.load_thread_state(context)
         except Exception:
             return None
         thread = native_state.get("thread")

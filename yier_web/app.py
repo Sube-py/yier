@@ -378,7 +378,7 @@ async def create_session(request: Request[Any, Any, Any], state: State) -> Creat
         raw_payload = {}
     payload = CreateSessionRequest.model_validate(raw_payload or {})
     return CreateSessionResponse(
-        session_id=get_services(state).chat_service.create_session(
+        session_id=await get_services(state).chat_service.create_session(
             backend_id=payload.backend_id,
             project_path=payload.project_path,
         )
@@ -423,7 +423,7 @@ async def create_codex_session(
         if data.project_path is not None
         else request.query_params.get("project_path")
     )
-    session_id = get_services(state).chat_service.create_session(
+    session_id = await get_services(state).chat_service.create_session(
         backend_id="codex",
         project_path=project_path,
     )
@@ -598,7 +598,7 @@ async def get_session(
     activity_limit: int | None = None,
 ) -> SessionTranscriptResponse:
     services = get_services(state)
-    transcript = services.chat_service.load_session_transcript(
+    transcript = await services.chat_service.load_session_transcript(
         session_id,
         activity_limit=activity_limit,
     )

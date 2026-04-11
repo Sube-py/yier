@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import sys
 
 import pytest
+from codex_app_server import AppServerConfig
 from codex_app_server.generated.v2_all import (
     ImageGenerationThreadItem,
     ImageViewThreadItem,
@@ -24,6 +25,7 @@ from yier_web.codex.backend import (
     _codex_turn_sandbox_policy_type,
 )
 from yier_web.codex.runtime import CodexSessionRuntime, PendingApprovalState, TurnSnapshotState
+from yier_web.codex.sdk.client import ApprovalAwareAppServerClient
 from yier_web.schemas import StoredCodexSettings, WebSettings
 
 
@@ -129,6 +131,35 @@ def test_codex_backend_injects_pairing_mcp_server_when_paths_are_available() -> 
     }
 
 
+def test_approval_aware_async_client_routes_sync_server_requests_to_callback() -> None:
+    calls: list[tuple[str, str, dict[str, object]]] = []
+
+    client = ApprovalAwareAppServerClient(
+        config=AppServerConfig(),
+        approval_callback=lambda request_id, method, params: calls.append(
+            (request_id, method, params)
+        )
+        or {"decision": "decline"},
+    )
+
+    response = client._sync._handle_server_request(
+        {
+            "id": "request-1",
+            "method": "item/commandExecution/requestApproval",
+            "params": {"command": "pwd"},
+        }
+    )
+
+    assert response == {"decision": "decline"}
+    assert calls == [
+        (
+            "request-1",
+            "item/commandExecution/requestApproval",
+            {"command": "pwd"},
+        )
+    ]
+
+
 def test_codex_backend_treats_elicitation_create_as_mcp_elicitation() -> None:
     backend = CodexAppServerBackend(SimpleNamespace())
 
@@ -174,38 +205,43 @@ def test_codex_backend_normalizes_raw_elicitation_create_payload() -> None:
 def test_codex_backend_bootstrap_session_returns_native_thread_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    settings = WebSettings(codex=StoredCodexSettings(sandbox="workspace-write"))
-    chat_service = SimpleNamespace(
-        config_service=SimpleNamespace(load_web_settings=lambda: settings)
-    )
-    backend = CodexAppServerBackend(chat_service)
+    async def scenario() -> None:
+        settings = WebSettings(codex=StoredCodexSettings(sandbox="workspace-write"))
+        chat_service = SimpleNamespace(
+            config_service=SimpleNamespace(load_web_settings=lambda: settings)
+        )
+        backend = CodexAppServerBackend(chat_service)
 
-    monkeypatch.setattr(backend, "_start_client", lambda runtime, context: object())
+        async def fake_start_client(runtime, context):
+            return object()
 
-    def fake_start_thread(
-        runtime,
-        context,
-        *,
-        persist: bool = True,
-    ) -> None:
-        assert persist is False
-        runtime.thread_id = "thread-native-1"
-        runtime.status = "idle"
-        runtime.active_flags = ["interactive"]
-        runtime.detail = "Ready"
+        async def fake_start_thread(
+            runtime,
+            context,
+            *,
+            persist: bool = True,
+        ) -> None:
+            assert persist is False
+            runtime.thread_id = "thread-native-1"
+            runtime.status = "idle"
+            runtime.active_flags = ["interactive"]
+            runtime.detail = "Ready"
 
-    monkeypatch.setattr(backend, "_start_thread_blocking", fake_start_thread)
+        monkeypatch.setattr(backend, "_start_client", fake_start_client)
+        monkeypatch.setattr(backend, "_start_thread", fake_start_thread)
 
-    payload = backend.bootstrap_session(Path("/tmp/project"))
+        payload = await backend.bootstrap_session(Path("/tmp/project"))
 
-    assert payload == {
-        "thread_id": "thread-native-1",
-        "status": "idle",
-        "active_flags": ["interactive"],
-        "detail": "Ready",
-    }
-    assert "thread-native-1" in backend._runtimes
-    assert backend._runtimes["thread-native-1"].session_id == "thread-native-1"
+        assert payload == {
+            "thread_id": "thread-native-1",
+            "status": "idle",
+            "active_flags": ["interactive"],
+            "detail": "Ready",
+        }
+        assert "thread-native-1" in backend._runtimes
+        assert backend._runtimes["thread-native-1"].session_id == "thread-native-1"
+
+    asyncio.run(scenario())
 
 
 def test_codex_backend_reasoning_notifications_keep_item_identity_and_accumulate_content() -> None:
@@ -364,6 +400,90 @@ def test_codex_backend_finalizes_transcript_backed_assistant_message_with_stable
         )
     ]
     assert runtime.turn_snapshots["turn-1"].assistant_item_id == "turn-1:assistant-transcript"
+
+
+def test_codex_backend_flushes_stream_emits_between_notifications() -> None:
+    async def scenario() -> None:
+        chat_service = SimpleNamespace(
+            update_session_backend_state=lambda session_id, state: None,
+            _append_transcript_message=lambda session_id, message: None,
+        )
+        backend = CodexAppServerBackend(chat_service)
+        context = ChatSessionContext(
+            session_id="session-1",
+            source="chat",
+            backend_id="codex",
+            project_path=Path("/tmp/project"),
+            channel_meta=None,
+        )
+        emitted: list[tuple[str, dict[str, object]]] = []
+        observed_after_delta: list[list[tuple[str, dict[str, object]]]] = []
+
+        async def emit(event: str, data: dict[str, object]) -> None:
+            await asyncio.sleep(0)
+            emitted.append((event, data))
+
+        class FakeTurnHandle:
+            async def stream(self):
+                yield SimpleNamespace(
+                    method="item/agentMessage/delta",
+                    payload=SimpleNamespace(
+                        item_id="msg-1",
+                        delta="Hello",
+                        turn_id="turn-1",
+                    ),
+                )
+                observed_after_delta.append(list(emitted))
+                yield SimpleNamespace(
+                    method="turn/completed",
+                    payload=SimpleNamespace(
+                        turn=SimpleNamespace(
+                            id="turn-1",
+                            status="completed",
+                            error=None,
+                        ),
+                    ),
+                )
+
+        runtime = CodexSessionRuntime(
+            session_id="session-1",
+            client=object(),
+            thread_id="thread-1",
+            loop=asyncio.get_running_loop(),
+            emit=emit,
+        )
+        runtime.turn_handles["turn-1"] = FakeTurnHandle()
+        runtime.turn_snapshots["turn-1"] = TurnSnapshotState(params={})
+
+        finish_reason = await backend._consume_turn_stream(
+            runtime,
+            context,
+            "turn-1",
+        )
+
+        assert finish_reason == "stop"
+        assert observed_after_delta == [
+            [
+                (
+                    "assistant_delta",
+                    {
+                        "session_id": "session-1",
+                        "item_id": "msg-1",
+                        "delta": "Hello",
+                    },
+                )
+            ]
+        ]
+        assert emitted[-1] == (
+            "turn_completed",
+            {
+                "session_id": "session-1",
+                "turn_id": "turn-1",
+                "status": "completed",
+            },
+        )
+
+    asyncio.run(scenario())
 
 
 def test_codex_backend_emits_turn_completed_for_completed_turn() -> None:
@@ -781,163 +901,178 @@ def test_codex_backend_start_turn_returns_native_turn_payload(
 def test_codex_backend_load_thread_state_returns_native_thread_dump(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    chat_service = SimpleNamespace(
-        update_session_backend_state=lambda session_id, state: None,
-        get_session_metadata=lambda session_id: {"codex_work_mode": "build"},
-    )
-    backend = CodexAppServerBackend(chat_service)
-    context = ChatSessionContext(
-        session_id="session-1",
-        source="chat",
-        backend_id="codex",
-        project_path=Path("/tmp/project"),
-        channel_meta=None,
-    )
-    runtime = CodexSessionRuntime(session_id="session-1", client=object(), thread_id="thread-1")
+    async def scenario() -> None:
+        chat_service = SimpleNamespace(
+            update_session_backend_state=lambda session_id, state: None,
+            get_session_metadata=lambda session_id: {"codex_work_mode": "build"},
+        )
+        backend = CodexAppServerBackend(chat_service)
+        context = ChatSessionContext(
+            session_id="session-1",
+            source="chat",
+            backend_id="codex",
+            project_path=Path("/tmp/project"),
+            channel_meta=None,
+        )
+        runtime = CodexSessionRuntime(session_id="session-1", client=object(), thread_id="thread-1")
 
-    monkeypatch.setattr(backend, "_ensure_runtime_blocking", lambda _context: runtime)
+        async def fake_ensure_runtime(_context: ChatSessionContext) -> CodexSessionRuntime:
+            return runtime
 
-    class FakeThreadHandle:
-        def __init__(self, client: object, thread_id: str) -> None:
-            assert thread_id == "thread-1"
+        monkeypatch.setattr(backend, "_ensure_runtime", fake_ensure_runtime)
 
-        def read(self, include_turns: bool = False) -> SimpleNamespace:
-            assert include_turns is True
-            return SimpleNamespace(
-                thread=SimpleNamespace(
-                    status=SimpleNamespace(
-                        root=SimpleNamespace(type="idle", active_flags=[])
-                    ),
-                    model_dump=lambda mode="json": {
-                        "id": "thread-1",
-                        "name": "Native thread",
-                        "cwd": "/tmp/project",
-                        "createdAt": 100,
-                        "updatedAt": 101,
-                        "turns": [
-                            {
-                                "id": "turn-native-1",
-                                "status": "completed",
-                                "items": [],
-                            }
-                        ],
-                    },
+        class FakeThreadHandle:
+            def __init__(self, client: object, thread_id: str) -> None:
+                assert thread_id == "thread-1"
+
+            def read(self, include_turns: bool = False) -> SimpleNamespace:
+                assert include_turns is True
+                return SimpleNamespace(
+                    thread=SimpleNamespace(
+                        status=SimpleNamespace(
+                            root=SimpleNamespace(type="idle", active_flags=[])
+                        ),
+                        model_dump=lambda mode="json": {
+                            "id": "thread-1",
+                            "name": "Native thread",
+                            "cwd": "/tmp/project",
+                            "createdAt": 100,
+                            "updatedAt": 101,
+                            "turns": [
+                                {
+                                    "id": "turn-native-1",
+                                    "status": "completed",
+                                    "items": [],
+                                }
+                            ],
+                        },
+                    )
                 )
-            )
 
-    monkeypatch.setattr(codex_backend_module, "CodexThread", FakeThreadHandle)
+        monkeypatch.setattr(codex_backend_module, "CodexThread", FakeThreadHandle)
 
-    payload = backend.load_thread_state(context)
+        payload = await backend.load_thread_state(context)
 
-    assert payload["thread"]["id"] == "thread-1"
-    assert payload["thread"]["turns"][0]["id"] == "turn-native-1"
-    assert payload["threadRuntimeStatus"]["type"] == "idle"
+        assert payload["thread"]["id"] == "thread-1"
+        assert payload["thread"]["turns"][0]["id"] == "turn-native-1"
+        assert payload["threadRuntimeStatus"]["type"] == "idle"
+
+    asyncio.run(scenario())
 
 
 def test_codex_backend_load_thread_state_uses_cached_thread_while_streaming_turn(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    chat_service = SimpleNamespace(
-        update_session_backend_state=lambda session_id, state: None,
-        get_session_metadata=lambda session_id: {"codex_work_mode": "build"},
-    )
-    backend = CodexAppServerBackend(chat_service)
-    context = ChatSessionContext(
-        session_id="session-1",
-        source="chat",
-        backend_id="codex",
-        project_path=Path("/tmp/project"),
-        channel_meta=None,
-    )
-    runtime = CodexSessionRuntime(
-        session_id="session-1",
-        client=object(),
-        thread_id="thread-1",
-        status="active",
-        streaming_turn_id="turn-live",
-        thread_state_cache={
-            "id": "thread-1",
-            "status": {"type": "active", "activeFlags": []},
-            "turns": [
-                {
-                    "id": "turn-1",
-                    "status": "completed",
-                    "items": [],
-                },
-                {
-                    "id": "turn-live",
-                    "status": "inProgress",
-                    "items": [],
-                },
-            ],
-        },
-    )
+    async def scenario() -> None:
+        chat_service = SimpleNamespace(
+            update_session_backend_state=lambda session_id, state: None,
+            get_session_metadata=lambda session_id: {"codex_work_mode": "build"},
+        )
+        backend = CodexAppServerBackend(chat_service)
+        context = ChatSessionContext(
+            session_id="session-1",
+            source="chat",
+            backend_id="codex",
+            project_path=Path("/tmp/project"),
+            channel_meta=None,
+        )
+        runtime = CodexSessionRuntime(
+            session_id="session-1",
+            client=object(),
+            thread_id="thread-1",
+            status="active",
+            streaming_turn_id="turn-live",
+            thread_state_cache={
+                "id": "thread-1",
+                "status": {"type": "active", "activeFlags": []},
+                "turns": [
+                    {
+                        "id": "turn-1",
+                        "status": "completed",
+                        "items": [],
+                    },
+                    {
+                        "id": "turn-live",
+                        "status": "inProgress",
+                        "items": [],
+                    },
+                ],
+            },
+        )
 
-    monkeypatch.setattr(backend, "_ensure_runtime_blocking", lambda _context: runtime)
+        async def fake_ensure_runtime(_context: ChatSessionContext) -> CodexSessionRuntime:
+            return runtime
 
-    class FakeThreadHandle:
-        def __init__(self, client: object, thread_id: str) -> None:
-            raise AssertionError("load_thread_state should not read native thread during active streaming")
+        monkeypatch.setattr(backend, "_ensure_runtime", fake_ensure_runtime)
 
-    monkeypatch.setattr(codex_backend_module, "CodexThread", FakeThreadHandle)
+        class FakeThreadHandle:
+            def __init__(self, client: object, thread_id: str) -> None:
+                raise AssertionError("load_thread_state should not read native thread during active streaming")
 
-    payload = backend.load_thread_state(context)
+        monkeypatch.setattr(codex_backend_module, "CodexThread", FakeThreadHandle)
 
-    assert payload["thread"]["id"] == "thread-1"
-    assert payload["thread"]["turns"][-1]["id"] == "turn-live"
-    assert payload["threadRuntimeStatus"]["type"] == "active"
+        payload = await backend.load_thread_state(context)
+
+        assert payload["thread"]["id"] == "thread-1"
+        assert payload["thread"]["turns"][-1]["id"] == "turn-live"
+        assert payload["threadRuntimeStatus"]["type"] == "active"
+
+    asyncio.run(scenario())
 
 
-def test_codex_backend_start_turn_blocking_updates_cached_thread_turns() -> None:
-    chat_service = SimpleNamespace(
-        update_session_backend_state=lambda session_id, state: None,
-        get_session_metadata=lambda session_id: {"codex_work_mode": "build"},
-    )
-    backend = CodexAppServerBackend(chat_service)
-    context = ChatSessionContext(
-        session_id="session-1",
-        source="chat",
-        backend_id="codex",
-        project_path=Path("/tmp/project"),
-        channel_meta=None,
-    )
+def test_codex_backend_start_turn_updates_cached_thread_turns() -> None:
+    async def scenario() -> None:
+        chat_service = SimpleNamespace(
+            update_session_backend_state=lambda session_id, state: None,
+            get_session_metadata=lambda session_id: {"codex_work_mode": "build"},
+        )
+        backend = CodexAppServerBackend(chat_service)
+        context = ChatSessionContext(
+            session_id="session-1",
+            source="chat",
+            backend_id="codex",
+            project_path=Path("/tmp/project"),
+            channel_meta=None,
+        )
 
-    class FakeClient:
-        def turn_start(self, thread_id: str, turn_input: object, params: dict[str, object]) -> SimpleNamespace:
-            assert thread_id == "thread-1"
-            assert turn_input == "hello"
-            assert params == {}
-            return SimpleNamespace(turn=SimpleNamespace(id="turn-live"))
+        class FakeClient:
+            def turn_start(self, thread_id: str, turn_input: object, params: dict[str, object]) -> SimpleNamespace:
+                assert thread_id == "thread-1"
+                assert turn_input == "hello"
+                assert params == {}
+                return SimpleNamespace(turn=SimpleNamespace(id="turn-live"))
 
-    runtime = CodexSessionRuntime(
-        session_id="session-1",
-        client=FakeClient(),
-        thread_id="thread-1",
-        thread_state_cache={
-            "id": "thread-1",
-            "turns": [
-                {
-                    "id": "turn-1",
-                    "status": "completed",
-                    "items": [],
-                }
-            ],
-        },
-    )
+        runtime = CodexSessionRuntime(
+            session_id="session-1",
+            client=FakeClient(),
+            thread_id="thread-1",
+            thread_state_cache={
+                "id": "thread-1",
+                "turns": [
+                    {
+                        "id": "turn-1",
+                        "status": "completed",
+                        "items": [],
+                    }
+                ],
+            },
+        )
 
-    backend._normalize_turn_input_payload = lambda context, payload: payload  # type: ignore[method-assign]
-    backend._turn_params = lambda context: {}  # type: ignore[method-assign]
-    backend._build_turn_state_params = lambda context, turn_input: {  # type: ignore[method-assign]
-        "threadId": "thread-1",
-        "input": [{"type": "text", "text": "hello"}],
-        "cwd": "/tmp/project",
-    }
+        backend._normalize_turn_input_payload = lambda context, payload: payload  # type: ignore[method-assign]
+        backend._turn_params = lambda context: {}  # type: ignore[method-assign]
+        backend._build_turn_state_params = lambda context, turn_input: {  # type: ignore[method-assign]
+            "threadId": "thread-1",
+            "input": [{"type": "text", "text": "hello"}],
+            "cwd": "/tmp/project",
+        }
 
-    backend._start_turn_blocking(runtime, context, "hello")
+        await backend._start_turn(runtime, context, "hello")
 
-    assert runtime.thread_state_cache is not None
-    assert runtime.thread_state_cache["turns"][-1]["id"] == "turn-live"
-    assert runtime.thread_state_cache["turns"][-1]["status"] == "inProgress"
+        assert runtime.thread_state_cache is not None
+        assert runtime.thread_state_cache["turns"][-1]["id"] == "turn-live"
+        assert runtime.thread_state_cache["turns"][-1]["status"] == "inProgress"
+
+    asyncio.run(scenario())
 
 
 def test_codex_backend_handle_turn_completed_updates_cached_thread_turn_status() -> None:

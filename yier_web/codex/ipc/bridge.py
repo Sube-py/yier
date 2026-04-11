@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from dataclasses import dataclass
+import inspect
 import json
 import logging
 import os
@@ -173,6 +174,12 @@ def _uid_socket_path() -> Path:
 
 def _json_dumps(payload: dict[str, Any]) -> bytes:
     return json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+
+async def _maybe_await(value: Any) -> Any:
+    if inspect.isawaitable(value):
+        return await value
+    return value
 
 
 async def _read_frame(reader: asyncio.StreamReader) -> dict[str, Any]:
@@ -645,7 +652,7 @@ class CodexThreadFollowerBridge:
             and not state.turn_completion_emitted
             and (state.assistant_item_emitted or state.assistant_message_finalized)
         ):
-            conversation_state = self.chat_service.build_codex_ipc_conversation_state(
+            conversation_state = await self.chat_service.build_codex_ipc_conversation_state(
                 session_id
             )
             synthetic_completion_state = self._synthetic_completed_conversation_state(
@@ -691,8 +698,8 @@ class CodexThreadFollowerBridge:
     ) -> bool:
         if not self.client.is_connected or not self._is_codex_session(session_id):
             return False
-        conversation_state = self.chat_service.build_codex_ipc_conversation_state(
-            session_id
+        conversation_state = await _maybe_await(
+            self.chat_service.build_codex_ipc_conversation_state(session_id)
         )
         patch_batches = self._patch_batches_for_stream_event(
             session_id,
@@ -718,8 +725,8 @@ class CodexThreadFollowerBridge:
         if not self.client.is_connected or not self._is_codex_session(session_id):
             return
         if conversation_state is None:
-            conversation_state = self.chat_service.build_codex_ipc_conversation_state(
-                session_id
+            conversation_state = await _maybe_await(
+                self.chat_service.build_codex_ipc_conversation_state(session_id)
             )
         payload = {
             "conversationId": session_id,
@@ -753,8 +760,8 @@ class CodexThreadFollowerBridge:
     ) -> None:
         if not self.client.is_connected or not self._is_codex_session(session_id):
             return
-        conversation_state = self.chat_service.build_codex_ipc_conversation_state(
-            session_id
+        conversation_state = await _maybe_await(
+            self.chat_service.build_codex_ipc_conversation_state(session_id)
         )
         patch_batches = self._patch_batches_for_stream_event(
             session_id,

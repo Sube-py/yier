@@ -247,6 +247,7 @@ class ChatService:
         await self.codex_ipc_bridge.stop()
         await self.paired_editor_bridge.stop()
         await self.background_manager.close()
+        await self.codex_workspace.stop()
         await self.mcp_manager.stop()
         for backend in self.backends.values():
             await backend.stop()

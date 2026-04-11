@@ -22,6 +22,8 @@ def _patch_async_codex(
 ):
     class _FakeAsyncCodex:
         last_instance: _FakeAsyncCodex | None = None
+        instance_count = 0
+        close_count = 0
 
         def __init__(self, config) -> None:  # type: ignore[no-untyped-def]
             self.config = config
@@ -29,13 +31,21 @@ def _patch_async_codex(
             self.thread_read_response = thread_read_response
             self.error = error
             self.calls: list[dict[str, object]] = []
+            self.enter_count = 0
+            self.close_count = 0
+            type(self).instance_count += 1
             type(self).last_instance = self
 
         async def __aenter__(self) -> _FakeAsyncCodex:
+            self.enter_count += 1
             return self
 
         async def __aexit__(self, exc_type, exc, tb) -> None:
             return None
+
+        async def close(self) -> None:
+            self.close_count += 1
+            type(self).close_count += 1
 
         async def thread_list(self, **kwargs: object) -> ThreadListResponse:
             self.calls.append(kwargs)
@@ -358,6 +368,89 @@ def test_codex_workspace_reads_thread_from_sdk(
             "include_turns": True,
         }
     ]
+
+
+def test_codex_workspace_reuses_shared_async_codex_for_multiple_sdk_calls(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+) -> None:
+    home_dir = tmp_path / "home"
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+
+    fake_codex = _patch_async_codex(
+        monkeypatch,
+        responses=[
+            _thread_list_response(
+                [
+                    _thread_payload(
+                        thread_id="thread-alpha-1",
+                        cwd=project_root,
+                        created_at=100,
+                        updated_at=300,
+                        preview="alpha work",
+                        name="Alpha 1",
+                    )
+                ]
+            ),
+            _thread_list_response(
+                [
+                    _thread_payload(
+                        thread_id="thread-alpha-2",
+                        cwd=project_root,
+                        created_at=150,
+                        updated_at=350,
+                        preview="alpha follow-up",
+                        name="Alpha 2",
+                    )
+                ]
+            ),
+        ],
+    )
+
+    service = CodexWorkspaceService(home_dir)
+    first_workspace = asyncio.run(service.load_workspace())
+    second_workspace = asyncio.run(service.load_workspace())
+
+    assert first_workspace.projects[0].sessions[0].thread_id == "thread-alpha-1"
+    assert second_workspace.projects[0].sessions[0].thread_id == "thread-alpha-2"
+    assert fake_codex.instance_count == 1
+    assert fake_codex.last_instance is not None
+    assert fake_codex.last_instance.enter_count == 1
+
+
+def test_codex_workspace_stop_closes_shared_async_codex(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+) -> None:
+    home_dir = tmp_path / "home"
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+
+    fake_codex = _patch_async_codex(
+        monkeypatch,
+        responses=[
+            _thread_list_response(
+                [
+                    _thread_payload(
+                        thread_id="thread-alpha-1",
+                        cwd=project_root,
+                        created_at=100,
+                        updated_at=300,
+                        preview="alpha work",
+                        name="Alpha 1",
+                    )
+                ]
+            )
+        ],
+    )
+
+    service = CodexWorkspaceService(home_dir)
+    asyncio.run(service.load_workspace())
+    asyncio.run(service.stop())
+
+    assert fake_codex.instance_count == 1
+    assert fake_codex.close_count == 1
 
 
 def test_codex_workspace_lists_online_paired_editors_only(tmp_path: Path) -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import subprocess
 from dataclasses import dataclass
@@ -67,6 +68,12 @@ class CodexWorkspaceService:
             / "com.openai.chat"
             / "app_pairing_extensions"
         )
+        self._codex: AsyncCodex | None = None
+        self._codex_config: AppServerConfig | None = None
+        self._codex_lock = asyncio.Lock()
+
+    async def stop(self) -> None:
+        await self._close_shared_codex()
 
     async def load_workspace(self) -> CodexWorkspaceResponse:
         sessions = await self.list_active_sessions()
@@ -121,12 +128,15 @@ class CodexWorkspaceService:
         if config is None:
             return None
 
+        codex = await self._shared_codex(config)
+        if codex is None:
+            return None
         try:
-            async with AsyncCodex(config=config) as codex:
-                return await AsyncThread(codex, normalized_thread_id).read(
-                    include_turns=include_turns
-                )
+            return await AsyncThread(codex, normalized_thread_id).read(
+                include_turns=include_turns
+            )
         except Exception:
+            await self._invalidate_shared_codex(codex)
             return None
 
     async def list_active_sessions(self) -> list[CodexNativeSessionSummary]:
@@ -174,28 +184,31 @@ class CodexWorkspaceService:
         if config is None:
             return None
 
+        codex = await self._shared_codex(config)
+        if codex is None:
+            return None
         try:
             sessions: dict[str, CodexNativeSessionSummary] = {}
             cursor: str | None = None
-            async with AsyncCodex(config=config) as codex:
-                while True:
-                    response = await codex.thread_list(
-                        archived=False,
-                        cursor=cursor,
-                        limit=100,
-                        sort_key=ThreadSortKey.updated_at,
-                        source_kinds=INTERACTIVE_THREAD_SOURCE_KINDS,
-                    )
-                    for thread in response.data:
-                        session = self._extract_sdk_session(thread)
-                        if session is None:
-                            continue
-                        sessions[session.thread_id] = session
+            while True:
+                response = await codex.thread_list(
+                    archived=False,
+                    cursor=cursor,
+                    limit=100,
+                    sort_key=ThreadSortKey.updated_at,
+                    source_kinds=INTERACTIVE_THREAD_SOURCE_KINDS,
+                )
+                for thread in response.data:
+                    session = self._extract_sdk_session(thread)
+                    if session is None:
+                        continue
+                    sessions[session.thread_id] = session
 
-                    cursor = response.next_cursor
-                    if not cursor:
-                        break
+                cursor = response.next_cursor
+                if not cursor:
+                    break
         except Exception:
+            await self._invalidate_shared_codex(codex)
             return None
 
         ordered = list(sessions.values())
@@ -208,6 +221,46 @@ class CodexWorkspaceService:
             reverse=True,
         )
         return ordered
+
+    async def _shared_codex(self, config: AppServerConfig) -> AsyncCodex | None:
+        stale_codex: AsyncCodex | None = None
+        async with self._codex_lock:
+            if self._codex is not None and self._codex_config == config:
+                return self._codex
+
+            stale_codex = self._codex
+            self._codex = None
+            self._codex_config = None
+
+            codex = AsyncCodex(config=config)
+            try:
+                await codex.__aenter__()
+            except Exception:
+                await codex.close()
+                raise
+
+            self._codex = codex
+            self._codex_config = config
+
+        if stale_codex is not None:
+            await stale_codex.close()
+        return self._codex
+
+    async def _invalidate_shared_codex(self, codex: AsyncCodex) -> None:
+        async with self._codex_lock:
+            if self._codex is not codex:
+                return
+            self._codex = None
+            self._codex_config = None
+        await codex.close()
+
+    async def _close_shared_codex(self) -> None:
+        async with self._codex_lock:
+            codex = self._codex
+            self._codex = None
+            self._codex_config = None
+        if codex is not None:
+            await codex.close()
 
     def _extract_paired_editor(self, descriptor_file: Path) -> CodexPairingExtensionSummary | None:
         try:

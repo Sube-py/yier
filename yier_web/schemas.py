@@ -18,7 +18,9 @@ LLMProvider = Literal["", "zai", "zai-coding-plan"]
 BackendId = Literal["yier", "codex"]
 WorkspaceSurface = Literal["yier", "codex", "claude"]
 CodexWorkMode = Literal["plan", "build"]
-CodexGoalLoopStatus = Literal["idle", "running", "paused", "blocked", "completed", "failed"]
+CodexGoalLoopStatus = Literal[
+    "idle", "running", "paused", "blocked", "completed", "failed"
+]
 CodexGoalLoopAction = Literal["start", "pause", "resume", "complete", "clear"]
 CodexApprovalPolicy = Literal["untrusted", "on-failure", "on-request", "never"]
 CodexSandboxMode = Literal["read-only", "workspace-write", "danger-full-access"]
@@ -52,7 +54,9 @@ class StoredLLMSettings(BaseModel):
 
 class WebSettings(BaseModel):
     llm: StoredLLMSettings = Field(default_factory=StoredLLMSettings)
-    session_defaults: "SessionDefaultsSettings" = Field(default_factory=lambda: SessionDefaultsSettings())
+    session_defaults: "SessionDefaultsSettings" = Field(
+        default_factory=lambda: SessionDefaultsSettings()
+    )
     codex: "StoredCodexSettings" = Field(default_factory=lambda: StoredCodexSettings())
     allowed_roots: list[str] = Field(default_factory=list)
 
@@ -146,7 +150,9 @@ class HealthResponse(BaseModel):
 class ConfigResponse(BaseModel):
     llm: LLMConfigPayload
     backends: list[BackendOption] = Field(default_factory=list)
-    session_defaults: SessionDefaultsSettings = Field(default_factory=SessionDefaultsSettings)
+    session_defaults: SessionDefaultsSettings = Field(
+        default_factory=SessionDefaultsSettings
+    )
     codex: CodexConfigPayload = Field(default_factory=CodexConfigPayload)
     allowed_roots: list[str] = Field(default_factory=list)
     mcp_runtime: dict[str, MCPRuntimeEntry] = Field(default_factory=dict)
@@ -197,7 +203,9 @@ class SaveMCPConfigRequest(BaseModel):
 
 
 class SaveAppSettingsRequest(BaseModel):
-    session_defaults: SessionDefaultsSettings = Field(default_factory=SessionDefaultsSettings)
+    session_defaults: SessionDefaultsSettings = Field(
+        default_factory=SessionDefaultsSettings
+    )
     codex: StoredCodexSettings = Field(default_factory=StoredCodexSettings)
 
 
@@ -351,14 +359,18 @@ class SessionTranscriptResponse(BaseModel):
     pending_approvals: list[PendingApproval] = Field(default_factory=list)
     messages: list[StoredSessionMessage] = Field(default_factory=list)
     activity_events: list[StoredActivityEvent] = Field(default_factory=list)
-    activity_history: ActivityHistoryPayload = Field(default_factory=ActivityHistoryPayload)
+    activity_history: ActivityHistoryPayload = Field(
+        default_factory=ActivityHistoryPayload
+    )
     codex_turn_timings: list[CodexTurnTimingPayload] = Field(default_factory=list)
 
 
 class SessionActivityPageResponse(BaseModel):
     session_id: str
     activity_events: list[StoredActivityEvent] = Field(default_factory=list)
-    activity_history: ActivityHistoryPayload = Field(default_factory=ActivityHistoryPayload)
+    activity_history: ActivityHistoryPayload = Field(
+        default_factory=ActivityHistoryPayload
+    )
 
 
 class CodexInputItem(BaseModel):

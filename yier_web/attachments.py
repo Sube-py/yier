@@ -68,7 +68,11 @@ class AttachmentStorageService:
         attachment_id = uuid4().hex
         original_name = upload.filename or "attachment"
         safe_name = self._safe_filename(original_name)
-        mime_type = upload.content_type or mimetypes.guess_type(safe_name)[0] or "application/octet-stream"
+        mime_type = (
+            upload.content_type
+            or mimetypes.guess_type(safe_name)[0]
+            or "application/octet-stream"
+        )
         attachment_dir = self._attachment_dir(normalized_session_id, attachment_id)
         attachment_dir.mkdir(parents=True, exist_ok=False)
         file_path = attachment_dir / safe_name
@@ -138,7 +142,10 @@ class AttachmentStorageService:
                 continue
             if record.get("kind") != "image":
                 continue
-            if record.get("source_path") == source_key or record.get("file_path") == source_key:
+            if (
+                record.get("source_path") == source_key
+                or record.get("file_path") == source_key
+            ):
                 return AttachmentUploadResponse.model_validate(record)
 
         size = source.stat().st_size
@@ -174,10 +181,14 @@ class AttachmentStorageService:
             preview_url=f"/api/chat/sessions/{normalized_session_id}/attachments/{attachment_id}/content",
             input_items=input_items,
         )
-        self._write_record(normalized_session_id, response, file_path, source_path=source)
+        self._write_record(
+            normalized_session_id, response, file_path, source_path=source
+        )
         return response
 
-    def media_path(self, *, session_id: str, attachment_id: str) -> tuple[Path, str, str]:
+    def media_path(
+        self, *, session_id: str, attachment_id: str
+    ) -> tuple[Path, str, str]:
         record = self._read_record(session_id, attachment_id)
         raw_path = record.get("file_path")
         if not isinstance(raw_path, str):
@@ -232,7 +243,9 @@ class AttachmentStorageService:
         return payload if isinstance(payload, dict) else {}
 
     def _registry_path(self, session_id: str) -> Path:
-        return self.uploads_root / self._safe_identifier(session_id) / "attachments.json"
+        return (
+            self.uploads_root / self._safe_identifier(session_id) / "attachments.json"
+        )
 
     def _attachment_dir(self, session_id: str, attachment_id: str) -> Path:
         return self.uploads_root / session_id / attachment_id
@@ -267,7 +280,11 @@ class AttachmentStorageService:
             decoded = self._decode_text(data)
             truncated = len(decoded) > MAX_TEXT_ATTACHMENT_CHARS
             content = decoded[:MAX_TEXT_ATTACHMENT_CHARS]
-            suffix = "\n\n[Attachment truncated for Codex input. Open the mentioned file for the full content.]" if truncated else ""
+            suffix = (
+                "\n\n[Attachment truncated for Codex input. Open the mentioned file for the full content.]"
+                if truncated
+                else ""
+            )
             return [
                 CodexInputItem(
                     type="text",

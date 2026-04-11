@@ -27,7 +27,9 @@ class YierAgentBackend(ChatBackend):
         user_message: str,
         emit: StreamEmitter,
     ) -> str:
-        return await self.chat_service._stream_with_yier_backend(context.session_id, user_message, emit)
+        return await self.chat_service._stream_with_yier_backend(
+            context.session_id, user_message, emit
+        )
 
     def runtime_payload(self, context: ChatSessionContext) -> dict[str, object]:
         ready = self.chat_service.config_service.load_web_settings().llm.is_ready
@@ -38,7 +40,9 @@ class YierAgentBackend(ChatBackend):
             "status": "idle",
             "thread_id": None,
             "active_flags": [],
-            "detail": None if ready else "LLM setup is incomplete for the Yier backend.",
+            "detail": None
+            if ready
+            else "LLM setup is incomplete for the Yier backend.",
             "pending_approval_count": 0,
         }
 

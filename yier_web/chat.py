@@ -40,7 +40,11 @@ from yier_agents import (
 )
 from yier_agents.src.config import AssistantSettings
 
-from yier_web.agent_backends import ChatSessionContext, CodexAppServerBackend, YierAgentBackend
+from yier_web.agent_backends import (
+    ChatSessionContext,
+    CodexAppServerBackend,
+    YierAgentBackend,
+)
 from yier_web.attachments import AttachmentStorageError, AttachmentStorageService
 from yier_web.codex.background import (
     FollowupQueueManager,
@@ -111,10 +115,7 @@ def _codex_ipc_debug_log(message: str, **fields: Any) -> None:
     if not _codex_ipc_debug_enabled():
         return
     if fields:
-        rendered = ", ".join(
-            f"{key}={value!r}"
-            for key, value in fields.items()
-        )
+        rendered = ", ".join(f"{key}={value!r}" for key, value in fields.items())
         logger.warning(f"[chat-codex-ipc] {message} | {rendered}")
         return
     logger.warning(f"[chat-codex-ipc] {message}")
@@ -149,9 +150,11 @@ def _extract_goal_loop_markers(text: str) -> dict[str, str]:
         )
         if matched_prefix is not None:
             if current_key is not None:
-                markers[current_key] = _clean_goal_loop_marker_value("\n".join(current_lines))
+                markers[current_key] = _clean_goal_loop_marker_value(
+                    "\n".join(current_lines)
+                )
             current_key = marker_map[matched_prefix]
-            current_lines = [stripped_line[len(matched_prefix):].lstrip()]
+            current_lines = [stripped_line[len(matched_prefix) :].lstrip()]
             continue
         if current_key is not None:
             current_lines.append(raw_line)
@@ -174,16 +177,22 @@ class ChatService:
     ) -> None:
         self.project_root = project_root.resolve()
         self.config_service = config_service
-        self.mcp_manager = mcp_manager or MCPManager(config_dir=self.config_service.yier_root)
+        self.mcp_manager = mcp_manager or MCPManager(
+            config_dir=self.config_service.yier_root
+        )
         self.skill_catalog: SkillCatalog | None = None
         self.session_store = JSONSessionStore(self.config_service.sessions_path)
         self.transcript_store = JSONSessionStore(self.config_service.transcripts_path)
         self.session_ui_store = SessionUIStore(self.config_service.session_ui_path)
-        self.session_metadata_store = SessionMetadataStore(self.config_service.session_meta_path)
+        self.session_metadata_store = SessionMetadataStore(
+            self.config_service.session_meta_path
+        )
         self.session_conversation_state_store = SessionConversationStateStore(
             self.config_service.session_conversation_state_path
         )
-        self.attachment_storage = AttachmentStorageService(self.config_service.uploads_path)
+        self.attachment_storage = AttachmentStorageService(
+            self.config_service.uploads_path
+        )
         self.codex_workspace = CodexWorkspaceService(
             self.config_service.home_dir,
             config_service=self.config_service,
@@ -201,7 +210,9 @@ class ChatService:
         )
         self.codex_ipc_bridge = CodexThreadFollowerBridge(chat_service=self)
         self.codex_conversation_state = CodexConversationStateService(self)
-        self.backends: dict[Literal["yier", "codex"], YierAgentBackend | CodexAppServerBackend] = {
+        self.backends: dict[
+            Literal["yier", "codex"], YierAgentBackend | CodexAppServerBackend
+        ] = {
             "yier": YierAgentBackend(self),
             "codex": CodexAppServerBackend(self),
         }
@@ -225,8 +236,12 @@ class ChatService:
         await self.paired_editor_bridge.start()
         await self.codex_ipc_bridge.start()
         await self.reload_agent(force_mcp_reconnect=False)
-        self._background_supervisor_task = asyncio.create_task(self._background_supervisor_loop())
-        self._codex_pairing_monitor_task = asyncio.create_task(self._codex_pairing_monitor_loop())
+        self._background_supervisor_task = asyncio.create_task(
+            self._background_supervisor_loop()
+        )
+        self._codex_pairing_monitor_task = asyncio.create_task(
+            self._codex_pairing_monitor_loop()
+        )
 
     async def stop(self) -> None:
         if not self._started:
@@ -286,10 +301,7 @@ class ChatService:
         if self._started:
             await self.mcp_manager.reload_if_changed()
         snapshot = await self.mcp_manager.get_status()
-        return {
-            name: MCPRuntimeEntry(**payload)
-            for name, payload in snapshot.items()
-        }
+        return {name: MCPRuntimeEntry(**payload) for name, payload in snapshot.items()}
 
     async def _codex_pairing_monitor_loop(self) -> None:
         last_signature = self.codex_workspace.paired_editors_signature()
@@ -297,7 +309,9 @@ class ChatService:
             await asyncio.sleep(self.CODEX_PAIRING_MONITOR_INTERVAL_SECONDS)
             try:
                 paired_editors = self.codex_workspace.list_paired_editors()
-                next_signature = self.codex_workspace.paired_editors_signature(paired_editors)
+                next_signature = self.codex_workspace.paired_editors_signature(
+                    paired_editors
+                )
             except Exception:
                 continue
             if next_signature == last_signature:
@@ -307,8 +321,7 @@ class ChatService:
                 "codex_pairings_updated",
                 {
                     "paired_editors": [
-                        editor.model_dump(mode="json")
-                        for editor in paired_editors
+                        editor.model_dump(mode="json") for editor in paired_editors
                     ]
                 },
             )
@@ -369,7 +382,9 @@ class ChatService:
             return
 
         max_sequence = -1
-        for sequence in self.session_ui_store.load_transcript_message_sequences(session_id):
+        for sequence in self.session_ui_store.load_transcript_message_sequences(
+            session_id
+        ):
             normalized = self._normalize_timeline_sequence_value(sequence)
             if normalized is not None:
                 max_sequence = max(max_sequence, normalized)
@@ -485,7 +500,10 @@ class ChatService:
         payload: dict[str, Any],
     ) -> dict[str, Any]:
         backend_state = payload.get("backend_state")
-        if not isinstance(backend_state, dict) or "ipc_conversation_state" not in backend_state:
+        if (
+            not isinstance(backend_state, dict)
+            or "ipc_conversation_state" not in backend_state
+        ):
             return payload
 
         next_backend_state = dict(backend_state)
@@ -516,9 +534,13 @@ class ChatService:
         preview: str | None = None,
         updated_at: float | None = None,
     ) -> None:
-        existing = self.get_session_metadata(session_id, include_conversation_state=True)
+        existing = self.get_session_metadata(
+            session_id, include_conversation_state=True
+        )
         settings = self.config_service.load_web_settings()
-        normalized_source = source if source in {"chat", "channel"} else existing["source"]
+        normalized_source = (
+            source if source in {"chat", "channel"} else existing["source"]
+        )
         default_backend_id = (
             settings.session_defaults.channel_backend_id
             if normalized_source == "channel"
@@ -530,8 +552,13 @@ class ChatService:
             else settings.session_defaults.default_project_path
         )
         existing_backend_state = dict(existing.get("backend_state", {}))
-        existing_conversation_state = existing_backend_state.pop("ipc_conversation_state", None)
-        conversation_state_provided = isinstance(backend_state, dict) and "ipc_conversation_state" in backend_state
+        existing_conversation_state = existing_backend_state.pop(
+            "ipc_conversation_state", None
+        )
+        conversation_state_provided = (
+            isinstance(backend_state, dict)
+            and "ipc_conversation_state" in backend_state
+        )
         next_backend_state = (
             dict(backend_state)
             if isinstance(backend_state, dict)
@@ -548,7 +575,9 @@ class ChatService:
             "project_path": self.config_service.resolve_project_path(
                 project_path or existing["project_path"] or default_project_path
             ),
-            "channel_meta": channel_meta if isinstance(channel_meta, dict) else existing.get("channel_meta"),
+            "channel_meta": channel_meta
+            if isinstance(channel_meta, dict)
+            else existing.get("channel_meta"),
             "backend_state": next_backend_state,
             "codex_work_mode": (
                 codex_work_mode
@@ -558,16 +587,23 @@ class ChatService:
             "codex_goal_loop": (
                 self._normalize_codex_goal_loop_payload(
                     codex_goal_loop,
-                    backend_id=backend_id or existing["backend_id"] or default_backend_id,
+                    backend_id=backend_id
+                    or existing["backend_id"]
+                    or default_backend_id,
                 )
                 if codex_goal_loop is not None
                 else existing.get("codex_goal_loop")
             ),
             "title": title if isinstance(title, str) else existing.get("title"),
             "preview": preview if isinstance(preview, str) else existing.get("preview"),
-            "updated_at": updated_at if isinstance(updated_at, (int, float)) else existing.get("updated_at"),
+            "updated_at": updated_at
+            if isinstance(updated_at, (int, float))
+            else existing.get("updated_at"),
         }
-        if payload["backend_id"] == "codex" and payload["codex_work_mode"] not in {"plan", "build"}:
+        if payload["backend_id"] == "codex" and payload["codex_work_mode"] not in {
+            "plan",
+            "build",
+        }:
             payload["codex_work_mode"] = "build"
         payload["codex_goal_loop"] = self._normalize_codex_goal_loop_payload(
             payload.get("codex_goal_loop"),
@@ -575,7 +611,9 @@ class ChatService:
         )
         self.session_metadata_store.save(session_id, payload)
         if isinstance(next_conversation_state, dict):
-            self.session_conversation_state_store.save(session_id, next_conversation_state)
+            self.session_conversation_state_store.save(
+                session_id, next_conversation_state
+            )
         elif conversation_state_provided:
             self.session_conversation_state_store.delete(session_id)
 
@@ -595,18 +633,26 @@ class ChatService:
             selection_end=selection_end,
         )
 
-    async def save_chat_attachment(self, session_id: str, upload: Any) -> dict[str, Any]:
+    async def save_chat_attachment(
+        self, session_id: str, upload: Any
+    ) -> dict[str, Any]:
         if self.is_channel_session(session_id):
-            raise AttachmentStorageError("Channel-backed sessions are read-only in the chat workspace.")
+            raise AttachmentStorageError(
+                "Channel-backed sessions are read-only in the chat workspace."
+            )
         if self.get_session_context(session_id).backend_id != "codex":
-            raise AttachmentStorageError("Attachments are available for interactive Codex sessions.")
+            raise AttachmentStorageError(
+                "Attachments are available for interactive Codex sessions."
+            )
         response = await self.attachment_storage.save_upload(
             session_id=session_id,
             upload=upload,
         )
         return response.model_dump(mode="json")
 
-    def get_attachment_media_path(self, session_id: str, attachment_id: str) -> tuple[Path, str, str]:
+    def get_attachment_media_path(
+        self, session_id: str, attachment_id: str
+    ) -> tuple[Path, str, str]:
         return self.attachment_storage.media_path(
             session_id=session_id,
             attachment_id=attachment_id,
@@ -678,13 +724,19 @@ class ChatService:
         session_id: str,
         channel_meta: dict[str, Any],
     ) -> None:
-        self.ensure_session_metadata(session_id, source="channel", channel_meta=channel_meta)
+        self.ensure_session_metadata(
+            session_id, source="channel", channel_meta=channel_meta
+        )
 
     def is_channel_session(self, session_id: str) -> bool:
         return self.get_session_metadata(session_id)["source"] == "channel"
 
-    def update_session_backend_state(self, session_id: str, updates: dict[str, Any]) -> None:
-        metadata = self.get_session_metadata(session_id, include_conversation_state=True)
+    def update_session_backend_state(
+        self, session_id: str, updates: dict[str, Any]
+    ) -> None:
+        metadata = self.get_session_metadata(
+            session_id, include_conversation_state=True
+        )
         next_backend_state = {
             **metadata["backend_state"],
             **updates,
@@ -809,10 +861,14 @@ class ChatService:
             },
             codex_work_mode="build",
         )
-        start_response = await self.start_codex_turn_in_background(session_id, normalized_prompt)
+        start_response = await self.start_codex_turn_in_background(
+            session_id, normalized_prompt
+        )
         turn = start_response.get("turn")
         if not isinstance(turn, dict):
-            raise RuntimeError("Codex start turn response did not include a turn payload.")
+            raise RuntimeError(
+                "Codex start turn response did not include a turn payload."
+            )
         turn_id = turn.get("id")
         if not isinstance(turn_id, str) or not turn_id:
             raise RuntimeError("Codex start turn response did not include a turn id.")
@@ -883,7 +939,9 @@ class ChatService:
         )
         turn = start_response.get("turn")
         if not isinstance(turn, dict):
-            raise RuntimeError("Codex start turn response did not include a turn payload.")
+            raise RuntimeError(
+                "Codex start turn response did not include a turn payload."
+            )
         turn_id = turn.get("id")
         if not isinstance(turn_id, str) or not turn_id:
             raise RuntimeError("Codex start turn response did not include a turn id.")
@@ -924,7 +982,9 @@ class ChatService:
 
         session_id = await self.open_codex_native_session(normalized_conversation_id)
         if session_id is None:
-            raise RuntimeError(f"Codex conversation not found: {normalized_conversation_id}")
+            raise RuntimeError(
+                f"Codex conversation not found: {normalized_conversation_id}"
+            )
         return session_id
 
     def get_session_context(self, session_id: str) -> ChatSessionContext:
@@ -938,7 +998,9 @@ class ChatService:
             backend_state=metadata["backend_state"],
         )
 
-    def _normalize_session_metadata_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def _normalize_session_metadata_payload(
+        self, payload: dict[str, Any]
+    ) -> dict[str, Any]:
         settings = self.config_service.load_web_settings()
         source = payload.get("source")
         if source not in {"chat", "channel"}:
@@ -982,9 +1044,15 @@ class ChatService:
                 payload.get("codex_goal_loop"),
                 backend_id=backend_id,
             ),
-            "title": payload.get("title") if isinstance(payload.get("title"), str) else "",
-            "preview": payload.get("preview") if isinstance(payload.get("preview"), str) else "",
-            "updated_at": float(payload["updated_at"]) if isinstance(payload.get("updated_at"), (int, float)) else 0.0,
+            "title": payload.get("title")
+            if isinstance(payload.get("title"), str)
+            else "",
+            "preview": payload.get("preview")
+            if isinstance(payload.get("preview"), str)
+            else "",
+            "updated_at": float(payload["updated_at"])
+            if isinstance(payload.get("updated_at"), (int, float))
+            else 0.0,
         }
 
     def build_transcript_messages(self, session_id: str) -> list[StoredSessionMessage]:
@@ -995,7 +1063,9 @@ class ChatService:
             else None
         )
         transcript_messages = self.get_session_messages(session_id)
-        message_sequences = self.session_ui_store.load_transcript_message_sequences(session_id)
+        message_sequences = self.session_ui_store.load_transcript_message_sequences(
+            session_id
+        )
         return [
             StoredSessionMessage(
                 role=message.role,
@@ -1003,9 +1073,7 @@ class ChatService:
                 reasoning_content=message.reasoning_content,
                 tool_call_id=message.tool_call_id,
                 sequence=(
-                    message_sequences[index]
-                    if index < len(message_sequences)
-                    else None
+                    message_sequences[index] if index < len(message_sequences) else None
                 ),
                 source=session_meta["source"],
                 channel_meta=channel_meta_payload,
@@ -1098,7 +1166,9 @@ class ChatService:
         )
         return session_id
 
-    def update_codex_session_mode(self, session_id: str, codex_work_mode: CodexWorkMode) -> bool:
+    def update_codex_session_mode(
+        self, session_id: str, codex_work_mode: CodexWorkMode
+    ) -> bool:
         metadata = self.get_session_metadata(session_id)
         if metadata["backend_id"] != "codex":
             return False
@@ -1127,10 +1197,14 @@ class ChatService:
         if metadata["backend_id"] != "codex" or metadata["source"] == "channel":
             return None
 
-        current_state = self.get_codex_goal_loop_state(session_id) or CodexGoalLoopState()
+        current_state = (
+            self.get_codex_goal_loop_state(session_id) or CodexGoalLoopState()
+        )
         next_status: CodexGoalLoopStatus = current_state.status
         if not goal and not definition_of_done:
-            next_status = "idle" if current_state.status != "running" else current_state.status
+            next_status = (
+                "idle" if current_state.status != "running" else current_state.status
+            )
 
         next_state = current_state.model_copy(
             update={
@@ -1206,7 +1280,9 @@ class ChatService:
             return saved
         if action in {"start", "resume"}:
             if not state.goal or not state.definition_of_done:
-                raise ValueError("Goal and definition of done are required before starting.")
+                raise ValueError(
+                    "Goal and definition of done are required before starting."
+                )
             next_state = state.model_copy(
                 update={
                     "status": "running",
@@ -1214,7 +1290,9 @@ class ChatService:
                     "started_at": state.started_at or time(),
                     "completed_at": None,
                     "last_reason": (
-                        "Goal loop started." if action == "start" else "Goal loop resumed."
+                        "Goal loop started."
+                        if action == "start"
+                        else "Goal loop resumed."
                     ),
                 }
             )
@@ -1255,7 +1333,9 @@ class ChatService:
                         "messages": [],
                     },
                 )
-                entry["updated_at"] = max(entry["updated_at"], session_file.stat().st_mtime)
+                entry["updated_at"] = max(
+                    entry["updated_at"], session_file.stat().st_mtime
+                )
                 if not entry["messages"] and isinstance(payload.get("messages"), list):
                     entry["messages"] = payload["messages"]
 
@@ -1267,7 +1347,9 @@ class ChatService:
             messages = entry["messages"] if isinstance(entry["messages"], list) else []
             title = session_meta["title"] or self._session_title(messages)
             preview = session_meta["preview"] or self._session_preview(messages)
-            updated_at = max(float(entry["updated_at"]), float(session_meta["updated_at"] or 0.0))
+            updated_at = max(
+                float(entry["updated_at"]), float(session_meta["updated_at"] or 0.0)
+            )
             summaries.append(
                 SessionSummary(
                     session_id=session_id,
@@ -1285,7 +1367,9 @@ class ChatService:
                     ),
                     codex_work_mode=session_meta["codex_work_mode"],
                     codex_goal_loop=(
-                        CodexGoalLoopState.model_validate(session_meta["codex_goal_loop"])
+                        CodexGoalLoopState.model_validate(
+                            session_meta["codex_goal_loop"]
+                        )
                         if isinstance(session_meta.get("codex_goal_loop"), dict)
                         else None
                     ),
@@ -1302,7 +1386,11 @@ class ChatService:
     ) -> SessionTranscriptView | None:
         context = self.get_session_context(session_id)
         thread_id = context.backend_state.get("thread_id")
-        if context.backend_id != "codex" or not isinstance(thread_id, str) or not thread_id:
+        if (
+            context.backend_id != "codex"
+            or not isinstance(thread_id, str)
+            or not thread_id
+        ):
             return None
 
         backend = self.backends.get(context.backend_id)
@@ -1434,7 +1522,11 @@ class ChatService:
     ) -> SessionTranscriptView | None:
         context = self.get_session_context(session_id)
         thread_id = context.backend_state.get("thread_id")
-        if context.backend_id != "codex" or not isinstance(thread_id, str) or not thread_id:
+        if (
+            context.backend_id != "codex"
+            or not isinstance(thread_id, str)
+            or not thread_id
+        ):
             return None
 
         backend = self.backends.get(context.backend_id)
@@ -1533,7 +1625,9 @@ class ChatService:
         deleted = self.session_store.clear_session(session_id) or deleted
         deleted = self.transcript_store.clear_session(session_id) or deleted
 
-        session_ui_file = self.config_service.session_ui_path / f"{session_id.replace('/', '_')}.json"
+        session_ui_file = (
+            self.config_service.session_ui_path / f"{session_id.replace('/', '_')}.json"
+        )
         if session_ui_file.exists():
             session_ui_file.unlink()
             deleted = True
@@ -1618,7 +1712,11 @@ class ChatService:
         try:
             context = self.get_session_context(session_id)
             goal_loop_state = self.get_codex_goal_loop_state(session_id)
-            if context.backend_id == "codex" and goal_loop_state is not None and goal_loop_state.status == "running":
+            if (
+                context.backend_id == "codex"
+                and goal_loop_state is not None
+                and goal_loop_state.status == "running"
+            ):
                 paused_state = goal_loop_state.model_copy(
                     update={
                         "status": "paused",
@@ -1657,7 +1755,9 @@ class ChatService:
                 raise RuntimeError(f"Unknown backend: {context.backend_id}")
             if context.backend_id != "codex":
                 await emit("run_started", {"session_id": session_id})
-            backend_input = user_message if context.backend_id == "codex" else transcript_text
+            backend_input = (
+                user_message if context.backend_id == "codex" else transcript_text
+            )
             finish_reason = await backend.stream_chat(context, backend_input, emit)
         except Exception as exc:
             finish_reason = "error"
@@ -1697,7 +1797,10 @@ class ChatService:
         backend = self.backends.get(context.backend_id)
         if backend is None:
             return []
-        return [PendingApproval.model_validate(item) for item in backend.pending_approvals(context)]
+        return [
+            PendingApproval.model_validate(item)
+            for item in backend.pending_approvals(context)
+        ]
 
     async def respond_to_approval(
         self,
@@ -1722,7 +1825,9 @@ class ChatService:
         backend = self.backends.get(context.backend_id)
         if not isinstance(backend, CodexAppServerBackend):
             return False
-        return await backend.respond_to_raw_request(context, request_id, response_payload)
+        return await backend.respond_to_raw_request(
+            context, request_id, response_payload
+        )
 
     def resolve_pending_approval_request_id(
         self,
@@ -1795,7 +1900,9 @@ class ChatService:
         if state is None:
             raise RuntimeError("Codex goal loop is not available for this session.")
         if not state.goal or not state.definition_of_done:
-            raise RuntimeError("Goal and definition of done are required before running.")
+            raise RuntimeError(
+                "Goal and definition of done are required before running."
+            )
 
         metadata = self.get_session_metadata(session_id)
         project_path = Path(metadata["project_path"]).resolve()
@@ -1814,8 +1921,12 @@ class ChatService:
                 "project_path": str(project_path),
             },
         )
-        command = _build_codex_background_runner_command(self, request_path=request_path)
-        background_session = await self.background_manager.start(command, str(project_path))
+        command = _build_codex_background_runner_command(
+            self, request_path=request_path
+        )
+        background_session = await self.background_manager.start(
+            command, str(project_path)
+        )
         background_started_payload = {
             "session_id": session_id,
             "tool_call_id": f"goal-loop:{background_session.session_id}",
@@ -1825,16 +1936,22 @@ class ChatService:
             "cwd": str(background_session.cwd),
             "state": background_session.state,
         }
-        self._handle_internal_event("background_command_started", background_started_payload)
+        self._handle_internal_event(
+            "background_command_started", background_started_payload
+        )
         self._persist_ui_event("background_command_started", background_started_payload)
-        await self.event_broker.publish("background_command_started", background_started_payload)
+        await self.event_broker.publish(
+            "background_command_started", background_started_payload
+        )
         next_state = state.model_copy(
             update={
                 "status": "running",
                 "iteration_count": state.iteration_count + 1,
                 "last_background_session_id": background_session.session_id,
                 "last_reason": (
-                    "Running goal loop iteration." if reason == "continue" else state.last_reason
+                    "Running goal loop iteration."
+                    if reason == "continue"
+                    else state.last_reason
                 ),
                 "updated_at": time(),
             }
@@ -1902,7 +2019,9 @@ class ChatService:
         start_response = await backend.start_turn(context, prompt)
         turn = start_response.get("turn")
         if not isinstance(turn, dict):
-            raise RuntimeError("Codex start turn response did not include a turn payload.")
+            raise RuntimeError(
+                "Codex start turn response did not include a turn payload."
+            )
         turn_id = turn.get("id")
         if not isinstance(turn_id, str) or not turn_id:
             raise RuntimeError("Codex start turn response did not include a turn id.")
@@ -2025,7 +2144,9 @@ class ChatService:
             self.transcript_store.save(session_id, transcript)
             return
 
-    async def build_codex_ipc_conversation_state(self, session_id: str) -> dict[str, Any]:
+    async def build_codex_ipc_conversation_state(
+        self, session_id: str
+    ) -> dict[str, Any]:
         return await self.codex_conversation_state.build_conversation_state(session_id)
 
     def apply_codex_ipc_stream_change(
@@ -2197,8 +2318,12 @@ class ChatService:
             message_sequence,
         )
         metadata = self.get_session_metadata(session_id)
-        title = metadata["title"] or self._session_title([item.model_dump() for item in messages if hasattr(item, "model_dump")])
-        preview = self._session_preview([item.model_dump() for item in messages if hasattr(item, "model_dump")])
+        title = metadata["title"] or self._session_title(
+            [item.model_dump() for item in messages if hasattr(item, "model_dump")]
+        )
+        preview = self._session_preview(
+            [item.model_dump() for item in messages if hasattr(item, "model_dump")]
+        )
         self.ensure_session_metadata(
             session_id,
             source=metadata["source"],
@@ -2282,7 +2407,8 @@ class ChatService:
         return sum(
             1
             for message in messages
-            if message.get("role") in {"user", "assistant"} and self._normalized_message_content(message)
+            if message.get("role") in {"user", "assistant"}
+            and self._normalized_message_content(message)
         )
 
     def _normalized_message_content(self, message: dict[str, Any]) -> str:
@@ -2340,12 +2466,16 @@ class ChatService:
             if event in {"assistant_message", "turn_completed"}:
                 self.update_session_backend_state(session_id, {"has_unread_turn": True})
             elif event == "run_started":
-                self.update_session_backend_state(session_id, {"has_unread_turn": False})
+                self.update_session_backend_state(
+                    session_id, {"has_unread_turn": False}
+                )
             return
 
         background_session_id = data.get("background_session_id")
         owner_session_id = data.get("session_id")
-        if not isinstance(background_session_id, str) or not isinstance(owner_session_id, str):
+        if not isinstance(background_session_id, str) or not isinstance(
+            owner_session_id, str
+        ):
             return
 
         self._background_owner_sessions[background_session_id] = owner_session_id
@@ -2385,7 +2515,9 @@ class ChatService:
     async def _publish_background_updates(self) -> set[str]:
         completed_session_ids: set[str] = set()
 
-        for background_session_id, owner_session_id in list(self._background_owner_sessions.items()):
+        for background_session_id, owner_session_id in list(
+            self._background_owner_sessions.items()
+        ):
             try:
                 session = self.background_manager.require_session(background_session_id)
             except (KeyError, ValueError):
@@ -2401,7 +2533,10 @@ class ChatService:
                 },
             )
 
-            for stream_name, buffer_name in (("stdout", "stdout_buffer"), ("stderr", "stderr_buffer")):
+            for stream_name, buffer_name in (
+                ("stdout", "stdout_buffer"),
+                ("stderr", "stderr_buffer"),
+            ):
                 output_text = getattr(session, buffer_name).render()
                 chars_key = f"{stream_name}_chars"
                 previous_chars = int(cursor[chars_key])
@@ -2533,7 +2668,9 @@ class ChatService:
             return
 
         if not completed:
-            for payload in self._parse_background_json_lines(background_session_id, content):
+            for payload in self._parse_background_json_lines(
+                background_session_id, content
+            ):
                 if payload.get("event") != "codex_background_stream_event":
                     continue
                 if payload.get("source_event") != "approval_requested":
@@ -2565,7 +2702,9 @@ class ChatService:
                 return
             return
 
-        await self._finalize_goal_loop_iteration(owner_session_id, background_session_id)
+        await self._finalize_goal_loop_iteration(
+            owner_session_id, background_session_id
+        )
 
     async def _finalize_goal_loop_iteration(
         self,
@@ -2706,9 +2845,7 @@ class ChatService:
             else "Goal loop markers were missing or invalid, so the loop was paused."
         )
         failure_status: CodexGoalLoopStatus = (
-            "failed"
-            if failure_count >= state.max_consecutive_failures
-            else "paused"
+            "failed" if failure_count >= state.max_consecutive_failures else "paused"
         )
         next_state = state.model_copy(
             update={
@@ -2757,8 +2894,12 @@ class ChatService:
                 "prompt": item.prompt,
             }
             self._persist_ui_event("background_followup_started", started_payload)
-            await self.event_broker.publish("background_followup_started", started_payload)
-            await self.codex_ipc_bridge.notify_stream_event("background_followup_started", started_payload)
+            await self.event_broker.publish(
+                "background_followup_started", started_payload
+            )
+            await self.codex_ipc_bridge.notify_stream_event(
+                "background_followup_started", started_payload
+            )
 
             async def emit(event: str, data: dict[str, Any]) -> None:
                 self._handle_internal_event(event, data)
@@ -2778,8 +2919,12 @@ class ChatService:
                 "finish_reason": finish_reason,
             }
             self._persist_ui_event("background_followup_finished", finished_payload)
-            await self.event_broker.publish("background_followup_finished", finished_payload)
-            await self.codex_ipc_bridge.notify_stream_event("background_followup_finished", finished_payload)
+            await self.event_broker.publish(
+                "background_followup_finished", finished_payload
+            )
+            await self.codex_ipc_bridge.notify_stream_event(
+                "background_followup_finished", finished_payload
+            )
 
         for background_session_id in completed_session_ids:
             self._background_owner_sessions.pop(background_session_id, None)
@@ -2836,14 +2981,22 @@ class ChatService:
             self.mcp_manager.version,
         )
 
-    def _configure_background_manager(self, assistant_settings: AssistantSettings) -> None:
+    def _configure_background_manager(
+        self, assistant_settings: AssistantSettings
+    ) -> None:
         allowed_roots = tuple(self._normalized_allowed_roots(assistant_settings))
         self.background_manager.access.allowed_roots = allowed_roots
-        self.background_manager.access.default_root = assistant_settings.workspace_root.resolve()
+        self.background_manager.access.default_root = (
+            assistant_settings.workspace_root.resolve()
+        )
         self.background_manager.allow_shell = assistant_settings.run_command.allow_shell
-        self.background_manager.shell_program = assistant_settings.run_command.shell_program
+        self.background_manager.shell_program = (
+            assistant_settings.run_command.shell_program
+        )
 
-    def _build_workspace_tools(self, assistant_settings: AssistantSettings) -> list[Tool]:
+    def _build_workspace_tools(
+        self, assistant_settings: AssistantSettings
+    ) -> list[Tool]:
         normalized_roots = self._normalized_allowed_roots(assistant_settings)
         workspace_root = assistant_settings.workspace_root
 
@@ -2863,7 +3016,9 @@ class ChatService:
             create_wait_background_command_tool(self.background_manager),
             create_stop_background_command_tool(self.background_manager),
             create_send_background_command_input_tool(self.background_manager),
-            create_queue_background_followup_tool(self.background_manager, self.followup_queue),
+            create_queue_background_followup_tool(
+                self.background_manager, self.followup_queue
+            ),
             create_find_codex_projects_tool(self),
             create_find_codex_sessions_tool(self),
             create_start_codex_background_session_tool(self, self.background_manager),
@@ -2872,7 +3027,9 @@ class ChatService:
             create_search_files_tool(normalized_roots, default_root=workspace_root),
         ]
 
-    def _normalized_allowed_roots(self, assistant_settings: AssistantSettings) -> list[Path]:
+    def _normalized_allowed_roots(
+        self, assistant_settings: AssistantSettings
+    ) -> list[Path]:
         roots = list(assistant_settings.allowed_roots)
         if assistant_settings.include_skill_directories_in_allowed_roots:
             roots.extend(self._get_skill_catalog().dirs())

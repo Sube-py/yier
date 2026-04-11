@@ -29,7 +29,9 @@ class CodexBackgroundRunnerRequest(BaseModel):
     action: Literal["start", "resume"] = Field(
         description="Whether to create a new Codex session or resume an existing thread."
     )
-    caller_session_id: str = Field(description="Caller session id to inherit source metadata from.")
+    caller_session_id: str = Field(
+        description="Caller session id to inherit source metadata from."
+    )
     thread_id: str | None = Field(
         default=None,
         description="Existing Codex thread id when resuming a session.",
@@ -265,7 +267,8 @@ async def run_request(
                         (
                             message["content"]
                             for message in reversed(transcript_messages)
-                            if message.get("role") == "assistant" and message.get("content")
+                            if message.get("role") == "assistant"
+                            and message.get("content")
                         ),
                         None,
                     ),

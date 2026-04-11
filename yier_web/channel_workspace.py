@@ -44,13 +44,19 @@ class IntegratedChannelWorkspaceService:
         return await self.workspace_service.get_accounts()
 
     async def login(self, platform: str, account_id: str | None = None):
-        return await self.workspace_service.login(platform=platform, account_id=account_id)
+        return await self.workspace_service.login(
+            platform=platform, account_id=account_id
+        )
 
     async def start_account(self, platform: str, account_id: str):
-        return await self.workspace_service.start_account(platform=platform, account_id=account_id)
+        return await self.workspace_service.start_account(
+            platform=platform, account_id=account_id
+        )
 
     async def stop_account(self, platform: str, account_id: str):
-        return await self.workspace_service.stop_account(platform=platform, account_id=account_id)
+        return await self.workspace_service.stop_account(
+            platform=platform, account_id=account_id
+        )
 
     def get_registered_platforms(self):
         return self.workspace_service.get_registered_platforms()
@@ -69,7 +75,9 @@ class IntegratedChannelWorkspaceService:
         final_assistant_message: str | None = None
         error_message: str | None = None
         finish_reason: str | None = None
-        async for event in self.chat_service.stream_chat(message.session_id, message.content):
+        async for event in self.chat_service.stream_chat(
+            message.session_id, message.content
+        ):
             await self.event_broker.publish(event["event"], event["data"])
             if event["event"] == "assistant_message":
                 content = event["data"].get("content")

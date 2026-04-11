@@ -22,7 +22,9 @@ class SessionMetadataStore:
 
     def save(self, session_id: str, payload: dict[str, Any]) -> None:
         path = self._session_file(session_id)
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
 
     def delete(self, session_id: str) -> bool:
         path = self._session_file(session_id)

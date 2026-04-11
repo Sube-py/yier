@@ -652,8 +652,8 @@ class CodexThreadFollowerBridge:
             and not state.turn_completion_emitted
             and (state.assistant_item_emitted or state.assistant_message_finalized)
         ):
-            conversation_state = await self.chat_service.build_codex_ipc_conversation_state(
-                session_id
+            conversation_state = (
+                await self.chat_service.build_codex_ipc_conversation_state(session_id)
             )
             synthetic_completion_state = self._synthetic_completed_conversation_state(
                 conversation_state,
@@ -850,7 +850,9 @@ class CodexThreadFollowerBridge:
             return snapshot_state
 
         cloned_turns = list(turns)
-        if 0 <= turn_index < len(cloned_turns) and isinstance(cloned_turns[turn_index], dict):
+        if 0 <= turn_index < len(cloned_turns) and isinstance(
+            cloned_turns[turn_index], dict
+        ):
             completed_turn = dict(cloned_turns[turn_index])
             completed_turn["status"] = "completed"
             cloned_turns[turn_index] = completed_turn
@@ -1528,7 +1530,11 @@ class CodexThreadFollowerBridge:
             )
             return patch_batches
 
-        if event == "assistant_message" and agent_item_index is not None and agent_item is not None:
+        if (
+            event == "assistant_message"
+            and agent_item_index is not None
+            and agent_item is not None
+        ):
             state.assistant_item_index = agent_item_index
             assistant_item_id = agent_item.get("id")
             if isinstance(assistant_item_id, str) and assistant_item_id:
@@ -1538,7 +1544,12 @@ class CodexThreadFollowerBridge:
                     [
                         {
                             "op": "add",
-                            "path": ["turns", latest_turn_index, "items", agent_item_index],
+                            "path": [
+                                "turns",
+                                latest_turn_index,
+                                "items",
+                                agent_item_index,
+                            ],
                             "value": agent_item,
                         }
                     ]
@@ -1549,7 +1560,12 @@ class CodexThreadFollowerBridge:
                     [
                         {
                             "op": "replace",
-                            "path": ["turns", latest_turn_index, "items", agent_item_index],
+                            "path": [
+                                "turns",
+                                latest_turn_index,
+                                "items",
+                                agent_item_index,
+                            ],
                             "value": agent_item,
                         }
                     ]

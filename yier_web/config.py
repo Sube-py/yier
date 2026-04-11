@@ -57,7 +57,9 @@ class AppConfigService:
         self.transcripts_path = self.web_root / "transcripts"
         self.session_ui_path = self.web_root / "session_ui"
         self.session_meta_path = self.web_root / "session_meta"
-        self.session_conversation_state_path = self.web_root / "session_conversation_state"
+        self.session_conversation_state_path = (
+            self.web_root / "session_conversation_state"
+        )
         self.uploads_path = self.web_root / "uploads"
         self.prompt_history_path = self.web_root / "prompt_history.txt"
         self.mcp_config_path = self.yier_root / ".yier.json"
@@ -94,13 +96,17 @@ class AppConfigService:
 
     def load_web_settings(self) -> WebSettings:
         if not self.settings_path.exists():
-            return self._finalize_web_settings(WebSettings(allowed_roots=self.default_allowed_roots()))
+            return self._finalize_web_settings(
+                WebSettings(allowed_roots=self.default_allowed_roots())
+            )
 
         try:
             payload = json.loads(self.settings_path.read_text(encoding="utf-8"))
             settings = WebSettings.model_validate(payload)
         except (json.JSONDecodeError, ValidationError):
-            return self._finalize_web_settings(WebSettings(allowed_roots=self.default_allowed_roots()))
+            return self._finalize_web_settings(
+                WebSettings(allowed_roots=self.default_allowed_roots())
+            )
 
         return self._finalize_web_settings(settings)
 
@@ -167,10 +173,14 @@ class AppConfigService:
     def load_mcp_servers(self) -> dict[str, dict[str, Any]]:
         raw = self.load_mcp_root_config().get("mcpServers", {})
         if isinstance(raw, dict):
-            return {str(key): value for key, value in raw.items() if isinstance(value, dict)}
+            return {
+                str(key): value for key, value in raw.items() if isinstance(value, dict)
+            }
         return {}
 
-    def save_mcp_servers(self, mcp_servers: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    def save_mcp_servers(
+        self, mcp_servers: dict[str, dict[str, Any]]
+    ) -> dict[str, dict[str, Any]]:
         normalized = self._normalize_mcp_servers(mcp_servers)
         payload = self.load_mcp_root_config()
         payload["mcpServers"] = normalized
@@ -220,7 +230,9 @@ class AppConfigService:
 
     def build_backend_health(self) -> dict[str, BackendHealth]:
         settings = self.load_web_settings()
-        codex_command = settings.codex.launcher_command or "codex app-server --listen stdio://"
+        codex_command = (
+            settings.codex.launcher_command or "codex app-server --listen stdio://"
+        )
         codex_binary = self._resolve_command_binary(codex_command)
         return {
             "yier": BackendHealth(
@@ -251,11 +263,17 @@ class AppConfigService:
             if not normalized_name:
                 raise MCPValidationError("MCP server names cannot be empty.")
             if not isinstance(server, dict):
-                raise MCPValidationError(f"MCP server '{normalized_name}' must be an object.")
-            normalized[normalized_name] = self._normalize_mcp_server(normalized_name, server)
+                raise MCPValidationError(
+                    f"MCP server '{normalized_name}' must be an object."
+                )
+            normalized[normalized_name] = self._normalize_mcp_server(
+                normalized_name, server
+            )
         return normalized
 
-    def _normalize_mcp_server(self, name: str, server: dict[str, Any]) -> dict[str, Any]:
+    def _normalize_mcp_server(
+        self, name: str, server: dict[str, Any]
+    ) -> dict[str, Any]:
         server_type = server.get("type")
         if server_type not in {"stdio", "http", "sse"}:
             raise MCPValidationError(f"MCP server '{name}' has an invalid type.")
@@ -263,21 +281,29 @@ class AppConfigService:
         normalized: dict[str, Any] = {"type": server_type}
         enabled = server.get("enabled", True)
         if not isinstance(enabled, bool):
-            raise MCPValidationError(f"MCP server '{name}' has a non-boolean 'enabled' value.")
+            raise MCPValidationError(
+                f"MCP server '{name}' has a non-boolean 'enabled' value."
+            )
         normalized["enabled"] = enabled
 
         status = server.get("status")
         if status is not None:
             if status not in RUNTIME_STATUSES:
-                raise MCPValidationError(f"MCP server '{name}' has an invalid status value.")
+                raise MCPValidationError(
+                    f"MCP server '{name}' has an invalid status value."
+                )
             normalized["status"] = status
 
         if server_type == "stdio":
             command = server.get("command", "")
             if not isinstance(command, str) or not command.strip():
-                raise MCPValidationError(f"MCP server '{name}' must define a stdio command.")
+                raise MCPValidationError(
+                    f"MCP server '{name}' must define a stdio command."
+                )
             normalized["command"] = command.strip()
-            normalized["args"] = self._coerce_string_list(server.get("args", []), name, "args")
+            normalized["args"] = self._coerce_string_list(
+                server.get("args", []), name, "args"
+            )
             env = server.get("env", {})
             normalized["env"] = self._coerce_string_map(env, name, "env")
         else:
@@ -290,16 +316,22 @@ class AppConfigService:
 
         return normalized
 
-    def _coerce_string_list(self, value: Any, server_name: str, field_name: str) -> list[str]:
+    def _coerce_string_list(
+        self, value: Any, server_name: str, field_name: str
+    ) -> list[str]:
         if value in (None, ""):
             return []
-        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        if not isinstance(value, list) or any(
+            not isinstance(item, str) for item in value
+        ):
             raise MCPValidationError(
                 f"MCP server '{server_name}' field '{field_name}' must be a string array."
             )
         return value
 
-    def _coerce_string_map(self, value: Any, server_name: str, field_name: str) -> dict[str, str]:
+    def _coerce_string_map(
+        self, value: Any, server_name: str, field_name: str
+    ) -> dict[str, str]:
         if value in (None, ""):
             return {}
         if not isinstance(value, dict):
@@ -340,7 +372,9 @@ class AppConfigService:
 
     def resolve_project_path(self, raw_path: str | None) -> str:
         candidate = raw_path.strip() if isinstance(raw_path, str) else ""
-        resolved = self._resolve_user_path(candidate) if candidate else self.project_root
+        resolved = (
+            self._resolve_user_path(candidate) if candidate else self.project_root
+        )
         return str(resolved.resolve())
 
     def _finalize_web_settings(self, settings: WebSettings) -> WebSettings:
@@ -349,7 +383,9 @@ class AppConfigService:
             settings.allowed_roots = self.default_allowed_roots()
         inferred_provider = self._infer_provider_from_base_url(settings.llm.base_url)
         if not settings.llm.provider and inferred_provider:
-            settings.llm = settings.llm.model_copy(update={"provider": inferred_provider})
+            settings.llm = settings.llm.model_copy(
+                update={"provider": inferred_provider}
+            )
         settings.session_defaults.default_project_path = self.resolve_project_path(
             settings.session_defaults.default_project_path
         )

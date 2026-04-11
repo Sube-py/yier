@@ -25,7 +25,9 @@ class CodexPairingSocketClient:
         timeout_seconds: float = DEFAULT_PAIRING_TIMEOUT_SECONDS,
     ) -> None:
         resolved_home = (home_dir or Path.home()).resolve()
-        self.workspace_service = workspace_service or CodexWorkspaceService(resolved_home)
+        self.workspace_service = workspace_service or CodexWorkspaceService(
+            resolved_home
+        )
         self.timeout_seconds = timeout_seconds
 
     def list_editors(self) -> list[CodexPairingExtensionSummary]:
@@ -180,7 +182,9 @@ class CodexPairingSocketClient:
             "response": payload,
         }
 
-    def resolve_editor(self, editor_id: str | None = None) -> CodexPairingExtensionSummary:
+    def resolve_editor(
+        self, editor_id: str | None = None
+    ) -> CodexPairingExtensionSummary:
         editors = self.list_editors()
         if not editors:
             raise CodexPairingClientError("No online paired editors are available.")
@@ -215,7 +219,9 @@ class CodexPairingSocketClient:
                 connection.sendall(message)
 
                 response_length_bytes = self._read_exact(connection, 4)
-                response_length = int.from_bytes(response_length_bytes, byteorder="little")
+                response_length = int.from_bytes(
+                    response_length_bytes, byteorder="little"
+                )
                 response_bytes = self._read_exact(connection, response_length)
         except (OSError, TimeoutError) as exc:
             raise CodexPairingClientError(
@@ -249,7 +255,9 @@ class CodexPairingSocketClient:
         while remaining > 0:
             chunk = connection.recv(remaining)
             if not chunk:
-                raise CodexPairingClientError("Paired editor socket closed unexpectedly.")
+                raise CodexPairingClientError(
+                    "Paired editor socket closed unexpectedly."
+                )
             chunks.append(chunk)
             remaining -= len(chunk)
         return b"".join(chunks)

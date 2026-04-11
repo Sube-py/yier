@@ -11,7 +11,10 @@ from yier_agents import (
     ToolContext,
     ToolOutput,
 )
-from yier_agents.src.tools.background_command import START_BACKGROUND_COMMAND_DESCRIPTION, StartBackgroundCommandParams
+from yier_agents.src.tools.background_command import (
+    START_BACKGROUND_COMMAND_DESCRIPTION,
+    StartBackgroundCommandParams,
+)
 from yier_agents.src.tools.workspace import (
     RUN_COMMAND_DESCRIPTION,
     WorkspaceAccess,
@@ -45,7 +48,9 @@ def create_streaming_run_command_tool(
         if not working_directory.exists():
             raise FileNotFoundError(f"Working directory not found: {working_directory}")
         if not working_directory.is_dir():
-            raise NotADirectoryError(f"Working directory is not a directory: {working_directory}")
+            raise NotADirectoryError(
+                f"Working directory is not a directory: {working_directory}"
+            )
 
         await emit_tool_event(
             "command_start",
@@ -107,8 +112,12 @@ def create_streaming_run_command_tool(
                 )
 
         readers = [
-            asyncio.create_task(consume_stream(process.stdout, "stdout", stdout_chunks)),
-            asyncio.create_task(consume_stream(process.stderr, "stderr", stderr_chunks)),
+            asyncio.create_task(
+                consume_stream(process.stdout, "stdout", stdout_chunks)
+            ),
+            asyncio.create_task(
+                consume_stream(process.stderr, "stderr", stderr_chunks)
+            ),
         ]
 
         timed_out = False
@@ -154,7 +163,7 @@ def create_streaming_run_command_tool(
         content = "\n".join(sections)
         truncated = False
         if len(content) > params.max_output_chars:
-            content = f"{content[:params.max_output_chars]}\n... [truncated]"
+            content = f"{content[: params.max_output_chars]}\n... [truncated]"
             truncated = True
 
         return ToolOutput(

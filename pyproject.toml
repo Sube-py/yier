@@ -10,7 +10,6 @@ dependencies = [
     "httpx>=0.28.1",
     "litestar>=2.21.1",
     "pydantic>=2.12.5",
-    "pytest>=9.0.2",
     "yier-channel",
     "yier-agents>=0.1.3",
 ]
@@ -35,3 +34,6 @@ members = ["packages/yier-channel", "packages/codex-app-server-sdk"]
 [tool.uv.sources]
 yier-channel = { workspace = true }
 codex-app-server-sdk = { workspace = true }
+
+[dependency-groups]
+dev = ["pytest>=9.0.2", "ruff>=0.15.10"]

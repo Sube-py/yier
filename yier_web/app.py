@@ -248,7 +248,9 @@ def get_services(state: State) -> AppServices:
 
 
 @get("/auth/session")
-async def get_auth_session(request: Request[Any, Any, Any], state: State) -> AuthSessionResponse:
+async def get_auth_session(
+    request: Request[Any, Any, Any], state: State
+) -> AuthSessionResponse:
     payload = get_services(state).auth_service.session_payload(request)
     return AuthSessionResponse(**payload)
 
@@ -278,7 +280,9 @@ async def health(state: State) -> HealthResponse:
     settings = services.config_service.load_web_settings()
     llm_ready = settings.llm.is_ready
     failing_servers = [
-        name for name, entry in runtime.items() if entry.status in {"failed", "needs_auth", "needs_client_registration"}
+        name
+        for name, entry in runtime.items()
+        if entry.status in {"failed", "needs_auth", "needs_client_registration"}
     ]
     mcp_ready = not failing_servers
     return HealthResponse(
@@ -297,7 +301,9 @@ async def health(state: State) -> HealthResponse:
         ),
         mcp=MCPHealth(
             ready=mcp_ready,
-            detail=None if mcp_ready else f"Problematic MCP servers: {', '.join(failing_servers)}",
+            detail=None
+            if mcp_ready
+            else f"Problematic MCP servers: {', '.join(failing_servers)}",
             runtime=runtime,
         ),
         backends=services.config_service.build_backend_health(),
@@ -309,7 +315,9 @@ async def health(state: State) -> HealthResponse:
 async def get_config(state: State) -> Response:
     services = get_services(state)
     runtime = await services.chat_service.get_mcp_status()
-    return Response(content=services.config_service.build_public_config(runtime).model_dump())
+    return Response(
+        content=services.config_service.build_public_config(runtime).model_dump()
+    )
 
 
 @put("/config/llm")
@@ -318,16 +326,22 @@ async def save_llm_config(data: SaveLLMRequest, state: State) -> Response:
     services.config_service.save_llm_settings(data)
     await services.chat_service.reload_agent()
     runtime = await services.chat_service.get_mcp_status()
-    return Response(content=services.config_service.build_public_config(runtime).model_dump())
+    return Response(
+        content=services.config_service.build_public_config(runtime).model_dump()
+    )
 
 
 @put("/config/roots")
-async def save_allowed_roots_config(data: SaveAllowedRootsRequest, state: State) -> Response:
+async def save_allowed_roots_config(
+    data: SaveAllowedRootsRequest, state: State
+) -> Response:
     services = get_services(state)
     services.config_service.save_allowed_roots(data.allowed_roots)
     await services.chat_service.reload_agent()
     runtime = await services.chat_service.get_mcp_status()
-    return Response(content=services.config_service.build_public_config(runtime).model_dump())
+    return Response(
+        content=services.config_service.build_public_config(runtime).model_dump()
+    )
 
 
 @put("/config/app")
@@ -335,7 +349,9 @@ async def save_app_config(data: SaveAppSettingsRequest, state: State) -> Respons
     services = get_services(state)
     services.config_service.save_app_settings(data)
     runtime = await services.chat_service.get_mcp_status()
-    return Response(content=services.config_service.build_public_config(runtime).model_dump())
+    return Response(
+        content=services.config_service.build_public_config(runtime).model_dump()
+    )
 
 
 @get("/config/mcp")
@@ -348,7 +364,9 @@ async def get_mcp_config(state: State) -> MCPConfigResponse:
 
 
 @put("/config/mcp")
-async def save_mcp_config(data: SaveMCPConfigRequest, state: State) -> MCPConfigResponse:
+async def save_mcp_config(
+    data: SaveMCPConfigRequest, state: State
+) -> MCPConfigResponse:
     services = get_services(state)
     try:
         runtime = await services.chat_service.replace_mcp_servers(data.mcp_servers)
@@ -371,7 +389,9 @@ async def reload_mcp_config(state: State) -> MCPConfigResponse:
 
 
 @post("/chat/sessions")
-async def create_session(request: Request[Any, Any, Any], state: State) -> CreateSessionResponse:
+async def create_session(
+    request: Request[Any, Any, Any], state: State
+) -> CreateSessionResponse:
     try:
         raw_payload = await request.json()
     except Exception:
@@ -431,12 +451,16 @@ async def create_codex_session(
 
 
 @post("/codex/sessions/open")
-async def open_codex_session(data: OpenCodexSessionRequest, state: State) -> OpenCodexSessionResponse:
+async def open_codex_session(
+    data: OpenCodexSessionRequest, state: State
+) -> OpenCodexSessionResponse:
     session_id = await get_services(state).chat_service.open_codex_native_session(
         data.thread_id
     )
     if session_id is None:
-        raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail="Codex session not found.")
+        raise HTTPException(
+            status_code=HTTP_404_NOT_FOUND, detail="Codex session not found."
+        )
     return OpenCodexSessionResponse(session_id=session_id)
 
 
@@ -486,7 +510,9 @@ async def get_codex_session_activity_events(
     before: int | None = None,
     limit: int | None = None,
 ) -> SessionActivityPageResponse:
-    activity_page = await get_services(state).chat_service.get_codex_session_activity_page_from_sdk(
+    activity_page = await get_services(
+        state
+    ).chat_service.get_codex_session_activity_page_from_sdk(
         session_id,
         before=before,
         limit=limit,
@@ -530,7 +556,9 @@ async def upload_chat_attachment(
         upload = form.get("file")
         if not isinstance(upload, UploadFile):
             raise AttachmentStorageError("Multipart form field 'file' is required.")
-        payload = await get_services(state).chat_service.save_chat_attachment(session_id, upload)
+        payload = await get_services(state).chat_service.save_chat_attachment(
+            session_id, upload
+        )
     except AttachmentStorageError as exc:
         raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return AttachmentUploadResponse.model_validate(payload)
@@ -543,7 +571,9 @@ async def get_chat_attachment_content(
     state: State,
 ) -> File:
     try:
-        path, mime_type, name = get_services(state).chat_service.get_attachment_media_path(
+        path, mime_type, name = get_services(
+            state
+        ).chat_service.get_attachment_media_path(
             session_id,
             attachment_id,
         )
@@ -569,7 +599,10 @@ async def steer_codex_turn(
         input_items=data.input_items,
     )
     if input_payload in ("", []):
-        raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail="message or input_items is required.")
+        raise HTTPException(
+            status_code=HTTP_400_BAD_REQUEST,
+            detail="message or input_items is required.",
+        )
     result = await get_services(state).chat_service.steer_codex_turn(
         session_id=session_id,
         turn_id=data.turn_id,
@@ -632,7 +665,9 @@ async def get_session_activity_events(
     before: int | None = None,
     limit: int | None = None,
 ) -> SessionActivityPageResponse:
-    activity_events, activity_history = get_services(state).chat_service.get_session_activity_page(
+    activity_events, activity_history = get_services(
+        state
+    ).chat_service.get_session_activity_page(
         session_id,
         before=before,
         limit=limit,
@@ -669,7 +704,9 @@ async def respond_to_approval(
         content=data.content,
     )
     if not handled:
-        raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail="Approval request not found.")
+        raise HTTPException(
+            status_code=HTTP_404_NOT_FOUND, detail="Approval request not found."
+        )
     return Response(content={"ok": True})
 
 
@@ -686,7 +723,9 @@ async def respond_to_codex_approval(
         content=data.content,
     )
     if not handled:
-        raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail="Approval request not found.")
+        raise HTTPException(
+            status_code=HTTP_404_NOT_FOUND, detail="Approval request not found."
+        )
     return Response(content={"ok": True})
 
 
@@ -701,7 +740,9 @@ async def update_codex_session_mode(
         codex_work_mode=data.codex_work_mode,
     )
     if not updated:
-        raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail="Codex session not found.")
+        raise HTTPException(
+            status_code=HTTP_404_NOT_FOUND, detail="Codex session not found."
+        )
     return Response(content={"ok": True})
 
 
@@ -716,7 +757,9 @@ async def update_codex_session_mode_v2(
         codex_work_mode=data.codex_work_mode,
     )
     if not updated:
-        raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail="Codex session not found.")
+        raise HTTPException(
+            status_code=HTTP_404_NOT_FOUND, detail="Codex session not found."
+        )
     return Response(content={"ok": True})
 
 
@@ -732,7 +775,9 @@ async def update_codex_goal_loop(
         definition_of_done=data.definition_of_done,
     )
     if updated is None:
-        raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail="Codex session not found.")
+        raise HTTPException(
+            status_code=HTTP_404_NOT_FOUND, detail="Codex session not found."
+        )
     return CodexGoalLoopResponse(codex_goal_loop=updated)
 
 
@@ -748,7 +793,9 @@ async def update_codex_goal_loop_v2(
         definition_of_done=data.definition_of_done,
     )
     if updated is None:
-        raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail="Codex session not found.")
+        raise HTTPException(
+            status_code=HTTP_404_NOT_FOUND, detail="Codex session not found."
+        )
     return CodexGoalLoopResponse(codex_goal_loop=updated)
 
 
@@ -766,7 +813,9 @@ async def codex_goal_loop_action(
     except ValueError as exc:
         raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     if updated is None:
-        raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail="Codex session not found.")
+        raise HTTPException(
+            status_code=HTTP_404_NOT_FOUND, detail="Codex session not found."
+        )
     return CodexGoalLoopResponse(codex_goal_loop=updated)
 
 
@@ -784,14 +833,18 @@ async def codex_goal_loop_action_v2(
     except ValueError as exc:
         raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     if updated is None:
-        raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail="Codex session not found.")
+        raise HTTPException(
+            status_code=HTTP_404_NOT_FOUND, detail="Codex session not found."
+        )
     return CodexGoalLoopResponse(codex_goal_loop=updated)
 
 
 @post("/chat/stream", status_code=200)
 async def stream_chat(data: ChatStreamRequest, state: State) -> ServerSentEvent:
     if not data.session_id:
-        raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail="session_id is required.")
+        raise HTTPException(
+            status_code=HTTP_400_BAD_REQUEST, detail="session_id is required."
+        )
 
     services = get_services(state)
     if services.chat_service.is_channel_session(data.session_id):
@@ -813,7 +866,9 @@ async def stream_chat(data: ChatStreamRequest, state: State) -> ServerSentEvent:
         raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     async def event_stream() -> AsyncIterator[ServerSentEventMessage]:
-        async for item in services.chat_service.stream_chat(data.session_id, input_payload):
+        async for item in services.chat_service.stream_chat(
+            data.session_id, input_payload
+        ):
             yield ServerSentEventMessage(
                 event=item["event"],
                 data=json.dumps(item["data"], ensure_ascii=False),
@@ -824,7 +879,9 @@ async def stream_chat(data: ChatStreamRequest, state: State) -> ServerSentEvent:
 
 @get("/channel/workspace")
 async def get_channel_workspace(state: State) -> ChannelWorkspaceResponse:
-    snapshot = await get_services(state).channel_workspace_service.get_workspace_snapshot()
+    snapshot = await get_services(
+        state
+    ).channel_workspace_service.get_workspace_snapshot()
     return ChannelWorkspaceResponse(
         platforms=[item.model_dump() for item in snapshot.platforms],
         accounts=[item.model_dump() for item in snapshot.accounts],
@@ -834,7 +891,9 @@ async def get_channel_workspace(state: State) -> ChannelWorkspaceResponse:
 @get("/channel/platforms")
 async def get_channel_platforms(state: State) -> ChannelPlatformsResponse:
     services = get_services(state)
-    return ChannelPlatformsResponse(platforms=services.channel_workspace_service.get_registered_platforms())
+    return ChannelPlatformsResponse(
+        platforms=services.channel_workspace_service.get_registered_platforms()
+    )
 
 
 @get("/channel/config")
@@ -844,8 +903,12 @@ async def get_channel_config(state: State) -> ChannelConfigResponse:
 
 
 @put("/channel/config")
-async def save_channel_config(data: SaveChannelConfigRequest, state: State) -> ChannelConfigResponse:
-    config = get_services(state).channel_workspace_service.save_config(data.model_dump())
+async def save_channel_config(
+    data: SaveChannelConfigRequest, state: State
+) -> ChannelConfigResponse:
+    config = get_services(state).channel_workspace_service.save_config(
+        data.model_dump()
+    )
     return ChannelConfigResponse(**config.model_dump())
 
 
@@ -865,7 +928,9 @@ async def login_weixin_account(data: ChannelLoginRequest, state: State) -> Respo
 
 
 @post("/channel/accounts/weixin/{account_id:str}/start")
-async def start_weixin_account(account_id: str, state: State) -> ChannelAccountActionResponse:
+async def start_weixin_account(
+    account_id: str, state: State
+) -> ChannelAccountActionResponse:
     account = await get_services(state).channel_workspace_service.start_account(
         platform="weixin",
         account_id=account_id,
@@ -874,7 +939,9 @@ async def start_weixin_account(account_id: str, state: State) -> ChannelAccountA
 
 
 @post("/channel/accounts/weixin/{account_id:str}/stop")
-async def stop_weixin_account(account_id: str, state: State) -> ChannelAccountActionResponse:
+async def stop_weixin_account(
+    account_id: str, state: State
+) -> ChannelAccountActionResponse:
     account = await get_services(state).channel_workspace_service.stop_account(
         platform="weixin",
         account_id=account_id,
@@ -884,7 +951,9 @@ async def stop_weixin_account(account_id: str, state: State) -> ChannelAccountAc
 
 @get("/channel/monitor/sessions")
 async def get_channel_monitor_sessions(state: State) -> SessionListResponse:
-    sessions = await get_services(state).channel_workspace_service.get_monitor_sessions()
+    sessions = await get_services(
+        state
+    ).channel_workspace_service.get_monitor_sessions()
     return SessionListResponse(sessions=sessions)
 
 
@@ -980,7 +1049,9 @@ api_router = Router(
 
 
 @get(path=["/", "/{path:path}"], include_in_schema=False)
-async def frontend_entry(request: Request[Any, Any, Any], state: State, path: str = "") -> Response:
+async def frontend_entry(
+    request: Request[Any, Any, Any], state: State, path: str = ""
+) -> Response:
     if path.startswith("api/"):
         raise HTTPException(status_code=HTTP_404_NOT_FOUND)
     services = get_services(state)
@@ -1008,7 +1079,9 @@ def create_app(
 ) -> Litestar:
     resolved_root = (project_root or Path.cwd()).resolve()
     debug = _env_flag("YIER_DEBUG")
-    app_services = services or build_services(project_root=resolved_root, home_dir=home_dir)
+    app_services = services or build_services(
+        project_root=resolved_root, home_dir=home_dir
+    )
 
     async def before_request(request: Request[Any, Any, Any]) -> Response | None:
         auth_service = app_services.auth_service

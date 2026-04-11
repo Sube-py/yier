@@ -20,7 +20,6 @@ from codex_app_server.generated.v2_all import (
     OtherSubAgentSource,
     SubAgentSessionSource,
     Thread as ThreadV2,
-    ThreadListResponse,
     ThreadReadResponse,
     ThreadSpawnSubAgentSource,
 )
@@ -105,7 +104,9 @@ class CodexWorkspaceService:
             paired_editors=self.list_paired_editors(),
         )
 
-    async def get_active_session(self, thread_id: str) -> CodexNativeSessionSummary | None:
+    async def get_active_session(
+        self, thread_id: str
+    ) -> CodexNativeSessionSummary | None:
         normalized_thread_id = thread_id.strip()
         if not normalized_thread_id:
             return None
@@ -179,7 +180,9 @@ class CodexWorkspaceService:
             separators=(",", ":"),
         )
 
-    async def _list_active_sessions_from_sdk(self) -> list[CodexNativeSessionSummary] | None:
+    async def _list_active_sessions_from_sdk(
+        self,
+    ) -> list[CodexNativeSessionSummary] | None:
         config = self._sdk_config()
         if config is None:
             return None
@@ -262,7 +265,9 @@ class CodexWorkspaceService:
         if codex is not None:
             await codex.close()
 
-    def _extract_paired_editor(self, descriptor_file: Path) -> CodexPairingExtensionSummary | None:
+    def _extract_paired_editor(
+        self, descriptor_file: Path
+    ) -> CodexPairingExtensionSummary | None:
         try:
             payload = json.loads(descriptor_file.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
@@ -287,9 +292,7 @@ class CodexWorkspaceService:
         capabilities_payload = payload.get("capabilities")
         if isinstance(capabilities_payload, dict):
             capability_names = [
-                str(name)
-                for name, enabled in capabilities_payload.items()
-                if enabled
+                str(name) for name, enabled in capabilities_payload.items() if enabled
             ]
         else:
             capability_names = []
@@ -314,12 +317,22 @@ class CodexWorkspaceService:
 
         return CodexPairingExtensionSummary(
             id=descriptor_id,
-            app_name=app_name.strip() if isinstance(app_name, str) else "Unknown editor",
-            workspace_name=workspace_name.strip() if isinstance(workspace_name, str) else "",
-            extension_name=extension_name.strip() if isinstance(extension_name, str) else "",
-            extension_version=extension_version.strip() if isinstance(extension_version, str) else "",
+            app_name=app_name.strip()
+            if isinstance(app_name, str)
+            else "Unknown editor",
+            workspace_name=workspace_name.strip()
+            if isinstance(workspace_name, str)
+            else "",
+            extension_name=extension_name.strip()
+            if isinstance(extension_name, str)
+            else "",
+            extension_version=extension_version.strip()
+            if isinstance(extension_version, str)
+            else "",
             bundle_id=bundle_id.strip() if isinstance(bundle_id, str) else "",
-            marketplace_id=marketplace_id.strip() if isinstance(marketplace_id, str) else "",
+            marketplace_id=marketplace_id.strip()
+            if isinstance(marketplace_id, str)
+            else "",
             capability_names=capability_names,
             capability_count=len(capability_names),
             socket_path=str(socket_path),
@@ -347,7 +360,9 @@ class CodexWorkspaceService:
         except (RuntimeError, ValueError):
             return None
 
-    def _extract_sdk_session(self, thread: ThreadV2) -> CodexNativeSessionSummary | None:
+    def _extract_sdk_session(
+        self, thread: ThreadV2
+    ) -> CodexNativeSessionSummary | None:
         thread_id = thread.id.strip()
         if not thread_id:
             return None
@@ -483,18 +498,27 @@ class CodexWorkspaceService:
 
                 if first_user_message:
                     continue
-                first_user_message = self._extract_first_user_message(row_type, payload) or first_user_message
+                first_user_message = (
+                    self._extract_first_user_message(row_type, payload)
+                    or first_user_message
+                )
 
         if not thread_id:
             return None
 
         index_entry = index.get(thread_id)
-        indexed_updated_at = self._parse_timestamp(index_entry.updated_at if index_entry else None)
+        indexed_updated_at = self._parse_timestamp(
+            index_entry.updated_at if index_entry else None
+        )
         if indexed_updated_at is not None:
             updated_at = indexed_updated_at
 
         project, project_path = self._derive_project_root(cwd)
-        title = self._compact_text(index_entry.thread_name if index_entry else None) or first_user_message or thread_id
+        title = (
+            self._compact_text(index_entry.thread_name if index_entry else None)
+            or first_user_message
+            or thread_id
+        )
         preview = first_user_message or title
 
         return CodexNativeSessionSummary(
@@ -510,14 +534,20 @@ class CodexWorkspaceService:
         )
 
     def _extract_first_user_message(self, row_type: Any, payload: Any) -> str | None:
-        if row_type == "event_msg" and isinstance(payload, dict) and payload.get("type") == "user_message":
+        if (
+            row_type == "event_msg"
+            and isinstance(payload, dict)
+            and payload.get("type") == "user_message"
+        ):
             message = payload.get("message")
             if isinstance(message, str):
                 return self._normalize_user_message(message)
 
         if row_type == "response_item" and isinstance(payload, dict):
             if payload.get("type") == "message" and payload.get("role") == "user":
-                return self._normalize_user_message(self._parse_text_content(payload.get("content")))
+                return self._normalize_user_message(
+                    self._parse_text_content(payload.get("content"))
+                )
         return None
 
     def _parse_text_content(self, content: Any) -> str | None:

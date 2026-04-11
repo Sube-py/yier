@@ -43,9 +43,13 @@ class PairingDescriptorSocketOverride:
     def apply(self) -> None:
         payload = json.loads(self.descriptor_path.read_text(encoding="utf-8"))
         if not isinstance(payload, dict):
-            raise ValueError(f"Descriptor at '{self.descriptor_path}' must contain a JSON object.")
+            raise ValueError(
+                f"Descriptor at '{self.descriptor_path}' must contain a JSON object."
+            )
 
-        self._original_text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        self._original_text = json.dumps(
+            payload, ensure_ascii=False, separators=(",", ":")
+        )
         payload["socketPath"] = str(self.proxy_socket_path)
         self.descriptor_path.write_text(
             json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
@@ -154,9 +158,13 @@ class CodexPairingProxyServer:
                 request_bytes = _read_exact(client_connection, request_length)
                 request_payload = _decode_json_payload(request_bytes)
 
-                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as upstream_connection:
+                with socket.socket(
+                    socket.AF_UNIX, socket.SOCK_STREAM
+                ) as upstream_connection:
                     upstream_connection.connect(str(self.upstream_socket_path))
-                    upstream_connection.sendall(request_length.to_bytes(4, byteorder="little"))
+                    upstream_connection.sendall(
+                        request_length.to_bytes(4, byteorder="little")
+                    )
                     upstream_connection.sendall(request_bytes)
 
                     response_length = int.from_bytes(
@@ -166,7 +174,9 @@ class CodexPairingProxyServer:
                     response_bytes = _read_exact(upstream_connection, response_length)
                     response_payload = _decode_json_payload(response_bytes)
 
-                client_connection.sendall(response_length.to_bytes(4, byteorder="little"))
+                client_connection.sendall(
+                    response_length.to_bytes(4, byteorder="little")
+                )
                 client_connection.sendall(response_bytes)
 
                 self._append_log(

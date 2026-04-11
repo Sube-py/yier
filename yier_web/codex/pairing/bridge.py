@@ -272,7 +272,9 @@ class CodexPairedEditorBridge:
         except Exception as exc:
             return {"status": 400, "error": str(exc)}
 
-    async def _dispatch_command(self, command: str, payload: dict[str, Any]) -> dict[str, Any]:
+    async def _dispatch_command(
+        self, command: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
         if command == "ping":
             return {
                 "status": "success",
@@ -337,8 +339,8 @@ class CodexPairedEditorBridge:
             await self._set_content(textfield_id=textfield_id, content=content)
             return {
                 "status": "success",
-            "message": "Set content successfully",
-        }
+                "message": "Set content successfully",
+            }
 
         if command == "replaceSelection":
             textfield_id = self._require_textfield(payload.get("textfieldID"))
@@ -346,8 +348,8 @@ class CodexPairedEditorBridge:
             await self._replace_selection(textfield_id=textfield_id, content=content)
             return {
                 "status": "success",
-            "message": "Replaced selection successfully",
-        }
+                "message": "Replaced selection successfully",
+            }
 
         return {"status": 404, "error": "Unknown endpoint"}
 
@@ -523,7 +525,9 @@ class CodexPairedEditorBridge:
             )
 
     def _remove_descriptor_file(self, pairing_id: str | None = None) -> None:
-        descriptor_path = self.app_pairing_extensions_dir / (pairing_id or self._registered_pairing_id)
+        descriptor_path = self.app_pairing_extensions_dir / (
+            pairing_id or self._registered_pairing_id
+        )
         if descriptor_path.exists():
             descriptor_path.unlink()
             self._append_log(

@@ -7,7 +7,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from yier_web.codex.pairing.client import CodexPairingClientError, CodexPairingSocketClient
+from yier_web.codex.pairing.client import (
+    CodexPairingClientError,
+    CodexPairingSocketClient,
+)
 
 
 JSONRPC_VERSION = "2.0"
@@ -66,21 +69,29 @@ class CodexPairingMCPServer:
             return self._success_response(message_id, {})
 
         if method == "tools/list":
-            return self._success_response(message_id, {"tools": self._tool_definitions()})
+            return self._success_response(
+                message_id, {"tools": self._tool_definitions()}
+            )
 
         if method == "tools/call":
             return self._handle_tools_call(message_id, message.get("params"))
 
-        return self._error_response(message_id, -32601, f"Method '{method}' is not supported.")
+        return self._error_response(
+            message_id, -32601, f"Method '{method}' is not supported."
+        )
 
     def _handle_tools_call(self, message_id: Any, params: Any) -> dict[str, Any]:
         if not isinstance(params, dict):
-            return self._error_response(message_id, -32602, "tools/call requires params.")
+            return self._error_response(
+                message_id, -32602, "tools/call requires params."
+            )
 
         tool_name = params.get("name")
         arguments = params.get("arguments")
         if not isinstance(tool_name, str) or not tool_name.strip():
-            return self._error_response(message_id, -32602, "tools/call requires a tool name.")
+            return self._error_response(
+                message_id, -32602, "tools/call requires a tool name."
+            )
         if arguments is None:
             arguments = {}
         if not isinstance(arguments, dict):
@@ -396,14 +407,18 @@ class CodexPairingMCPServer:
             raise ValueError(f"'{key}' must be a boolean.")
         return value
 
-    def _success_response(self, message_id: Any, result: dict[str, Any]) -> dict[str, Any]:
+    def _success_response(
+        self, message_id: Any, result: dict[str, Any]
+    ) -> dict[str, Any]:
         return {
             "jsonrpc": JSONRPC_VERSION,
             "id": message_id,
             "result": result,
         }
 
-    def _error_response(self, message_id: Any, code: int, message: str) -> dict[str, Any]:
+    def _error_response(
+        self, message_id: Any, code: int, message: str
+    ) -> dict[str, Any]:
         return {
             "jsonrpc": JSONRPC_VERSION,
             "id": message_id,
@@ -415,7 +430,9 @@ class CodexPairingMCPServer:
 
 
 def build_server() -> CodexPairingMCPServer:
-    home_dir = Path(os.environ.get("YIER_PAIRING_HOME_DIR", str(Path.home()))).expanduser()
+    home_dir = Path(
+        os.environ.get("YIER_PAIRING_HOME_DIR", str(Path.home()))
+    ).expanduser()
     client = CodexPairingSocketClient(home_dir=home_dir)
     return CodexPairingMCPServer(client)
 

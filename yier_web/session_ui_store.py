@@ -68,7 +68,9 @@ class SessionUIStore:
     ) -> tuple[list[dict[str, Any]], dict[str, int | None]]:
         activity_events = self.load_activity_events(session_id)
         total_count = len(activity_events)
-        normalized_before = total_count if before is None else max(0, min(before, total_count))
+        normalized_before = (
+            total_count if before is None else max(0, min(before, total_count))
+        )
 
         if limit is None or limit <= 0:
             page = activity_events[:normalized_before]
@@ -95,7 +97,9 @@ class SessionUIStore:
             },
         )
 
-    def append_activity_event(self, session_id: str, event: str, data: dict[str, Any]) -> None:
+    def append_activity_event(
+        self, session_id: str, event: str, data: dict[str, Any]
+    ) -> None:
         payload = self.load_payload(session_id)
         activity_events = self.load_activity_events(session_id)
         activity_events.append(
@@ -116,7 +120,9 @@ class SessionUIStore:
         raw_sequences = payload.get("transcript_message_sequences", [])
         if not isinstance(raw_sequences, list):
             raw_sequences = []
-        raw_sequences.append(sequence if isinstance(sequence, int) and sequence >= 0 else None)
+        raw_sequences.append(
+            sequence if isinstance(sequence, int) and sequence >= 0 else None
+        )
         payload["transcript_message_sequences"] = raw_sequences
         self._write_payload(session_id, payload)
 

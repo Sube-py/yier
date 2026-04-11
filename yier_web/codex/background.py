@@ -29,7 +29,9 @@ class QueuedFollowup:
 
 class QueueBackgroundFollowupParams(BaseModel):
     session_id: str = Field(description="Background command session id.")
-    prompt: str = Field(description="Follow-up task to run after the command completes.")
+    prompt: str = Field(
+        description="Follow-up task to run after the command completes."
+    )
 
 
 class StartCodexBackgroundSessionParams(BaseModel):
@@ -386,9 +388,9 @@ def create_start_codex_background_session_tool(
                 f"Working directory: {session.cwd}\n"
                 f"Project path: {resolved_project_path}\n"
                 "This returned session id is a background command session id.\n"
-                f"To watch live progress now, call read_background_command(session_id=\"{session.session_id}\").\n"
-                f"You can call read_background_command(session_id=\"{session.session_id}\") repeatedly while it is running.\n"
-                f"If you use wait_background_command(session_id=\"{session.session_id}\"), call read_background_command(session_id=\"{session.session_id}\") again after wait finishes to fetch the final Codex result from stdout.\n"
+                f'To watch live progress now, call read_background_command(session_id="{session.session_id}").\n'
+                f'You can call read_background_command(session_id="{session.session_id}") repeatedly while it is running.\n'
+                f'If you use wait_background_command(session_id="{session.session_id}"), call read_background_command(session_id="{session.session_id}") again after wait finishes to fetch the final Codex result from stdout.\n'
                 "Live Codex progress also continues through Codex IPC."
             ),
             metadata={
@@ -468,9 +470,9 @@ def create_resume_codex_background_session_tool(
                 f"Working directory: {session.cwd}\n"
                 f"Project path: {resolved_project_path}\n"
                 "This returned session id is a background command session id.\n"
-                f"To watch live progress now, call read_background_command(session_id=\"{session.session_id}\").\n"
-                f"You can call read_background_command(session_id=\"{session.session_id}\") repeatedly while it is running.\n"
-                f"If you use wait_background_command(session_id=\"{session.session_id}\"), call read_background_command(session_id=\"{session.session_id}\") again after wait finishes to fetch the final Codex result from stdout.\n"
+                f'To watch live progress now, call read_background_command(session_id="{session.session_id}").\n'
+                f'You can call read_background_command(session_id="{session.session_id}") repeatedly while it is running.\n'
+                f'If you use wait_background_command(session_id="{session.session_id}"), call read_background_command(session_id="{session.session_id}") again after wait finishes to fetch the final Codex result from stdout.\n'
                 "Live Codex progress also continues through Codex IPC."
             ),
             metadata={
@@ -532,10 +534,14 @@ def create_find_codex_projects_tool(
                     "project": project.project,
                     "project_path": project.project_path,
                     "session_count": project.session_count,
-                    "latest_thread_id": latest_session.thread_id if latest_session else "",
+                    "latest_thread_id": latest_session.thread_id
+                    if latest_session
+                    else "",
                     "latest_title": latest_session.title if latest_session else "",
                     "latest_cwd": latest_session.cwd if latest_session else "",
-                    "latest_updated_at": latest_session.updated_at if latest_session else 0.0,
+                    "latest_updated_at": latest_session.updated_at
+                    if latest_session
+                    else 0.0,
                 }
             )
             if len(projects) >= params.limit:

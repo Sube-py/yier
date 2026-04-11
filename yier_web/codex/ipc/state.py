@@ -33,8 +33,12 @@ class CodexConversationStateService:
                 context,
                 [turn for turn in thread.get("turns", []) if isinstance(turn, dict)],
             )
-            created_at_ms = int(thread.get("createdAt", 0) or 0) * 1000 or current_timestamp_ms
-            updated_at_ms = int(thread.get("updatedAt", 0) or 0) * 1000 or current_timestamp_ms
+            created_at_ms = (
+                int(thread.get("createdAt", 0) or 0) * 1000 or current_timestamp_ms
+            )
+            updated_at_ms = (
+                int(thread.get("updatedAt", 0) or 0) * 1000 or current_timestamp_ms
+            )
             title = thread.get("name") or metadata.get("title")
             source = thread.get("source") or metadata.get("source", "chat")
             cwd = thread.get("cwd") or metadata.get("project_path")
@@ -137,7 +141,9 @@ class CodexConversationStateService:
             patches = change.get("patches")
             if isinstance(patches, list):
                 cached_state = metadata["backend_state"].get("ipc_conversation_state")
-                base_state = deepcopy(cached_state) if isinstance(cached_state, dict) else {}
+                base_state = (
+                    deepcopy(cached_state) if isinstance(cached_state, dict) else {}
+                )
                 if self._apply_patches(base_state, patches):
                     next_conversation_state = base_state
 
@@ -164,7 +170,11 @@ class CodexConversationStateService:
     def build_queued_followups(self, session_id: str) -> list[dict[str, Any]]:
         metadata = self.chat_service.get_session_metadata(session_id)
         workspace_root = metadata.get("project_path")
-        workspace_roots = [workspace_root] if isinstance(workspace_root, str) and workspace_root else []
+        workspace_roots = (
+            [workspace_root]
+            if isinstance(workspace_root, str) and workspace_root
+            else []
+        )
         created_at_ms = int(time() * 1000)
         messages: list[dict[str, Any]] = []
         for item in self.chat_service.followup_queue.list_items():
@@ -192,7 +202,11 @@ class CodexConversationStateService:
                     continue
                 operation = patch.get("op")
                 path = patch.get("path")
-                if not isinstance(operation, str) or not isinstance(path, list) or not path:
+                if (
+                    not isinstance(operation, str)
+                    or not isinstance(path, list)
+                    or not path
+                ):
                     continue
                 if operation in {"add", "replace"}:
                     self._set_path(root, path, deepcopy(patch.get("value")))
@@ -275,7 +289,9 @@ class CodexConversationStateService:
             raise TypeError("Patch parent must be a dict or list.")
         current.pop(last_segment, None)
 
-    async def _native_conversation_state(self, session_id: str) -> dict[str, Any] | None:
+    async def _native_conversation_state(
+        self, session_id: str
+    ) -> dict[str, Any] | None:
         context = self.chat_service.get_session_context(session_id)
         if context.backend_id != "codex":
             return None
@@ -319,7 +335,9 @@ class CodexConversationStateService:
         default_settings = {
             "model": latest_model,
             "reasoning_effort": (
-                latest_reasoning_effort if latest_reasoning_effort is None else str(latest_reasoning_effort)
+                latest_reasoning_effort
+                if latest_reasoning_effort is None
+                else str(latest_reasoning_effort)
             ),
             "developer_instructions": None,
         }
@@ -342,8 +360,12 @@ class CodexConversationStateService:
                     if reasoning_effort is None or isinstance(reasoning_effort, str):
                         merged_settings["reasoning_effort"] = reasoning_effort
                     developer_instructions = settings.get("developer_instructions")
-                    if developer_instructions is None or isinstance(developer_instructions, str):
-                        merged_settings["developer_instructions"] = developer_instructions
+                    if developer_instructions is None or isinstance(
+                        developer_instructions, str
+                    ):
+                        merged_settings["developer_instructions"] = (
+                            developer_instructions
+                        )
                 normalized["settings"] = merged_settings
                 return normalized
         if isinstance(value, str) and value.strip():
@@ -375,7 +397,11 @@ class CodexConversationStateService:
                 raw_active_flags = payload.get("active_flags")
             if isinstance(raw_active_flags, list):
                 active_flags = [
-                    str(flag.get("value") if isinstance(flag, dict) and "value" in flag else flag)
+                    str(
+                        flag.get("value")
+                        if isinstance(flag, dict) and "value" in flag
+                        else flag
+                    )
                     for flag in raw_active_flags
                 ]
         elif isinstance(payload, str) and payload:
@@ -425,7 +451,9 @@ class CodexConversationStateService:
         session_id: str,
         runtime_status: str,
     ) -> list[dict[str, Any]]:
-        transcript = self.chat_service.transcript_store.get_session_messages(session_id) or []
+        transcript = (
+            self.chat_service.transcript_store.get_session_messages(session_id) or []
+        )
         turns: list[dict[str, Any]] = []
         current_turn: dict[str, Any] | None = None
         turn_index = 0
@@ -450,7 +478,9 @@ class CodexConversationStateService:
                         {
                             "id": f"{session_id}:turn:{turn_index}:user",
                             "type": "userMessage",
-                            "content": [{"type": "text", "text": content, "text_elements": []}],
+                            "content": [
+                                {"type": "text", "text": content, "text_elements": []}
+                            ],
                         }
                     ],
                     "turnStartedAtMs": current_timestamp_ms,

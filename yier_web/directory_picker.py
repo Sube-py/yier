@@ -10,7 +10,9 @@ class LocalDirectoryPickerService:
         normalized_initial_path = self._normalize_initial_path(initial_path)
 
         if sys.platform == "darwin":
-            handled, selected_path = self._select_directory_with_osascript(normalized_initial_path)
+            handled, selected_path = self._select_directory_with_osascript(
+                normalized_initial_path
+            )
             if handled:
                 return selected_path
 
@@ -29,8 +31,12 @@ class LocalDirectoryPickerService:
             return candidate.parent.resolve()
         return None
 
-    def _select_directory_with_osascript(self, initial_path: Path | None) -> tuple[bool, str | None]:
-        script = ['set chosenFolder to choose folder with prompt "Select a project folder"']
+    def _select_directory_with_osascript(
+        self, initial_path: Path | None
+    ) -> tuple[bool, str | None]:
+        script = [
+            'set chosenFolder to choose folder with prompt "Select a project folder"'
+        ]
         if initial_path is not None:
             escaped_path = self._escape_applescript_text(str(initial_path))
             script = [

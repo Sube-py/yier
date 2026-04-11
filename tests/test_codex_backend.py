@@ -6,6 +6,15 @@ from types import SimpleNamespace
 import sys
 
 import pytest
+from codex_app_server.generated.v2_all import (
+    ImageGenerationThreadItem,
+    ImageViewThreadItem,
+    LocalImageUserInput,
+    MentionUserInput,
+    SkillUserInput,
+    TextUserInput,
+    UserMessageThreadItem,
+)
 
 from yier_web.agent_backends.base import ChatSessionContext
 import yier_web.codex.backend as codex_backend_module
@@ -612,6 +621,102 @@ def test_codex_backend_includes_item_id_when_finalizing_agent_message() -> None:
             },
         )
     ]
+
+
+def test_codex_backend_thread_user_message_text_renders_typed_non_text_inputs() -> None:
+    backend = CodexAppServerBackend(SimpleNamespace())
+
+    content = backend._thread_user_message_text(
+        [
+            TextUserInput(type="text", text="请看一下", text_elements=[]),
+            LocalImageUserInput(type="localImage", path="/tmp/screenshot.png"),
+            SkillUserInput(type="skill", name="Code", path="/skills/code"),
+            MentionUserInput(type="mention", name="Docs", path="app://docs"),
+        ]
+    )
+
+    assert content == (
+        "请看一下\n"
+        "[Local image] /tmp/screenshot.png\n"
+        "[Skill] Code (/skills/code)\n"
+        "[Mention] Docs (app://docs)"
+    )
+
+
+def test_codex_backend_turn_input_items_from_thread_items_preserves_typed_user_inputs() -> None:
+    backend = CodexAppServerBackend(SimpleNamespace())
+
+    items = backend._turn_input_items_from_thread_items(
+        [
+            UserMessageThreadItem(
+                type="userMessage",
+                id="user-1",
+                content=[
+                    TextUserInput(type="text", text="hello", text_elements=[]),
+                    LocalImageUserInput(type="localImage", path="/tmp/image.png"),
+                    SkillUserInput(type="skill", name="Code", path="/skills/code"),
+                    MentionUserInput(type="mention", name="Docs", path="app://docs"),
+                ],
+            )
+        ]
+    )
+
+    assert items == [
+        {"type": "text", "text": "hello", "text_elements": []},
+        {"type": "localImage", "path": "/tmp/image.png"},
+        {"type": "skill", "name": "Code", "path": "/skills/code"},
+        {"type": "mention", "name": "Docs", "path": "app://docs"},
+    ]
+
+
+def test_codex_backend_thread_view_payload_includes_image_and_review_related_items() -> None:
+    backend = CodexAppServerBackend(SimpleNamespace())
+    context = ChatSessionContext(
+        session_id="session-1",
+        source="chat",
+        backend_id="codex",
+        project_path=Path("/tmp/project"),
+        channel_meta=None,
+    )
+
+    activity_events: list[dict[str, object]] = []
+    messages = []
+    activity_counter = [0]
+    sequence_counter = [0]
+
+    backend._append_thread_item_view(
+        context,
+        ImageViewThreadItem(type="imageView", id="image-view-1", path="/tmp/screenshot.png"),
+        messages,
+        activity_events,
+        activity_counter,
+        sequence_counter,
+    )
+    backend._append_thread_item_view(
+        context,
+        ImageGenerationThreadItem(
+            type="imageGeneration",
+            id="image-gen-1",
+            result="image generated",
+            revised_prompt="draw a skyline",
+            saved_path="/tmp/generated.png",
+            status="completed",
+        ),
+        messages,
+        activity_events,
+        activity_counter,
+        sequence_counter,
+    )
+
+    assert messages == []
+    assert [event["event"] for event in activity_events] == [
+        "plan",
+        "tool_call_start",
+        "tool_call_end",
+    ]
+    assert activity_events[0]["data"]["content"] == "Viewed image: /tmp/screenshot.png"
+    assert activity_events[1]["data"]["tool_name"] == "image_generation"
+    assert activity_events[2]["data"]["result"] == "Generated image: /tmp/generated.png"
 
 
 def test_codex_backend_start_turn_returns_native_turn_payload(

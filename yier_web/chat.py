@@ -8,7 +8,7 @@ import logging
 import os
 from pathlib import Path
 from time import time
-from typing import Any, AsyncIterator, Awaitable, Callable
+from typing import Any, AsyncIterator, Awaitable, Callable, Literal
 from uuid import uuid4
 
 from yier_agents import (
@@ -199,7 +199,7 @@ class ChatService:
         )
         self.codex_ipc_bridge = CodexThreadFollowerBridge(chat_service=self)
         self.codex_conversation_state = CodexConversationStateService(self)
-        self.backends = {
+        self.backends: dict[Literal["yier", "codex"], YierAgentBackend | CodexAppServerBackend] = {
             "yier": YierAgentBackend(self),
             "codex": CodexAppServerBackend(self),
         }

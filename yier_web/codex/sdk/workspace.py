@@ -5,10 +5,25 @@ import subprocess
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Protocol, Self
 
-from codex_app_server import Codex, Thread as CodexThread, ThreadSortKey, ThreadSourceKind
-from codex_app_server.generated.v2_all import ThreadReadResponse
+from codex_app_server import (
+    AppServerClient,
+    AppServerConfig,
+    Codex,
+    Thread as CodexThread,
+    ThreadSortKey,
+    ThreadSourceKind,
+)
+from codex_app_server.generated.v2_all import (
+    CustomSessionSource,
+    OtherSubAgentSource,
+    SubAgentSessionSource,
+    Thread as ThreadV2,
+    ThreadListResponse,
+    ThreadReadResponse,
+    ThreadSpawnSubAgentSource,
+)
 
 from yier_web.codex.sdk.config import DEFAULT_CODEX_LAUNCHER, build_app_server_config
 from yier_web.schemas import (
@@ -18,12 +33,40 @@ from yier_web.schemas import (
     CodexWorkspaceResponse,
 )
 
+if TYPE_CHECKING:
+    from yier_web.config import AppConfigService
+
 INTERACTIVE_THREAD_SOURCE_KINDS = [
     ThreadSourceKind.cli,
     ThreadSourceKind.vscode,
     ThreadSourceKind.exec,
     ThreadSourceKind.app_server,
 ]
+
+
+class _CodexWorkspaceSession(Protocol):
+    _client: AppServerClient
+
+    def __enter__(self) -> Self: ...
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None: ...
+
+    def thread_list(
+        self,
+        *,
+        archived: bool | None = None,
+        cursor: str | None = None,
+        cwd: str | None = None,
+        limit: int | None = None,
+        model_providers: list[str] | None = None,
+        search_term: str | None = None,
+        sort_key: ThreadSortKey | None = None,
+        source_kinds: list[ThreadSourceKind] | None = None,
+    ) -> ThreadListResponse: ...
+
+
+class _CodexWorkspaceFactory(Protocol):
+    def __call__(self, *, config: AppServerConfig) -> _CodexWorkspaceSession: ...
 
 
 @dataclass(slots=True)
@@ -36,8 +79,8 @@ class CodexWorkspaceService:
     def __init__(
         self,
         home_dir: Path,
-        config_service: Any | None = None,
-        codex_factory: Any | None = None,
+        config_service: "AppConfigService | None" = None,
+        codex_factory: _CodexWorkspaceFactory | None = None,
     ) -> None:
         self.home_dir = home_dir.resolve()
         self.config_service = config_service
@@ -103,14 +146,7 @@ class CodexWorkspaceService:
 
         try:
             with self.codex_factory(config=config) as codex:
-                thread_read = getattr(codex, "thread_read", None)
-                if callable(thread_read):
-                    return thread_read(normalized_thread_id, include_turns=include_turns)
-
-                client = getattr(codex, "_client", None)
-                if client is None:
-                    return None
-                return CodexThread(client, normalized_thread_id).read(
+                return CodexThread(codex._client, normalized_thread_id).read(
                     include_turns=include_turns
                 )
         except Exception:
@@ -262,15 +298,13 @@ class CodexWorkspaceService:
             last_seen_at=last_seen_at,
         )
 
-    def _sdk_config(self):
+    def _sdk_config(self) -> AppServerConfig | None:
         launcher_command = DEFAULT_CODEX_LAUNCHER
         client_cwd: str | None = None
         if self.config_service is not None:
             settings = self.config_service.load_web_settings().codex
             launcher_command = settings.launcher_command or DEFAULT_CODEX_LAUNCHER
-            project_root = getattr(self.config_service, "project_root", None)
-            if isinstance(project_root, Path):
-                client_cwd = str(project_root)
+            client_cwd = str(self.config_service.project_root)
         if client_cwd is None:
             client_cwd = str(self.home_dir)
         try:
@@ -283,20 +317,17 @@ class CodexWorkspaceService:
         except (RuntimeError, ValueError):
             return None
 
-    def _extract_sdk_session(self, thread: Any) -> CodexNativeSessionSummary | None:
-        thread_id = getattr(thread, "id", None)
-        if not isinstance(thread_id, str) or not thread_id.strip():
+    def _extract_sdk_session(self, thread: ThreadV2) -> CodexNativeSessionSummary | None:
+        thread_id = thread.id.strip()
+        if not thread_id:
             return None
 
-        if bool(getattr(thread, "ephemeral", False)):
+        if thread.ephemeral:
             return None
 
-        cwd = getattr(thread, "cwd", "")
-        if not isinstance(cwd, str):
-            cwd = ""
-
-        name = self._compact_text(getattr(thread, "name", None))
-        preview = self._compact_text(getattr(thread, "preview", None))
+        cwd = thread.cwd
+        name = self._compact_text(thread.name)
+        preview = self._compact_text(thread.preview)
         if preview is None:
             preview = name or thread_id
         title = name or preview or thread_id
@@ -306,8 +337,8 @@ class CodexWorkspaceService:
             thread_id=thread_id,
             title=title,
             preview=preview,
-            updated_at=float(getattr(thread, "updated_at", 0) or 0),
-            started_at=float(getattr(thread, "created_at", 0) or 0),
+            updated_at=float(thread.updated_at),
+            started_at=float(thread.created_at),
             status=self._thread_status(thread),
             cwd=cwd,
             project=project,
@@ -315,38 +346,21 @@ class CodexWorkspaceService:
             source=self._thread_source(thread),
         )
 
-    def _thread_source(self, thread: Any) -> str:
-        source = getattr(thread, "source", None)
-        root = getattr(source, "root", None)
-        if root is None:
-            return "active"
-        custom = getattr(root, "custom", None)
-        if isinstance(custom, str) and custom:
-            return custom
-        sub_agent = getattr(root, "sub_agent", None)
-        if sub_agent is not None:
-            source_type = getattr(sub_agent, "type", None)
-            if isinstance(source_type, str) and source_type:
-                return source_type
-            sub_agent_root = getattr(sub_agent, "root", None)
-            sub_agent_value = getattr(sub_agent_root, "value", None)
-            if isinstance(sub_agent_value, str) and sub_agent_value:
-                return sub_agent_value
-        value = getattr(root, "value", None)
-        if isinstance(value, str) and value:
-            return value
-        kind = getattr(root, "type", None)
-        if isinstance(kind, str) and kind:
-            return kind
-        return str(root)
+    def _thread_source(self, thread: ThreadV2) -> str:
+        source_root = thread.source.root
+        if isinstance(source_root, CustomSessionSource):
+            return source_root.custom
+        if isinstance(source_root, SubAgentSessionSource):
+            sub_agent_source = source_root.sub_agent.root
+            if isinstance(sub_agent_source, OtherSubAgentSource):
+                return sub_agent_source.other
+            if isinstance(sub_agent_source, ThreadSpawnSubAgentSource):
+                return "threadSpawn"
+            return sub_agent_source.value
+        return source_root.value
 
-    def _thread_status(self, thread: Any) -> str:
-        status = getattr(thread, "status", None)
-        root = getattr(status, "root", status)
-        value = getattr(root, "type", None)
-        if isinstance(value, str) and value:
-            return value
-        return "idle"
+    def _thread_status(self, thread: ThreadV2) -> str:
+        return thread.status.root.type
 
     def _list_active_sessions_from_disk(self) -> list[CodexNativeSessionSummary]:
         if not self.sessions_dir.exists():

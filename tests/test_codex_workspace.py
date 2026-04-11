@@ -22,6 +22,7 @@ class _FakeCodexClient:
         self.thread_read_response = thread_read_response
         self.error = error
         self.calls: list[dict[str, object]] = []
+        self._client = self
 
     def __enter__(self) -> _FakeCodexClient:
         return self

@@ -54,8 +54,17 @@ const workspace = useWorkspaceAppContext()
     }"
   >
     <div
-      class="flex min-h-0 flex-1 flex-col overflow-hidden rounded-3xl border border-[color:var(--app-border)] bg-[color:var(--app-panel)] shadow-[var(--app-shadow)] backdrop-blur-[14px] max-[1023px]:rounded-[1.35rem]"
+      class="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-3xl border border-[color:var(--app-border)] bg-[color:var(--app-panel)] shadow-[var(--app-shadow)] backdrop-blur-[14px] max-[1023px]:rounded-[1.35rem]"
     >
+      <div
+        v-if="workspace.isSwitchingSession"
+        class="absolute inset-0 z-10 flex items-center justify-center bg-[rgba(255,252,245,0.74)] backdrop-blur-[2px]"
+      >
+        <div class="flex items-center gap-3 rounded-2xl border border-[rgba(21,94,99,0.12)] bg-white/86 px-4 py-3 text-sm font-semibold text-[color:var(--app-accent-deep)] shadow-[0_18px_40px_rgba(34,66,72,0.08)]">
+          <ProgressSpinner stroke-width="5" style="width: 1.35rem; height: 1.35rem" />
+          <span>Switching session…</span>
+        </div>
+      </div>
       <div class="min-h-0 flex-1">
         <ChatTimeline
           :messages="workspace.chatMessages"

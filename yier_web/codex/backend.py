@@ -18,7 +18,6 @@ from codex_app_server import (
     LocalImageInput,
     MentionInput,
     SkillInput,
-    AsyncThread as CodexThread,
     ThreadResumeParams,
     ThreadStartParams,
     TextInput,
@@ -66,7 +65,6 @@ from codex_app_server.generated.v2_all import (
     UserInput,
     UserMessageThreadItem,
     WebSearchThreadItem,
-    Turn,
     TurnPlanUpdatedNotification,
     TurnStartResponse,
     TurnStartedNotification,
@@ -95,6 +93,7 @@ from yier_web.codex.sdk.config import (
 )
 from yier_web.codex.sdk.client import (
     ApprovalAwareAppServerClient,
+    ApprovalAwareAsyncThread,
     ApprovalAwareAsyncTurnHandle,
 )
 from yier_web.schemas import StoredSessionMessage
@@ -694,11 +693,9 @@ class CodexAppServerBackend(ChatBackend):
         assert runtime.client is not None
         assert runtime.thread_id is not None
         thread_handle = self._thread_handle(runtime.client, runtime.thread_id)
-        turn_handle = await _maybe_await(
-            thread_handle.turn(
+        turn_handle = await thread_handle.turn(
                 self._sdk_input_from_payload(turn_input),
                 **self._turn_params(context),
-            )
         )
         turn_id = turn_handle.id
         return (
@@ -2232,17 +2229,14 @@ class CodexAppServerBackend(ChatBackend):
         thread_handle = self._thread_handle(runtime.client, runtime.thread_id)
         return await _maybe_await(thread_handle.read(include_turns=include_turns))
 
-    def _thread_handle(self, client: Any, thread_id: str) -> Any:
-        thread_factory = getattr(client, "thread", None)
-        if callable(thread_factory):
-            return thread_factory(thread_id)
-        return CodexThread(client, thread_id)
+    def _thread_handle(self, client: ApprovalAwareAppServerClient, thread_id: str) -> ApprovalAwareAsyncThread:
+        return client.thread(thread_id)
 
     def _turn_handle(
         self,
         runtime: CodexSessionRuntime,
         turn_id: str,
-    ) -> Any:
+    ) -> ApprovalAwareAsyncTurnHandle:
         stored_handle = runtime.turn_handles.get(turn_id)
         if stored_handle is not None:
             return stored_handle

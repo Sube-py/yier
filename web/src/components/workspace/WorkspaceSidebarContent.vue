@@ -70,6 +70,7 @@ const workspace = useWorkspaceAppContext()
     "
     :projects="workspace.activeCodexProjects"
     :active-session-id="workspace.activeSessionId"
+    :opening-session-id="workspace.openingSessionId"
     :active-session-status="workspace.activeSessionRuntime?.status ?? null"
     :active-project-path="workspace.activeProjectPath"
     :surface="surface === 'drawer' ? 'sheet' : 'sidebar'"
@@ -106,6 +107,8 @@ const workspace = useWorkspaceAppContext()
           <button
             type="button"
             class="session-history-main rounded-[0.8rem] border-0 bg-transparent px-[0.65rem] py-[0.55rem] text-left text-inherit transition hover:bg-[rgba(21,94,99,0.06)] focus-visible:outline-2 focus-visible:outline-[rgba(21,94,99,0.38)]"
+            :disabled="workspace.isSwitchingSession"
+            :aria-busy="workspace.openingSessionId === session.session_id"
             @click="workspace.openSessionFromHistory(session.session_id)"
           >
             <div class="min-w-0">
@@ -133,7 +136,15 @@ const workspace = useWorkspaceAppContext()
                   <span> · {{ session.backend_id }}</span>
                 </template>
                 <span> · </span>
-                {{ workspace.formatSessionUpdatedAt(session.updated_at) }}
+                <template v-if="workspace.openingSessionId === session.session_id">
+                  <span class="inline-flex items-center gap-1 font-semibold text-[color:var(--app-accent-deep)]">
+                    <i class="pi pi-spin pi-spinner text-[0.72rem]" />
+                    <span>Loading</span>
+                  </span>
+                </template>
+                <template v-else>
+                  {{ workspace.formatSessionUpdatedAt(session.updated_at) }}
+                </template>
               </p>
             </div>
           </button>

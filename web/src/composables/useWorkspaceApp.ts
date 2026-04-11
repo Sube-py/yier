@@ -224,6 +224,7 @@ function createWorkspaceApp() {
   })
   const activeSessionRuntime = ref<BackendRuntime | null>(null)
   const activeSessionId = ref(localStorage.getItem(SESSION_STORAGE_KEY) ?? '')
+  const openingSessionId = ref('')
   const chatMessages = ref<UiChatMessage[]>([])
   const activities = ref<ChatActivity[]>([])
   const codexTurnTimings = ref<CodexTurnTiming[]>([])
@@ -350,11 +351,16 @@ function createWorkspaceApp() {
       : llmReady.value
   })
   const canSend = computed(
-    () => activeBackendReady.value && !isSending.value && Boolean(activeSessionId.value),
+    () =>
+      activeBackendReady.value &&
+      !isSending.value &&
+      !openingSessionId.value &&
+      Boolean(activeSessionId.value),
   )
   const canSendToSession = computed(
     () => canSend.value && activeSession.value?.source !== 'channel',
   )
+  const isSwitchingSession = computed(() => Boolean(openingSessionId.value))
   const activeProjectPath = computed(
     () => activeSession.value?.project_path ?? newSessionDraft.projectPath,
   )
@@ -1644,16 +1650,7 @@ function createWorkspaceApp() {
     void hydrateOlderActivityEvents(sessionId, requestId)
   }
 
-  async function openSessionFromHistory(sessionId: string) {
-    closeCodexSheets()
-    if (!sessionId || sessionId === activeSessionId.value) {
-      if (!isChatRoute.value) {
-        await router.push({ name: 'chat' })
-      }
-      return
-    }
-
-    activeSessionId.value = sessionId
+  function resetActiveSessionView() {
     chatMessages.value = []
     activities.value = []
     resetLoadedTranscriptState()
@@ -1663,9 +1660,37 @@ function createWorkspaceApp() {
     activeCodexGoalLoop.value = null
     hydrateCodexGoalLoopDraft(null)
     backgroundActivityIdsByToolCallId.clear()
+  }
+
+  async function switchToSession(sessionId: string) {
+    activeSessionId.value = sessionId
+    resetActiveSessionView()
     await ensureSession()
     if (!isChatRoute.value) {
       await router.push({ name: 'chat' })
+    }
+  }
+
+  async function openSessionFromHistory(sessionId: string) {
+    closeCodexSheets()
+    if (!sessionId || sessionId === activeSessionId.value) {
+      if (!isChatRoute.value) {
+        await router.push({ name: 'chat' })
+      }
+      return
+    }
+
+    if (openingSessionId.value) {
+      return
+    }
+
+    openingSessionId.value = sessionId
+    try {
+      await switchToSession(sessionId)
+    } finally {
+      if (openingSessionId.value === sessionId) {
+        openingSessionId.value = ''
+      }
     }
   }
 
@@ -1675,18 +1700,33 @@ function createWorkspaceApp() {
     }
 
     closeSidebarDrawer()
+
+    if (threadId === activeSessionId.value) {
+      await openSessionFromHistory(threadId)
+      return true
+    }
+
+    if (openingSessionId.value) {
+      return false
+    }
+
     errorMessage.value = ''
     successMessage.value = ''
+    openingSessionId.value = threadId
     try {
       const payload = await apiPost<OpenCodexSessionResponse>('/api/codex/sessions/open', {
         thread_id: threadId,
       })
       await refreshSessionHistory()
-      await openSessionFromHistory(payload.session_id)
+      await switchToSession(payload.session_id)
       return true
     } catch (error) {
       errorMessage.value = toErrorMessage(error)
       return false
+    } finally {
+      if (openingSessionId.value === threadId) {
+        openingSessionId.value = ''
+      }
     }
   }
 
@@ -4944,10 +4984,12 @@ function createWorkspaceApp() {
     channelLoginState,
     activeSessionRuntime,
     activeSessionId,
+    openingSessionId,
     chatMessages,
     activities,
     codexTurnTimings,
     isHydratingOlderActivity,
+    isSwitchingSession,
     sessionHistory,
     activeCodexWorkMode,
     activeCodexGoalLoop,

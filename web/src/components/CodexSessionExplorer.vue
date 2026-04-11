@@ -12,12 +12,14 @@ const props = withDefaults(
   defineProps<{
     projects: CodexProjectGroup[]
     activeSessionId: string
+    openingSessionId?: string
     activeSessionStatus?: string | null
     activeProjectPath?: string
     surface?: 'sidebar' | 'sheet'
     closeable?: boolean
   }>(),
   {
+    openingSessionId: '',
     activeSessionStatus: null,
     activeProjectPath: '',
     surface: 'sidebar',
@@ -338,8 +340,11 @@ const selectNewProject = async () => {
               :class="{
                 'bg-[rgba(232,244,241,0.72)] shadow-[inset_3px_0_0_rgba(21,94,99,0.52)]':
                   session.thread_id === activeSessionId,
+                'cursor-progress opacity-75': session.thread_id === openingSessionId,
               }"
               :title="session.cwd || session.title"
+              :disabled="Boolean(openingSessionId)"
+              :aria-busy="session.thread_id === openingSessionId"
               @click="openSession(session.thread_id)"
             >
               <div class="block min-w-0 max-w-full overflow-hidden">
@@ -364,7 +369,11 @@ const selectNewProject = async () => {
                     </div>
                   </div>
                   <p class="shrink-0 whitespace-nowrap text-right text-[0.72rem] leading-[1.35] text-[color:var(--app-text-soft)]">
-                    <span>{{ formatTimestamp(session.updated_at) }}</span>
+                    <span v-if="session.thread_id === openingSessionId" class="inline-flex items-center gap-1 font-semibold text-[color:var(--app-accent-deep)]">
+                      <i class="pi pi-spin pi-spinner text-[0.7rem]" />
+                      <span>Loading</span>
+                    </span>
+                    <span v-else>{{ formatTimestamp(session.updated_at) }}</span>
                   </p>
                 </div>
               </div>

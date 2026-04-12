@@ -21,13 +21,20 @@ if TYPE_CHECKING:
 INITIALIZING_CLIENT_ID = "initializing-client"
 IPC_REQUEST_TIMEOUT_SECONDS = 5.0
 IPC_RECONNECT_DELAY_SECONDS = 1.0
+IPC_MAX_FRAME_BYTES = 256 * 1024 * 1024  # 256 MB (matches original Codex protocol)
 IPC_DEBUG_ENV = "YIER_CODEX_IPC_DEBUG"
 IPC_DEBUG_FULL_ENV = "YIER_CODEX_IPC_DEBUG_FULL"
 IPC_DEBUG_TEXT_LIMIT = 300
 IPC_METHOD_VERSIONS = {
+    # broadcast methods
     "thread-stream-state-changed": 5,
+    "thread-read-state-changed": 1,
     "thread-archived": 2,
     "thread-unarchived": 1,
+    "thread-queued-followups-changed": 1,
+    "query-cache-invalidate": 1,
+    "client-status-changed": 0,
+    # request methods (thread-follower series)
     "thread-follower-start-turn": 1,
     "thread-follower-steer-turn": 1,
     "thread-follower-interrupt-turn": 1,
@@ -39,7 +46,6 @@ IPC_METHOD_VERSIONS = {
     "thread-follower-submit-user-input": 1,
     "thread-follower-submit-mcp-server-elicitation-response": 1,
     "thread-follower-set-queued-follow-ups-state": 1,
-    "thread-queued-followups-changed": 1,
 }
 RequestCanHandle = Callable[[dict[str, Any]], Awaitable[bool]]
 RequestHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
@@ -93,19 +99,9 @@ def _ipc_debug_log(message: str, **fields: Any) -> None:
         return
     filtered_fields = {key: value for key, value in fields.items() if value is not None}
     if filtered_fields:
-        codex_ipc_data_struct_jsonl = Path(
-            "/Users/sube/me/yier/dist/codex_ipc_data_struct.jsonl"
-        )
         rendered = ""
         for key, value in filtered_fields.items():
-            debug_json = _debug_json(value)
-            if codex_ipc_data_struct_jsonl.exists():
-                with codex_ipc_data_struct_jsonl.open("a") as f:
-                    f.write(
-                        json.dumps({"key": key, "value": value}, ensure_ascii=False)
-                        + "\n"
-                    )
-            rendered += f"{key}={_truncate_debug_text(debug_json)}\n"
+            rendered += f"{key}={_truncate_debug_text(_debug_json(value))}\n"
         logger.warning(f"[codex-ipc] {message} | {rendered}\n\n\n\n")
         return
     logger.warning(f"[codex-ipc] {message}")
@@ -185,6 +181,10 @@ async def _maybe_await(value: Any) -> Any:
 async def _read_frame(reader: asyncio.StreamReader) -> dict[str, Any]:
     length_bytes = await reader.readexactly(4)
     payload_length = int.from_bytes(length_bytes, byteorder="little")
+    if payload_length > IPC_MAX_FRAME_BYTES:
+        raise ValueError(
+            f"IPC frame exceeded limit ({payload_length} > {IPC_MAX_FRAME_BYTES} bytes)"
+        )
     payload_bytes = await reader.readexactly(payload_length)
     payload = json.loads(payload_bytes.decode("utf-8"))
     if not isinstance(payload, dict):
@@ -420,17 +420,14 @@ class CodexIpcClient:
         message_type = str(message.get("type", ""))
         if message_type == "broadcast":
             await self._handle_broadcast(message)
-            return
-        if message_type == "client-discovery-request":
+        elif message_type == "client-discovery-request":
             await self._handle_client_discovery_request(message)
-            return
-        if message_type == "response":
+        elif message_type == "response":
             request_id = str(message.get("requestId", ""))
             future = self._pending_responses.get(request_id)
             if future is not None and not future.done():
                 future.set_result(message)
-            return
-        if message_type == "request":
+        elif message_type == "request":
             await self._handle_request(message)
 
     async def _handle_broadcast(self, message: dict[str, Any]) -> None:
@@ -547,6 +544,12 @@ class CodexIpcClient:
         if writer is None:
             raise RuntimeError("not-connected")
         payload_bytes = _json_dumps(payload)
+        if len(payload_bytes) > IPC_MAX_FRAME_BYTES:
+            logger.warning(
+                "[codex-ipc] dropping message: payload too large "
+                f"({len(payload_bytes)} > {IPC_MAX_FRAME_BYTES} bytes)"
+            )
+            return
         _ipc_debug_log(
             "write frame",
             bytes=len(payload_bytes),
@@ -895,6 +898,14 @@ class CodexThreadFollowerBridge:
             "thread-queued-followups-changed",
             self._handle_thread_queued_followups_changed_broadcast,
         )
+        self.client.add_broadcast_handler(
+            "thread-read-state-changed",
+            self._handle_thread_read_state_changed_broadcast,
+        )
+        self.client.add_broadcast_handler(
+            "client-status-changed",
+            self._handle_client_status_changed_broadcast,
+        )
 
     async def _handle_thread_stream_state_changed_broadcast(
         self,
@@ -953,6 +964,65 @@ class CodexThreadFollowerBridge:
                 "session_id": session_id,
                 "source_client_id": message.get("sourceClientId"),
                 "change_type": "queued_followups",
+            },
+        )
+
+    async def _handle_thread_read_state_changed_broadcast(
+        self,
+        message: dict[str, Any],
+    ) -> None:
+        params = message.get("params")
+        if not isinstance(params, dict):
+            return
+        session_id = self._conversation_id(params)
+        if not session_id or not self._is_codex_session(session_id):
+            return
+
+        has_unread_turn = params.get("hasUnreadTurn")
+        _ipc_debug_log(
+            "handle read state broadcast",
+            session_id=session_id,
+            source_client_id=message.get("sourceClientId"),
+            has_unread_turn=has_unread_turn,
+        )
+        if isinstance(has_unread_turn, bool):
+            self.chat_service.update_session_backend_state(
+                session_id,
+                {"has_unread_turn": has_unread_turn},
+            )
+        await self.chat_service.event_broker.publish(
+            "codex_session_updated",
+            {
+                "session_id": session_id,
+                "source_client_id": message.get("sourceClientId"),
+                "change_type": "read_state_changed",
+            },
+        )
+
+    async def _handle_client_status_changed_broadcast(
+        self,
+        message: dict[str, Any],
+    ) -> None:
+        params = message.get("params")
+        if not isinstance(params, dict):
+            return
+        client_id = params.get("clientId")
+        client_type = params.get("clientType")
+        status = params.get("status")
+        _ipc_debug_log(
+            "handle client status broadcast",
+            client_id=client_id,
+            client_type=client_type,
+            status=status,
+            source_client_id=message.get("sourceClientId"),
+        )
+        await self.chat_service.event_broker.publish(
+            "codex_ipc_client_status_changed",
+            {
+                "client_id": client_id,
+                "client_type": client_type,
+                "status": status,
+                "source_client_id": message.get("sourceClientId"),
             },
         )
 
@@ -1269,7 +1339,7 @@ class CodexThreadFollowerBridge:
         return metadata.get("backend_id") == "codex"
 
     def _conversation_id(self, params: dict[str, Any]) -> str:
-        for key in ("conversationId", "conversation_id", "threadId", "thread_id"):
+        for key in ("conversationId", "threadId"):
             value = params.get(key)
             if isinstance(value, str) and value.strip():
                 return value.strip()

@@ -110,6 +110,7 @@ class CodexConversationStateService:
             "gitInfo": git_info,
             "resumeState": backend_state.get("resume_state") or "resumed",
             "latestTokenUsageInfo": backend_state.get("latest_token_usage_info"),
+            "workspaceKind": backend_state.get("workspace_kind") or "project",
             "cwd": cwd,
             "threadId": runtime.thread_id or session_id,
             "threadRuntimeStatus": thread_runtime_status,

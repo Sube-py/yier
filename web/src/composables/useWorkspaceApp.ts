@@ -64,6 +64,7 @@ import type {
   HealthResponse,
   LlmProvider,
   McpConfigResponse,
+  MessageAttachment,
   OpenCodexSessionResponse,
   PendingApproval,
   SaveAppSettingsRequest,
@@ -201,6 +202,12 @@ const CODEX_BACKGROUND_TOOL_NAMES = new Set([
   'resume_codex_background_session',
 ])
 
+interface QueuedComposerFollowup {
+  id: string
+  message: string
+  createdAt: number
+}
+
 function createWorkspaceApp() {
   const route = useRoute()
   const router = useRouter()
@@ -242,8 +249,10 @@ function createWorkspaceApp() {
   const codexAdvancedModeFabTop = ref(cachedCodexAdvancedModeFab.top)
   const composerText = ref('')
   const composerAttachments = ref<ComposerAttachmentState[]>([])
+  const queuedComposerFollowups = ref<QueuedComposerFollowup[]>([])
   const steerText = ref('')
   const isSteering = ref(false)
+  const steeringQueuedComposerFollowupId = ref('')
   const isInterrupting = ref(false)
   const composerSelectionStart = ref(0)
   const composerSelectionEnd = ref(0)
@@ -322,6 +331,7 @@ function createWorkspaceApp() {
   let nextTimelineSequence = 0
   let currentStreamSequenceHint: number | null = null
   let isReplayingSessionActivityEvents = false
+  let isFlushingQueuedComposerFollowups = false
   const backgroundActivityIdsByToolCallId = new Map<string, string>()
   const loadedTranscriptMessagesRaw = ref<StoredMessage[]>([])
   const loadedActivityEventsRaw = ref<SessionTranscriptResponse['activity_events']>([])
@@ -350,17 +360,23 @@ function createWorkspaceApp() {
       ? Boolean(appForm.codexLauncherCommand.trim())
       : llmReady.value
   })
-  const canSend = computed(
+  const canCompose = computed(
     () =>
       activeBackendReady.value &&
-      !isSending.value &&
       !openingSessionId.value &&
       Boolean(activeSessionId.value),
+  )
+  const canSend = computed(() => canCompose.value && !isSending.value)
+  const canComposeToSession = computed(
+    () => canCompose.value && activeSession.value?.source !== 'channel',
   )
   const canSendToSession = computed(
     () => canSend.value && activeSession.value?.source !== 'channel',
   )
   const isSwitchingSession = computed(() => Boolean(openingSessionId.value))
+  const showQueuedComposerFollowupsPanel = computed(
+    () => isCodexWorkspace.value && queuedComposerFollowups.value.length > 0,
+  )
   const activeProjectPath = computed(
     () => activeSession.value?.project_path ?? newSessionDraft.projectPath,
   )
@@ -380,7 +396,7 @@ function createWorkspaceApp() {
         ? 'Multi-platform runtime, account status, and live channel sessions'
         : isCodexWorkspace.value
           ? 'Project-aware Codex sessions with mode and permission control'
-        : 'One calm surface for code, files, and config',
+          : 'One calm surface for code, files, and config',
   )
   const workspaceSessionHistory = computed(() =>
     activeWorkspaceSurface.value === 'codex' ? codexSessionHistory.value : sessionHistory.value,
@@ -431,10 +447,10 @@ function createWorkspaceApp() {
     value: WorkspaceSurface
     disabled: boolean
   }> = [
-    { label: 'Codex', value: 'codex', disabled: false },
-    { label: 'Yier Agent', value: 'yier', disabled: false },
-    { label: 'Claude Code', value: 'claude', disabled: true },
-  ]
+      { label: 'Codex', value: 'codex', disabled: false },
+      { label: 'Yier Agent', value: 'yier', disabled: false },
+      { label: 'Claude Code', value: 'claude', disabled: true },
+    ]
   const workspaceSurfaceModel = computed<WorkspaceSurface>({
     get() {
       return activeWorkspaceSurface.value
@@ -446,9 +462,9 @@ function createWorkspaceApp() {
   const composerPlaceholder = computed(() =>
     activeBackendId.value === 'codex'
       ? activeCodexWorkMode.value === 'plan'
-        ? 'Ask Codex anything or use /codex list to browse projects'
-        : 'Ask for follow-up changes or use /codex list to browse projects'
-      : 'Ask yier to inspect code, read files, or use /codex list to jump into Codex...',
+        ? 'Ask Codex anything'
+        : 'Ask for follow-up changes'
+      : 'Ask yier to inspect code, read files...',
   )
   const hasCodexGoalLoop = computed(
     () => isCodexWorkspace.value && activeCodexGoalLoop.value !== null,
@@ -726,13 +742,13 @@ function createWorkspaceApp() {
         : apiGet<SessionListResponse>('/api/chat/sessions'),
       prefersCodexSurface
         ? safeApiGet<CodexWorkspaceResponse>('/api/codex/workspace', {
-            projects: [],
-            paired_editors: [],
-          })
+          projects: [],
+          paired_editors: [],
+        })
         : Promise.resolve({
-            projects: [],
-            paired_editors: [],
-          } satisfies CodexWorkspaceResponse),
+          projects: [],
+          paired_editors: [],
+        } satisfies CodexWorkspaceResponse),
       safeApiGet<ChannelWorkspaceResponse>('/api/channel/workspace', {
         platforms: [],
         accounts: [],
@@ -791,12 +807,12 @@ function createWorkspaceApp() {
     const payload =
       backendId === 'codex'
         ? await apiPost<{ session_id: string }>('/api/codex/sessions', {
-            project_path: projectPath,
-          })
+          project_path: projectPath,
+        })
         : await apiPost<{ session_id: string }>('/api/chat/sessions', {
-            backend_id: backendId,
-            project_path: projectPath,
-          } satisfies CreateSessionRequest)
+          backend_id: backendId,
+          project_path: projectPath,
+        } satisfies CreateSessionRequest)
     activeSessionId.value = payload.session_id
     chatMessages.value = []
     activities.value = []
@@ -805,6 +821,8 @@ function createWorkspaceApp() {
     activeSessionRuntime.value = null
     activeCodexWorkMode.value = 'build'
     backgroundActivityIdsByToolCallId.clear()
+    clearQueuedComposerFollowups()
+    resetComposerDraft()
     await refreshSessionHistory()
     successMessage.value = 'Started a fresh session.'
     if (navigateToChat && !isChatRoute.value) {
@@ -861,22 +879,22 @@ function createWorkspaceApp() {
   async function runChatMessage(
     sessionId: string,
     content: string,
-    options: { finalOnly?: boolean; attachmentIds?: string[]; attachmentLabels?: string[] } = {},
+    options: {
+      finalOnly?: boolean
+      attachmentIds?: string[]
+      attachments?: MessageAttachment[]
+    } = {},
   ) {
     latestSessionLoadRequestId += 1
     isHydratingOlderActivity.value = false
     activities.value = activities.value.filter(
       (item) => item.kind === 'background' && item.state === 'running',
     )
-    composerText.value = ''
-    clearComposerAttachments()
-    composerSelectionStart.value = 0
-    composerSelectionEnd.value = 0
-    composerSelectionVersion.value += 1
-    const attachmentSummary = options.attachmentLabels?.length
-      ? `\n${options.attachmentLabels.map((label) => `[Attachment] ${label}`).join('\n')}`
-      : ''
-    chatMessages.value.push(makeUiMessage('user', `${content}${attachmentSummary}`.trim()))
+    chatMessages.value.push(
+      makeUiMessage('user', content.trim(), activeSession.value?.source ?? 'chat', activeSession.value?.channel_meta ?? null, {
+        attachments: options.attachments ?? [],
+      }),
+    )
 
     const body: ChatStreamRequest = {
       session_id: sessionId,
@@ -918,6 +936,96 @@ function createWorkspaceApp() {
 
     await streamChat(body, handleStreamEvent)
     await refreshSessionHistory()
+  }
+
+  function resetComposerDraft() {
+    composerText.value = ''
+    clearComposerAttachments()
+    composerSelectionStart.value = 0
+    composerSelectionEnd.value = 0
+    composerSelectionVersion.value += 1
+  }
+
+  function clearQueuedComposerFollowups() {
+    queuedComposerFollowups.value = []
+    steeringQueuedComposerFollowupId.value = ''
+  }
+
+  function enqueueComposerFollowup(message: string) {
+    queuedComposerFollowups.value = [
+      ...queuedComposerFollowups.value,
+      {
+        id: createClientId(),
+        message,
+        createdAt: Date.now(),
+      },
+    ]
+    resetComposerDraft()
+    successMessage.value = 'Queued as the next follow-up.'
+  }
+
+  async function sendComposerMessage(
+    content: string,
+    options: { attachmentIds?: string[]; attachments?: MessageAttachment[] } = {},
+  ) {
+    isSending.value = true
+    errorMessage.value = ''
+    successMessage.value = ''
+
+    try {
+      if (await handleCodexSlashCommand(content)) {
+        return true
+      }
+      resetComposerDraft()
+      await runChatMessage(activeSessionId.value, content, options)
+      return true
+    } catch (error) {
+      errorMessage.value = toErrorMessage(error)
+      activities.value.push(
+        makeActivity({
+          title: 'Run failed',
+          detail: toErrorMessage(error),
+          state: 'error',
+          kind: 'status',
+        }),
+      )
+      return false
+    } finally {
+      isSending.value = false
+    }
+  }
+
+  async function flushQueuedComposerFollowups() {
+    if (
+      isFlushingQueuedComposerFollowups ||
+      isSending.value ||
+      !canComposeToSession.value ||
+      !activeSessionId.value
+    ) {
+      return
+    }
+
+    isFlushingQueuedComposerFollowups = true
+    try {
+      while (
+        !isSending.value &&
+        canComposeToSession.value &&
+        Boolean(activeSessionId.value) &&
+        queuedComposerFollowups.value.length
+      ) {
+        const [nextFollowup, ...rest] = queuedComposerFollowups.value
+        if (!nextFollowup) {
+          break
+        }
+        queuedComposerFollowups.value = rest
+        const sent = await sendComposerMessage(nextFollowup.message)
+        if (!sent) {
+          break
+        }
+      }
+    } finally {
+      isFlushingQueuedComposerFollowups = false
+    }
   }
 
   function handleCodexSessionStart(projectPath: string) {
@@ -1322,35 +1430,28 @@ function createWorkspaceApp() {
       errorMessage.value = 'Please wait for attachments to finish uploading.'
       return
     }
-    if ((!content && !readyAttachments.length) || !canSendToSession.value) {
+    if ((!content && !readyAttachments.length) || !canComposeToSession.value) {
       return
     }
 
-    isSending.value = true
-    errorMessage.value = ''
-    successMessage.value = ''
-
-    try {
-      if (await handleCodexSlashCommand(content)) {
+    if (isSending.value) {
+      if (readyAttachments.length) {
+        errorMessage.value = 'Attachments can only be sent with the active prompt, not queued follow-ups.'
         return
       }
-      await runChatMessage(activeSessionId.value, content, {
-        attachmentIds: readyAttachments.map((attachment) => attachment.id),
-        attachmentLabels: readyAttachments.map((attachment) => attachment.name),
-      })
-    } catch (error) {
-      errorMessage.value = toErrorMessage(error)
-      activities.value.push(
-        makeActivity({
-          title: 'Run failed',
-          detail: toErrorMessage(error),
-          state: 'error',
-          kind: 'status',
-        }),
-      )
-    } finally {
-      isSending.value = false
+      if (content.startsWith('/codex')) {
+        errorMessage.value = 'Slash commands cannot be queued while a Codex turn is running.'
+        return
+      }
+      enqueueComposerFollowup(content)
+      return
     }
+
+    await sendComposerMessage(content, {
+      attachmentIds: readyAttachments.map((attachment) => attachment.id),
+      attachments: readyAttachments.map(toMessageAttachment),
+    })
+    await flushQueuedComposerFollowups()
   }
 
   async function uploadComposerFiles(files: File[] | FileList) {
@@ -1384,10 +1485,10 @@ function createWorkspaceApp() {
     composerAttachments.value = composerAttachments.value.map((attachment) =>
       attachment.local_id === localId
         ? {
-            ...attachment,
-            status: 'uploading',
-            error: null,
-          }
+          ...attachment,
+          status: 'uploading',
+          error: null,
+        }
         : attachment,
     )
     const formData = new FormData()
@@ -1402,23 +1503,23 @@ function createWorkspaceApp() {
       composerAttachments.value = composerAttachments.value.map((attachment) =>
         attachment.local_id === localId
           ? {
-              ...uploaded,
-              local_id: localId,
-              status: 'ready',
-              error: null,
-              file: null,
-            }
+            ...uploaded,
+            local_id: localId,
+            status: 'ready',
+            error: null,
+            file: null,
+          }
           : attachment,
       )
     } catch (error) {
       composerAttachments.value = composerAttachments.value.map((attachment) =>
         attachment.local_id === localId
           ? {
-              ...attachment,
-              status: 'error',
-              error: toErrorMessage(error),
-              file,
-            }
+            ...attachment,
+            status: 'error',
+            error: toErrorMessage(error),
+            file,
+          }
           : attachment,
       )
     }
@@ -1457,7 +1558,7 @@ function createWorkspaceApp() {
   async function submitCodexSteer() {
     const message = steerText.value.trim()
     if (!message || !activeSessionId.value || isSteering.value) {
-      return
+      return false
     }
     isSteering.value = true
     errorMessage.value = ''
@@ -1470,10 +1571,38 @@ function createWorkspaceApp() {
       )
       steerText.value = ''
       successMessage.value = 'Steer instruction sent to the active Codex turn.'
+      return true
     } catch (error) {
       errorMessage.value = toErrorMessage(error)
+      return false
     } finally {
       isSteering.value = false
+    }
+  }
+
+  async function submitQueuedComposerFollowupSteer(followupId: string) {
+    const followup = queuedComposerFollowups.value.find((item) => item.id === followupId)
+    if (!followup || !activeSessionId.value || isSteering.value) {
+      return
+    }
+
+    steeringQueuedComposerFollowupId.value = followupId
+    steerText.value = followup.message
+    const steered = await submitCodexSteer()
+    if (steered) {
+      queuedComposerFollowups.value = queuedComposerFollowups.value.filter(
+        (item) => item.id !== followupId,
+      )
+    }
+    steeringQueuedComposerFollowupId.value = ''
+  }
+
+  function removeQueuedComposerFollowup(followupId: string) {
+    queuedComposerFollowups.value = queuedComposerFollowups.value.filter(
+      (item) => item.id !== followupId,
+    )
+    if (steeringQueuedComposerFollowupId.value === followupId) {
+      steeringQueuedComposerFollowupId.value = ''
     }
   }
 
@@ -1660,6 +1789,7 @@ function createWorkspaceApp() {
     activeCodexGoalLoop.value = null
     hydrateCodexGoalLoopDraft(null)
     backgroundActivityIdsByToolCallId.clear()
+    clearQueuedComposerFollowups()
   }
 
   async function switchToSession(sessionId: string) {
@@ -1795,9 +1925,9 @@ function createWorkspaceApp() {
         sessions: project.sessions.map((session) =>
           session.thread_id === threadId
             ? {
-                ...session,
-                codex_goal_loop: normalized,
-              }
+              ...session,
+              codex_goal_loop: normalized,
+            }
             : session,
         ),
       })),
@@ -2902,7 +3032,8 @@ function createWorkspaceApp() {
     return messages
       .filter(
         (message) =>
-          (message.role === 'user' || message.role === 'assistant') && message.content,
+          (message.role === 'user' || message.role === 'assistant') &&
+          (Boolean(message.content) || (message.attachments?.length ?? 0) > 0),
       )
       .map((message) =>
         makeUiMessage(
@@ -2912,6 +3043,7 @@ function createWorkspaceApp() {
           message.channel_meta ?? null,
           {
             sequence: message.sequence,
+            attachments: message.attachments ?? [],
           },
         ),
       )
@@ -2922,7 +3054,11 @@ function createWorkspaceApp() {
     content: string,
     source: 'chat' | 'channel' = 'chat',
     channelMeta: UiChatMessage['channelMeta'] = null,
-    options: { draftId?: string | null; sequence?: number | null } = {},
+    options: {
+      draftId?: string | null
+      sequence?: number | null
+      attachments?: MessageAttachment[]
+    } = {},
   ): UiChatMessage {
     return {
       id: createClientId(),
@@ -2932,6 +3068,43 @@ function createWorkspaceApp() {
       source,
       channelMeta,
       draftId: options.draftId ?? null,
+      attachments: normalizeMessageAttachments(options.attachments),
+    }
+  }
+
+  function normalizeMessageAttachments(
+    attachments: MessageAttachment[] | null | undefined,
+  ): MessageAttachment[] {
+    if (!Array.isArray(attachments)) {
+      return []
+    }
+    return attachments
+      .filter((attachment) => attachment && typeof attachment.name === 'string')
+      .map((attachment) => ({
+        id: attachment.id ?? null,
+        name: attachment.name,
+        mime_type: attachment.mime_type || 'application/octet-stream',
+        size: typeof attachment.size === 'number' ? attachment.size : null,
+        kind:
+          attachment.kind === 'image' || attachment.kind === 'text' || attachment.kind === 'binary'
+            ? attachment.kind
+            : 'binary',
+        preview_url: attachment.preview_url ?? null,
+        content_url: attachment.content_url ?? null,
+        path: attachment.path ?? null,
+      }))
+  }
+
+  function toMessageAttachment(attachment: ComposerAttachmentState): MessageAttachment {
+    return {
+      id: attachment.id,
+      name: attachment.name,
+      mime_type: attachment.mime_type,
+      size: attachment.size,
+      kind: attachment.kind,
+      preview_url: attachment.preview_url ?? null,
+      content_url: attachment.preview_url ?? null,
+      path: null,
     }
   }
 
@@ -3306,14 +3479,14 @@ function createWorkspaceApp() {
             formState.formMode === 'json'
               ? formState.responseDraft
               : defaultApprovalResponseDraft({
-                  request_id: event.request_id,
-                  method: event.method,
-                  kind: event.kind,
-                  title: event.title,
-                  detail: event.detail,
-                  options: event.options,
-                  payload: event.payload,
-                }),
+                request_id: event.request_id,
+                method: event.method,
+                kind: event.kind,
+                title: event.title,
+                detail: event.detail,
+                options: event.options,
+                payload: event.payload,
+              }),
           validationError: null,
           submittedDecision: null,
         },
@@ -3740,12 +3913,12 @@ function createWorkspaceApp() {
       detail: isError
         ? summarizeToolError(options.toolName, result, options.argumentsValue)
         : summarizeToolDigest(
-            options.toolName,
-            raw,
-            metadata,
-            result,
-            options.argumentsValue,
-          ),
+          options.toolName,
+          raw,
+          metadata,
+          result,
+          options.argumentsValue,
+        ),
       state: isError ? 'error' : options.result ? 'done' : 'running',
       command: '',
       cwd: '',
@@ -4676,11 +4849,11 @@ function createWorkspaceApp() {
       detail:
         isBackground && backgroundToolName
           ? codexBackgroundDetail(
-              existing?.shell?.process ?? null,
-              existing?.stdout ?? '',
-              backgroundToolName,
-              '思考中',
-            )
+            existing?.shell?.process ?? null,
+            existing?.stdout ?? '',
+            backgroundToolName,
+            '思考中',
+          )
           : isBackground
             ? 'Waiting for background output.'
             : 'Preparing shell command.',
@@ -4809,25 +4982,6 @@ function createWorkspaceApp() {
       detail:
         kind === 'background_command' && backgroundToolName
           ? codexBackgroundDetail(
-              {
-                session_id: sessionId,
-                state,
-                exit_code: exitCode,
-                started_at: shell?.process?.started_at ?? 0,
-                finished_at: state === 'running' ? null : Date.now() / 1000,
-                runtime_seconds: shell?.process?.runtime_seconds ?? 0,
-                timed_out: timedOut,
-              },
-              existing?.stdout ?? '',
-              backgroundToolName,
-              isError ? result : '',
-            )
-          : isError
-            ? result
-            : '',
-      state: isError
-        ? 'error'
-        : activityStateFromShell(
             {
               session_id: sessionId,
               state,
@@ -4837,8 +4991,27 @@ function createWorkspaceApp() {
               runtime_seconds: shell?.process?.runtime_seconds ?? 0,
               timed_out: timedOut,
             },
-            isError,
-          ),
+            existing?.stdout ?? '',
+            backgroundToolName,
+            isError ? result : '',
+          )
+          : isError
+            ? result
+            : '',
+      state: isError
+        ? 'error'
+        : activityStateFromShell(
+          {
+            session_id: sessionId,
+            state,
+            exit_code: exitCode,
+            started_at: shell?.process?.started_at ?? 0,
+            finished_at: state === 'running' ? null : Date.now() / 1000,
+            runtime_seconds: shell?.process?.runtime_seconds ?? 0,
+            timed_out: timedOut,
+          },
+          isError,
+        ),
       command:
         typeof metadata.command === 'string'
           ? normalizeShellCommand(metadata.command)
@@ -5002,8 +5175,10 @@ function createWorkspaceApp() {
     codexAdvancedModeFabTop,
     composerText,
     composerAttachments,
+    queuedComposerFollowups,
     steerText,
     isSteering,
+    steeringQueuedComposerFollowupId,
     isInterrupting,
     composerSelectionStart,
     composerSelectionEnd,
@@ -5027,6 +5202,8 @@ function createWorkspaceApp() {
     frontendMode,
     activeBackendId,
     activeBackendReady,
+    canCompose,
+    canComposeToSession,
     canSend,
     canSendToSession,
     activeProjectPath,
@@ -5052,6 +5229,7 @@ function createWorkspaceApp() {
     workspaceSurfaceOptions,
     workspaceSurfaceModel,
     composerPlaceholder,
+    showQueuedComposerFollowupsPanel,
     hasCodexGoalLoop,
     codexGoalLoopSummary,
     codexGoalLoopShortStatus,
@@ -5095,6 +5273,8 @@ function createWorkspaceApp() {
     stopChannelAccount,
     submitApprovalDecision,
     submitMessage,
+    submitQueuedComposerFollowupSteer,
+    removeQueuedComposerFollowup,
     uploadComposerFiles,
     removeComposerAttachment,
     retryComposerAttachment,

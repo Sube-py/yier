@@ -1,14 +1,41 @@
 <script setup lang="ts">
+import { computed } from 'vue'
+
 import Fieldset from 'primevue/fieldset'
 
 import type { UiChatMessage } from '../../types/api'
 
-defineProps<{
+const props = defineProps<{
   message: UiChatMessage
   onMarkdownClick?: (event: MouseEvent) => void
   renderMarkdown: (content: string) => string
   showFinalSeparator?: boolean
 }>()
+
+const imageAttachments = computed(() =>
+  (props.message.attachments ?? []).filter(
+    (attachment) => attachment.kind === 'image' && attachment.preview_url,
+  ),
+)
+
+const fileAttachments = computed(() =>
+  (props.message.attachments ?? []).filter(
+    (attachment) => attachment.kind !== 'image' || !attachment.preview_url,
+  ),
+)
+
+function formatBytes(size?: number | null) {
+  if (typeof size !== 'number' || !Number.isFinite(size) || size <= 0) {
+    return ''
+  }
+  if (size < 1024) {
+    return `${size} B`
+  }
+  if (size < 1024 * 1024) {
+    return `${Math.round(size / 1024)} KB`
+  }
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`
+}
 
 function messageFieldsetPt() {
   return {
@@ -45,9 +72,51 @@ function messageFieldsetPt() {
       legend="You"
       :pt="messageFieldsetPt()"
     >
-      <p class="m-0 whitespace-pre-wrap leading-[1.65]">
+      <p
+        v-if="message.content"
+        class="m-0 whitespace-pre-wrap leading-[1.65]"
+      >
         {{ message.content }}
       </p>
+      <div
+        v-if="imageAttachments.length"
+        class="mt-3 grid gap-2"
+      >
+        <img
+          v-for="attachment in imageAttachments"
+          :key="attachment.id ?? attachment.preview_url ?? attachment.name"
+          :src="attachment.preview_url ?? ''"
+          :alt="attachment.name"
+          class="block max-h-80 w-full rounded-2xl border border-[rgba(34,66,72,0.1)] object-contain bg-white/70"
+        />
+      </div>
+      <div
+        v-if="fileAttachments.length"
+        class="mt-3 grid gap-2"
+      >
+        <component
+          :is="attachment.content_url ? 'a' : 'div'"
+          v-for="attachment in fileAttachments"
+          :key="attachment.id ?? attachment.path ?? attachment.name"
+          :href="attachment.content_url ?? undefined"
+          :target="attachment.content_url ? '_blank' : undefined"
+          :rel="attachment.content_url ? 'noreferrer noopener' : undefined"
+          class="flex min-w-0 items-center gap-2 rounded-2xl border border-[rgba(34,66,72,0.1)] bg-white/70 px-3 py-2 text-inherit no-underline"
+        >
+          <span class="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-[rgba(21,94,99,0.1)] text-[color:var(--app-accent-deep)]">
+            <i class="pi pi-file text-sm"></i>
+          </span>
+          <span class="min-w-0">
+            <span class="block truncate text-sm font-semibold">{{ attachment.name }}</span>
+            <span
+              v-if="attachment.mime_type || formatBytes(attachment.size)"
+              class="block truncate text-[0.72rem] text-[color:var(--app-text-soft)]"
+            >
+              {{ [attachment.mime_type, formatBytes(attachment.size)].filter(Boolean).join(' · ') }}
+            </span>
+          </span>
+        </component>
+      </div>
     </Fieldset>
 
     <div

@@ -12,8 +12,11 @@ const model = defineModel<string>({ required: true })
 const props = defineProps<{
   disabled: boolean
   isSending: boolean
+  submitMode?: 'send' | 'interrupt'
+  interrupting?: boolean
   attachments?: ComposerAttachmentState[]
   attachmentsEnabled?: boolean
+  attachmentsLocked?: boolean
   modelLabel?: string
   reasoningLabel?: string
   sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access' | null
@@ -26,6 +29,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   submit: []
+  interrupt: []
   saveSandbox: []
   uploadFiles: [files: File[]]
   removeAttachment: [localId: string]
@@ -62,9 +66,20 @@ const attachments = computed(() => props.attachments ?? [])
 const hasReadyAttachment = computed(() =>
   attachments.value.some((attachment) => attachment.status === 'ready'),
 )
+const isInterruptMode = computed(() => props.submitMode === 'interrupt')
 const canSubmit = computed(
   () => !props.disabled && (model.value.trim().length > 0 || hasReadyAttachment.value),
 )
+const canTriggerPrimaryAction = computed(() =>
+  isInterruptMode.value ? !props.disabled && !props.interrupting : canSubmit.value,
+)
+const primaryActionAriaLabel = computed(() =>
+  isInterruptMode.value ? 'Interrupt turn' : 'Send message',
+)
+const primaryActionIcon = computed(() =>
+  isInterruptMode.value ? 'pi pi-stop' : 'pi pi-arrow-up',
+)
+const areAttachmentsLocked = computed(() => props.attachmentsLocked ?? false)
 
 const reasoningEffortLabel = computed(() => {
   const value = (props.reasoningLabel ?? '').trim()
@@ -92,6 +107,14 @@ function onKeydown(event: KeyboardEvent) {
   if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
     emit('submit')
   }
+}
+
+function onPrimaryAction() {
+  if (isInterruptMode.value) {
+    emit('interrupt')
+    return
+  }
+  emit('submit')
 }
 
 function resolveNativeTextarea() {
@@ -140,7 +163,7 @@ function onSandboxChange(value: 'read-only' | 'workspace-write' | 'danger-full-a
 }
 
 function openFilePicker() {
-  if (!props.attachmentsEnabled || props.disabled) {
+  if (!props.attachmentsEnabled || props.disabled || areAttachmentsLocked.value) {
     return
   }
   fileInputRef.value?.click()
@@ -156,7 +179,11 @@ function onFileInputChange(event: Event) {
 }
 
 function onPaste(event: ClipboardEvent) {
-  if (!props.attachmentsEnabled || !event.clipboardData?.files.length) {
+  if (
+    !props.attachmentsEnabled ||
+    areAttachmentsLocked.value ||
+    !event.clipboardData?.files.length
+  ) {
     return
   }
   emit('uploadFiles', Array.from(event.clipboardData.files))
@@ -164,7 +191,7 @@ function onPaste(event: ClipboardEvent) {
 
 function onDrop(event: DragEvent) {
   isDragActive.value = false
-  if (!props.attachmentsEnabled || !event.dataTransfer?.files.length) {
+  if (!props.attachmentsEnabled || areAttachmentsLocked.value || !event.dataTransfer?.files.length) {
     return
   }
   emit('uploadFiles', Array.from(event.dataTransfer.files))
@@ -325,7 +352,7 @@ onMounted(async () => {
               v-if="attachmentsEnabled"
               type="button"
               class="inline-flex items-center gap-1 rounded-full border-0 bg-transparent px-1 py-0.5 text-left text-[0.78rem] font-medium tracking-[0.01em] text-[color:var(--app-text-soft)] transition hover:bg-white/36"
-              :disabled="disabled"
+              :disabled="disabled || areAttachmentsLocked"
               aria-label="Attach files"
               @click="openFilePicker"
             >
@@ -382,12 +409,13 @@ onMounted(async () => {
           </div>
         </div>
         <Button
-          icon="pi pi-arrow-up"
-          aria-label="Send message"
+          :icon="primaryActionIcon"
+          :aria-label="primaryActionAriaLabel"
           class="shrink-0 sm:!h-11 sm:!w-11 sm:!px-0"
-          :disabled="!canSubmit"
-          :loading="isSending"
-          @click="emit('submit')"
+          :severity="isInterruptMode ? 'danger' : undefined"
+          :disabled="!canTriggerPrimaryAction"
+          :loading="Boolean(interrupting)"
+          @click="onPrimaryAction"
         />
       </div>
     </div>

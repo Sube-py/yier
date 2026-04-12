@@ -81,40 +81,56 @@ const workspace = useWorkspaceAppContext()
           @approval-action="workspace.submitApprovalDecision"
         />
       </div>
-      <div class="shrink-0 px-[1.1rem] pb-4 max-[1023px]:px-4 max-sm:px-3 max-sm:pb-3">
+      <div class="shrink-0 px-[1.1rem] pt-2 pb-4 max-[1023px]:px-4 max-sm:px-3 max-sm:pb-3">
         <div class="flex flex-col gap-3">
           <CodexAdvancedModeDock v-if="workspace.isCodexWorkspace" />
           <div
-            v-if="workspace.isCodexWorkspace && workspace.activeSessionRuntime?.status === 'active'"
-            class="rounded-[1.15rem] border border-[rgba(21,94,99,0.12)] bg-[rgba(235,248,246,0.72)] p-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.5)]"
+            v-if="workspace.showQueuedComposerFollowupsPanel"
+            class="grid gap-2"
           >
-            <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
-              <input
-                v-model="workspace.steerText"
-                class="min-w-0 flex-1 rounded-xl border border-[rgba(34,66,72,0.12)] bg-white/75 px-3 py-2 text-sm text-[color:var(--app-text)] outline-none transition focus:border-[rgba(21,94,99,0.36)] focus:shadow-[0_0_0_3px_rgba(21,94,99,0.1)]"
-                placeholder="Steer the active Codex turn..."
-                :disabled="workspace.isSteering || workspace.isInterrupting"
-                @keydown.enter.prevent="workspace.submitCodexSteer"
-              />
-              <div class="flex shrink-0 gap-2">
-                <Button
-                  label="Steer"
-                  icon="pi pi-directions"
-                  size="small"
-                  :loading="workspace.isSteering"
-                  :disabled="!workspace.steerText.trim() || workspace.isInterrupting"
-                  @click="workspace.submitCodexSteer"
-                />
-                <Button
-                  label="Interrupt"
-                  icon="pi pi-stop-circle"
-                  size="small"
-                  severity="secondary"
-                  outlined
-                  :loading="workspace.isInterrupting"
-                  :disabled="workspace.isSteering"
-                  @click="workspace.interruptCodexTurn"
-                />
+            <div
+              v-for="followup in workspace.queuedComposerFollowups"
+              :key="followup.id"
+              class="queued-followup-item rounded-[1rem] border border-[rgba(34,66,72,0.1)] bg-[rgba(235,248,246,0.72)] px-3 py-2.5 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.45)]"
+            >
+              <div class="flex items-center justify-between gap-3 max-sm:items-stretch max-sm:flex-col">
+                <p class="m-0 min-w-0 flex-1 whitespace-pre-wrap break-words pt-[0.08rem] text-sm leading-[1.6] text-[color:var(--app-text)]">
+                  {{ followup.message }}
+                </p>
+                <div class="flex shrink-0 items-center gap-1.5 self-center max-sm:w-full max-sm:flex-wrap max-sm:self-stretch">
+                  <Button
+                    label="Steer"
+                    icon="pi pi-directions"
+                    size="small"
+                    class="queued-followup-steer max-sm:flex-1"
+                    :pt="{
+                      root: {
+                        class:
+                          '!h-8 !px-3 text-[0.76rem] font-semibold',
+                      },
+                      label: {
+                        class: 'text-[0.76rem]',
+                      },
+                      icon: {
+                        class: 'text-[0.72rem]',
+                      },
+                    }"
+                    :loading="workspace.steeringQueuedComposerFollowupId === followup.id"
+                    :disabled="workspace.isInterrupting || workspace.isSwitchingSession"
+                    @click="workspace.submitQueuedComposerFollowupSteer(followup.id)"
+                  />
+                  <Button
+                    icon="pi pi-times"
+                    size="small"
+                    severity="secondary"
+                    text
+                    rounded
+                    class="queued-followup-remove !h-8 !w-8 max-sm:self-start"
+                    aria-label="Remove queued follow-up"
+                    :disabled="workspace.steeringQueuedComposerFollowupId === followup.id"
+                    @click="workspace.removeQueuedComposerFollowup(followup.id)"
+                  />
+                </div>
               </div>
             </div>
           </div>
@@ -125,10 +141,15 @@ const workspace = useWorkspaceAppContext()
           </Message>
           <ChatComposer
             v-model="workspace.composerText"
-            :disabled="!workspace.canSendToSession"
+            :disabled="!workspace.canComposeToSession"
             :is-sending="workspace.isSending"
+            :submit-mode="workspace.isSending ? 'interrupt' : 'send'"
+            :interrupting="workspace.isInterrupting"
             :attachments="workspace.composerAttachments"
             :attachments-enabled="workspace.isCodexWorkspace && workspace.activeSession?.source !== 'channel'"
+            :attachments-locked="
+              workspace.isSending || workspace.isInterrupting || workspace.isSwitchingSession
+            "
             :model-label="workspace.isCodexWorkspace ? workspace.appForm.codexModel : ''"
             :reasoning-label="
               workspace.isCodexWorkspace ? workspace.appForm.codexReasoningEffort : ''
@@ -145,6 +166,7 @@ const workspace = useWorkspaceAppContext()
             @remove-attachment="workspace.removeComposerAttachment"
             @retry-attachment="workspace.retryComposerAttachment"
             @selection-change="workspace.handleComposerSelectionChange"
+            @interrupt="workspace.interruptCodexTurn"
             @submit="workspace.submitMessage"
           />
         </div>

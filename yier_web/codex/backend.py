@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 from time import time
 from typing import TYPE_CHECKING, Any, TypedDict
+from urllib.parse import urlparse
 from pydantic import BaseModel
 
 from codex_app_server import (
@@ -96,7 +97,7 @@ from yier_web.codex.sdk.client import (
     ApprovalAwareAsyncThread,
     ApprovalAwareAsyncTurnHandle,
 )
-from yier_web.schemas import StoredSessionMessage
+from yier_web.schemas import MessageAttachmentPayload, StoredSessionMessage
 
 if TYPE_CHECKING:
     from yier_web.chat import ChatService
@@ -2710,8 +2711,10 @@ class CodexAppServerBackend(ChatBackend):
         sequence_counter: list[int],
     ) -> None:
         if isinstance(item, UserMessageThreadItem):
-            content = self._thread_user_message_text(item.content)
-            if content:
+            content, attachments = self._thread_user_message_view(
+                context.session_id, item.content
+            )
+            if content or attachments:
                 messages.append(
                     StoredSessionMessage(
                         role="user",
@@ -2719,6 +2722,7 @@ class CodexAppServerBackend(ChatBackend):
                         sequence=self._next_thread_view_sequence(sequence_counter),
                         source=context.source,
                         channel_meta=context.channel_meta,
+                        attachments=attachments,
                     )
                 )
             return
@@ -3107,11 +3111,17 @@ class CodexAppServerBackend(ChatBackend):
         )
         return runtime.plan_buffers[activity_id]
 
-    def _thread_user_message_text(self, contents: list[UserInput] | Any) -> str:
+    def _thread_user_message_view(
+        self,
+        session_id: str,
+        contents: list[UserInput] | Any,
+    ) -> tuple[str, list[MessageAttachmentPayload]]:
         if not isinstance(contents, list):
-            return ""
+            return "", []
 
         parts: list[str] = []
+        attachments: list[MessageAttachmentPayload] = []
+        seen_attachment_keys: set[str] = set()
         for item in contents:
             root = self._coerce_user_input(item)
             if root is None:
@@ -3119,9 +3129,25 @@ class CodexAppServerBackend(ChatBackend):
             rendered = self._render_user_input_text(root)
             if rendered:
                 parts.append(rendered)
+            attachment = self._user_input_attachment(session_id, root)
+            if attachment is None:
+                continue
+            attachment_key = (
+                attachment.path
+                or attachment.preview_url
+                or attachment.content_url
+                or attachment.name
+            )
+            if attachment_key in seen_attachment_keys:
+                continue
+            seen_attachment_keys.add(attachment_key)
+            attachments.append(attachment)
         if not parts:
-            return ""
-        return self._strip_plan_mode_prompt("\n".join(parts))
+            return "", attachments
+        return self._strip_plan_mode_prompt("\n".join(parts)), attachments
+
+    def _thread_user_message_text(self, contents: list[UserInput] | Any) -> str:
+        return self._thread_user_message_view("", contents)[0]
 
     def _assistant_transcript_item_id(
         self,
@@ -3198,15 +3224,56 @@ class CodexAppServerBackend(ChatBackend):
     def _render_user_input_text(self, item: CodexUserInputRoot) -> str:
         if isinstance(item, TextUserInput):
             return item.text.strip()
-        if isinstance(item, ImageUserInput):
-            return f"[Image] {item.url}"
-        if isinstance(item, LocalImageUserInput):
-            return f"[Local image] {item.path}"
         if isinstance(item, SkillUserInput):
             return f"[Skill] {item.name} ({item.path})"
         if isinstance(item, MentionUserInput):
             return f"[Mention] {item.name} ({item.path})"
         return ""
+
+    def _user_input_attachment(
+        self,
+        session_id: str,
+        item: CodexUserInputRoot,
+    ) -> MessageAttachmentPayload | None:
+        if isinstance(item, ImageUserInput):
+            parsed_name = Path(urlparse(item.url).path).name
+            return MessageAttachmentPayload(
+                name=parsed_name or "image",
+                mime_type="image/*",
+                kind="image",
+                preview_url=item.url,
+                content_url=item.url,
+            )
+
+        if isinstance(item, LocalImageUserInput):
+            preview = self._preview_metadata_for_local_image(session_id, item.path)
+            return MessageAttachmentPayload(
+                name=preview.get("preview_name")
+                if isinstance(preview.get("preview_name"), str)
+                else Path(item.path).name,
+                mime_type=preview.get("mime_type")
+                if isinstance(preview.get("mime_type"), str)
+                else "image/*",
+                size=preview.get("size") if isinstance(preview.get("size"), int) else None,
+                kind="image",
+                preview_url=preview.get("preview_url")
+                if isinstance(preview.get("preview_url"), str)
+                else None,
+                content_url=preview.get("preview_url")
+                if isinstance(preview.get("preview_url"), str)
+                else None,
+                path=item.path,
+            )
+
+        if isinstance(item, MentionUserInput):
+            return MessageAttachmentPayload(
+                name=item.name or Path(item.path).name,
+                mime_type="application/octet-stream",
+                kind="binary",
+                path=item.path,
+            )
+
+        return None
 
     def _strip_plan_mode_prompt(self, value: str) -> str:
         normalized = value.strip()

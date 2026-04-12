@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 from time import time
 from typing import Any, AsyncIterator, Awaitable, Callable, Literal
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from yier_agents import (
@@ -71,6 +72,7 @@ from yier_web.schemas import (
     CodexGoalLoopStatus,
     CodexWorkspaceResponse,
     CodexWorkMode,
+    MessageAttachmentPayload,
     PendingApproval,
     MCPRuntimeEntry,
     SessionSummary,
@@ -701,6 +703,25 @@ class ChatService:
             return text if isinstance(text, str) else ""
         return items
 
+    def resolve_message_attachments(
+        self,
+        *,
+        session_id: str,
+        attachment_ids: list[str] | None = None,
+    ) -> list[MessageAttachmentPayload]:
+        attachments: list[MessageAttachmentPayload] = []
+        for attachment_id in attachment_ids or []:
+            try:
+                attachments.append(
+                    self.attachment_storage.message_attachment_for_attachment(
+                        session_id=session_id,
+                        attachment_id=attachment_id,
+                    )
+                )
+            except AttachmentStorageError:
+                continue
+        return attachments
+
     def _paired_editor_workspace_name(self, session_id: str) -> str:
         normalized_session_id = session_id.strip()
         if not normalized_session_id:
@@ -1066,6 +1087,9 @@ class ChatService:
         message_sequences = self.session_ui_store.load_transcript_message_sequences(
             session_id
         )
+        message_attachments = self.session_ui_store.load_transcript_message_attachments(
+            session_id
+        )
         return [
             StoredSessionMessage(
                 role=message.role,
@@ -1077,6 +1101,14 @@ class ChatService:
                 ),
                 source=session_meta["source"],
                 channel_meta=channel_meta_payload,
+                attachments=(
+                    [
+                        MessageAttachmentPayload.model_validate(item)
+                        for item in message_attachments[index]
+                    ]
+                    if index < len(message_attachments)
+                    else []
+                ),
             )
             for index, message in enumerate(transcript_messages)
         ]
@@ -1654,12 +1686,17 @@ class ChatService:
         self,
         session_id: str,
         user_message: list[dict[str, Any]] | dict[str, Any] | str,
+        *,
+        raw_message: str | None = None,
+        attachment_ids: list[str] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         event_queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
         producer = asyncio.create_task(
             self._produce_stream_events(
                 session_id=session_id,
                 user_message=user_message,
+                raw_message=raw_message,
+                attachment_ids=attachment_ids,
                 event_queue=event_queue,
             )
         )
@@ -1697,6 +1734,8 @@ class ChatService:
         self,
         session_id: str,
         user_message: list[dict[str, Any]] | dict[str, Any] | str,
+        raw_message: str | None,
+        attachment_ids: list[str] | None,
         event_queue: asyncio.Queue[dict[str, Any] | None],
     ) -> None:
         async def emit(event: str, data: dict[str, Any]) -> None:
@@ -1745,10 +1784,24 @@ class ChatService:
                 project_path=str(context.project_path),
                 backend_state=context.backend_state,
             )
-            transcript_text = self._codex_input_payload_text(user_message)
+            transcript_text = (raw_message or "").strip() or self._codex_input_payload_text(
+                user_message
+            )
+            transcript_attachments = (
+                self.resolve_message_attachments(
+                    session_id=session_id,
+                    attachment_ids=attachment_ids,
+                )
+                if attachment_ids
+                else self.message_attachments_from_input_payload(
+                    session_id=session_id,
+                    input_payload=user_message,
+                )
+            )
             self._append_transcript_message(
                 session_id,
                 Message(role="user", content=transcript_text),
+                attachments=transcript_attachments,
             )
             backend = self.backends.get(context.backend_id)
             if backend is None:
@@ -2009,6 +2062,10 @@ class ChatService:
             self._append_transcript_message(
                 session_id,
                 Message(role="user", content=user_message),
+                attachments=self.message_attachments_from_input_payload(
+                    session_id=session_id,
+                    input_payload=prompt,
+                ),
             )
 
         _codex_ipc_debug_log(
@@ -2305,6 +2362,7 @@ class ChatService:
         message: Message,
         *,
         sequence: int | None = None,
+        attachments: list[MessageAttachmentPayload] | None = None,
     ) -> int:
         message_sequence = self._reserve_timeline_sequence(
             session_id,
@@ -2316,6 +2374,13 @@ class ChatService:
         self.session_ui_store.append_transcript_message_sequence(
             session_id,
             message_sequence,
+        )
+        self.session_ui_store.append_transcript_message_attachments(
+            session_id,
+            [
+                item.model_dump(mode="json", exclude_none=True)
+                for item in (attachments or [])
+            ],
         )
         metadata = self.get_session_metadata(session_id)
         title = metadata["title"] or self._session_title(
@@ -2337,6 +2402,104 @@ class ChatService:
             updated_at=time(),
         )
         return message_sequence
+
+    def message_attachments_from_input_payload(
+        self,
+        *,
+        session_id: str,
+        input_payload: list[dict[str, Any]] | dict[str, Any] | str,
+    ) -> list[MessageAttachmentPayload]:
+        attachments: list[MessageAttachmentPayload] = []
+        seen_keys: set[str] = set()
+
+        def add_attachment(item: MessageAttachmentPayload, key: str) -> None:
+            if key in seen_keys:
+                return
+            seen_keys.add(key)
+            attachments.append(item)
+
+        def collect(item: Any) -> None:
+            if isinstance(item, list):
+                for entry in item:
+                    collect(entry)
+                return
+
+            if not isinstance(item, dict):
+                return
+
+            item_type = item.get("type")
+            if item_type == "image" and isinstance(item.get("url"), str):
+                url = item["url"].strip()
+                if not url:
+                    return
+                parsed = urlparse(url)
+                name = Path(parsed.path).name or "image"
+                add_attachment(
+                    MessageAttachmentPayload(
+                        name=name,
+                        mime_type="image/*",
+                        kind="image",
+                        preview_url=url,
+                        content_url=url,
+                    ),
+                    f"image:{url}",
+                )
+                return
+
+            if item_type == "localImage" and isinstance(item.get("path"), str):
+                path = item["path"].strip()
+                if not path:
+                    return
+                preview = self.register_local_image_preview(session_id, path)
+                if isinstance(preview, dict):
+                    add_attachment(
+                        MessageAttachmentPayload(
+                            id=preview.get("id")
+                            if isinstance(preview.get("id"), str)
+                            else None,
+                            name=preview.get("name")
+                            if isinstance(preview.get("name"), str)
+                            else Path(path).name,
+                            mime_type=preview.get("mime_type")
+                            if isinstance(preview.get("mime_type"), str)
+                            else "image/*",
+                            size=preview.get("size")
+                            if isinstance(preview.get("size"), int)
+                            else None,
+                            kind="image",
+                            preview_url=preview.get("preview_url")
+                            if isinstance(preview.get("preview_url"), str)
+                            else None,
+                            content_url=preview.get("preview_url")
+                            if isinstance(preview.get("preview_url"), str)
+                            else None,
+                            path=path,
+                        ),
+                        f"path:{path}",
+                    )
+                return
+
+            if item_type == "mention" and isinstance(item.get("path"), str):
+                path = item["path"].strip()
+                if not path:
+                    return
+                name = (
+                    item.get("name")
+                    if isinstance(item.get("name"), str) and item.get("name")
+                    else Path(path).name
+                )
+                add_attachment(
+                    MessageAttachmentPayload(
+                        name=name,
+                        mime_type="application/octet-stream",
+                        kind="binary",
+                        path=path,
+                    ),
+                    f"path:{path}",
+                )
+
+        collect(input_payload)
+        return attachments
 
     def _codex_input_payload_text(
         self,

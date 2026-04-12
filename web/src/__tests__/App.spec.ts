@@ -1876,6 +1876,556 @@ describe('App', () => {
     expect(wrapper.text()).toContain('second transcript body')
   })
 
+  it('turns the composer action into interrupt, queues keyboard follow-ups, and auto-sends them in order', async () => {
+    localStorage.setItem('yier.active-session-id', 'codex-thread')
+    localStorage.setItem('yier.workspace-surface', 'codex')
+
+    const encoder = new TextEncoder()
+    const streamControllers: ReadableStreamDefaultController<Uint8Array>[] = []
+    const streamPayloads: Array<{ session_id: string; message?: string | null }> = []
+
+    const emitFrames = (index: number, frames: string[]) => {
+      const controller = streamControllers[index]
+      if (!controller) {
+        throw new Error(`Missing stream controller ${index}.`)
+      }
+      controller.enqueue(encoder.encode(frames.join('\r\n')))
+    }
+
+    const closeStream = (index: number) => {
+      const controller = streamControllers[index]
+      if (!controller) {
+        throw new Error(`Missing stream controller ${index}.`)
+      }
+      controller.close()
+    }
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = input.toString()
+      if (path.endsWith('/api/health')) {
+        return jsonResponse({
+          frontend: { ready: true, mode: 'static' },
+          llm: { ready: true },
+          mcp: { ready: true, runtime: {} },
+          backends: {
+            yier: { ready: true },
+            codex: { ready: true },
+          },
+          allowed_roots: ['/tmp/project'],
+        })
+      }
+      if (path.endsWith('/api/config')) {
+        return jsonResponse({
+          llm: { provider: '', base_url: 'https://example.test', model: 'demo', has_api_key: true },
+          allowed_roots: ['/tmp/project'],
+          mcp_runtime: {},
+          session_defaults: {
+            default_backend_id: 'yier',
+            default_project_path: '/tmp/project',
+            channel_backend_id: 'yier',
+            channel_project_path: '/tmp/project',
+            channel_auto_approve_codex_requests: true,
+          },
+          codex: {
+            launcher_command: 'codex app-server --listen stdio://',
+            model: 'gpt-5.4',
+            sandbox: 'workspace-write',
+            approval_policy: 'on-request',
+            approvals_reviewer: 'user',
+            personality: 'friendly',
+            reasoning_effort: 'medium',
+            service_tier: '',
+          },
+        })
+      }
+      if (path.endsWith('/api/config/mcp')) {
+        return jsonResponse({ mcp_servers: {}, runtime: {} })
+      }
+      if (path.endsWith('/api/codex/workspace')) {
+        return jsonResponse({ projects: [], paired_editors: [] })
+      }
+      if (isSessionListRequest(path, init)) {
+        return jsonResponse({
+          sessions: [
+            {
+              session_id: 'codex-thread',
+              title: 'Codex session',
+              preview: 'Native preview',
+              updated_at: 100,
+              message_count: 2,
+              source: 'chat',
+              backend_id: 'codex',
+              project_path: '/tmp/project',
+              channel_meta: null,
+              codex_work_mode: 'build',
+            },
+          ],
+        })
+      }
+      if (isSessionTranscriptRequest(path, 'codex-thread', init)) {
+        return jsonResponse({
+          session_id: 'codex-thread',
+          source: 'chat',
+          backend_id: 'codex',
+          project_path: '/tmp/project',
+          codex_work_mode: 'build',
+          backend_runtime: {
+            backend_id: 'codex',
+            label: 'Codex App Server',
+            ready: true,
+            status: 'idle',
+            thread_id: 'codex-thread',
+            active_flags: [],
+            detail: null,
+            pending_approval_count: 0,
+          },
+          pending_approvals: [],
+          messages: [{ role: 'assistant', content: 'ready for next turn' }],
+          activity_events: [],
+        })
+      }
+      if (path.endsWith('/api/chat/stream') && init?.method === 'POST') {
+        streamPayloads.push(JSON.parse(String(init.body)) as { session_id: string; message?: string | null })
+        return Promise.resolve(
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                streamControllers.push(controller)
+              },
+            }),
+            {
+              status: 200,
+              headers: { 'Content-Type': 'text/event-stream' },
+            },
+          ),
+        )
+      }
+      if (path.endsWith('/api/channel/workspace')) {
+        return jsonResponse({ platforms: [], accounts: [] })
+      }
+      if (path.endsWith('/api/channel/platforms')) {
+        return jsonResponse({ platforms: [] })
+      }
+      if (path.endsWith('/api/channel/config')) {
+        return jsonResponse({ enabled_platforms: [], weixin: {} })
+      }
+      if (path.endsWith('/api/channel/monitor/sessions')) {
+        return jsonResponse({ sessions: [] })
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const wrapper = await mountApp()
+    await flushPromises()
+
+    const textarea = wrapper.get('textarea.composer-textarea')
+    await textarea.setValue('First prompt')
+    await wrapper.get('[aria-label="Send message"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[aria-label="Interrupt turn"]').exists()).toBe(true)
+
+    await textarea.setValue('Second prompt')
+    await textarea.trigger('keydown', { key: 'Enter', ctrlKey: true })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Second prompt')
+    expect(wrapper.findAll('.queued-followup-item')).toHaveLength(1)
+    expect((wrapper.get('textarea.composer-textarea').element as HTMLTextAreaElement).value).toBe('')
+
+    emitFrames(0, [
+      'event: assistant_message',
+      'data: {"session_id":"codex-thread","content":"first answer"}',
+      '',
+      'event: done',
+      'data: {"session_id":"codex-thread","finish_reason":"stop"}',
+      '',
+    ])
+    closeStream(0)
+    await flushPromises()
+
+    expect(streamPayloads).toHaveLength(2)
+    expect(streamPayloads[0]).toEqual({ session_id: 'codex-thread', message: 'First prompt' })
+    expect(streamPayloads[1]).toEqual({ session_id: 'codex-thread', message: 'Second prompt' })
+
+    emitFrames(1, [
+      'event: assistant_message',
+      'data: {"session_id":"codex-thread","content":"second answer"}',
+      '',
+      'event: done',
+      'data: {"session_id":"codex-thread","finish_reason":"stop"}',
+      '',
+    ])
+    closeStream(1)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('first answer')
+    expect(wrapper.text()).toContain('second answer')
+    expect(wrapper.findAll('.queued-followup-item')).toHaveLength(0)
+  })
+
+  it('converts a queued follow-up into a steer instruction instead of auto-sending it', async () => {
+    localStorage.setItem('yier.active-session-id', 'codex-thread')
+    localStorage.setItem('yier.workspace-surface', 'codex')
+
+    const encoder = new TextEncoder()
+    const streamControllers: ReadableStreamDefaultController<Uint8Array>[] = []
+    const streamPayloads: Array<{ session_id: string; message?: string | null }> = []
+    const steerPayloads: Array<{ message: string }> = []
+
+    const emitFrames = (index: number, frames: string[]) => {
+      const controller = streamControllers[index]
+      if (!controller) {
+        throw new Error(`Missing stream controller ${index}.`)
+      }
+      controller.enqueue(encoder.encode(frames.join('\r\n')))
+    }
+
+    const closeStream = (index: number) => {
+      const controller = streamControllers[index]
+      if (!controller) {
+        throw new Error(`Missing stream controller ${index}.`)
+      }
+      controller.close()
+    }
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = input.toString()
+      if (path.endsWith('/api/health')) {
+        return jsonResponse({
+          frontend: { ready: true, mode: 'static' },
+          llm: { ready: true },
+          mcp: { ready: true, runtime: {} },
+          backends: {
+            yier: { ready: true },
+            codex: { ready: true },
+          },
+          allowed_roots: ['/tmp/project'],
+        })
+      }
+      if (path.endsWith('/api/config')) {
+        return jsonResponse({
+          llm: { provider: '', base_url: 'https://example.test', model: 'demo', has_api_key: true },
+          allowed_roots: ['/tmp/project'],
+          mcp_runtime: {},
+          session_defaults: {
+            default_backend_id: 'yier',
+            default_project_path: '/tmp/project',
+            channel_backend_id: 'yier',
+            channel_project_path: '/tmp/project',
+            channel_auto_approve_codex_requests: true,
+          },
+          codex: {
+            launcher_command: 'codex app-server --listen stdio://',
+            model: 'gpt-5.4',
+            sandbox: 'workspace-write',
+            approval_policy: 'on-request',
+            approvals_reviewer: 'user',
+            personality: 'friendly',
+            reasoning_effort: 'medium',
+            service_tier: '',
+          },
+        })
+      }
+      if (path.endsWith('/api/config/mcp')) {
+        return jsonResponse({ mcp_servers: {}, runtime: {} })
+      }
+      if (path.endsWith('/api/codex/workspace')) {
+        return jsonResponse({ projects: [], paired_editors: [] })
+      }
+      if (isSessionListRequest(path, init)) {
+        return jsonResponse({
+          sessions: [
+            {
+              session_id: 'codex-thread',
+              title: 'Codex session',
+              preview: 'Native preview',
+              updated_at: 100,
+              message_count: 2,
+              source: 'chat',
+              backend_id: 'codex',
+              project_path: '/tmp/project',
+              channel_meta: null,
+              codex_work_mode: 'build',
+            },
+          ],
+        })
+      }
+      if (isSessionTranscriptRequest(path, 'codex-thread', init)) {
+        return jsonResponse({
+          session_id: 'codex-thread',
+          source: 'chat',
+          backend_id: 'codex',
+          project_path: '/tmp/project',
+          codex_work_mode: 'build',
+          backend_runtime: {
+            backend_id: 'codex',
+            label: 'Codex App Server',
+            ready: true,
+            status: 'idle',
+            thread_id: 'codex-thread',
+            active_flags: [],
+            detail: null,
+            pending_approval_count: 0,
+          },
+          pending_approvals: [],
+          messages: [{ role: 'assistant', content: 'ready for next turn' }],
+          activity_events: [],
+        })
+      }
+      if (path.endsWith('/api/chat/stream') && init?.method === 'POST') {
+        streamPayloads.push(JSON.parse(String(init.body)) as { session_id: string; message?: string | null })
+        return Promise.resolve(
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                streamControllers.push(controller)
+              },
+            }),
+            {
+              status: 200,
+              headers: { 'Content-Type': 'text/event-stream' },
+            },
+          ),
+        )
+      }
+      if (path.endsWith('/api/codex/sessions/codex-thread/turns/steer') && init?.method === 'POST') {
+        steerPayloads.push(JSON.parse(String(init.body)) as { message: string })
+        return jsonResponse({ ok: true })
+      }
+      if (path.endsWith('/api/channel/workspace')) {
+        return jsonResponse({ platforms: [], accounts: [] })
+      }
+      if (path.endsWith('/api/channel/platforms')) {
+        return jsonResponse({ platforms: [] })
+      }
+      if (path.endsWith('/api/channel/config')) {
+        return jsonResponse({ enabled_platforms: [], weixin: {} })
+      }
+      if (path.endsWith('/api/channel/monitor/sessions')) {
+        return jsonResponse({ sessions: [] })
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const wrapper = await mountApp()
+    await flushPromises()
+
+    const textarea = wrapper.get('textarea.composer-textarea')
+    await textarea.setValue('First prompt')
+    await wrapper.get('[aria-label="Send message"]').trigger('click')
+    await flushPromises()
+
+    await textarea.setValue('Queued steer prompt')
+    await textarea.trigger('keydown', { key: 'Enter', metaKey: true })
+    await flushPromises()
+
+    expect(wrapper.findAll('.queued-followup-item')).toHaveLength(1)
+
+    await wrapper.get('.queued-followup-steer').trigger('click')
+    await flushPromises()
+
+    expect(steerPayloads).toEqual([{ message: 'Queued steer prompt' }])
+    expect(wrapper.findAll('.queued-followup-item')).toHaveLength(0)
+
+    emitFrames(0, [
+      'event: assistant_message',
+      'data: {"session_id":"codex-thread","content":"first answer"}',
+      '',
+      'event: done',
+      'data: {"session_id":"codex-thread","finish_reason":"stop"}',
+      '',
+    ])
+    closeStream(0)
+    await flushPromises()
+
+    expect(streamPayloads).toHaveLength(1)
+    expect(streamPayloads[0]).toEqual({ session_id: 'codex-thread', message: 'First prompt' })
+  })
+
+  it('renders sent image and file attachments in the timeline instead of attachment placeholder text', async () => {
+    localStorage.setItem('yier.active-session-id', 'codex-thread')
+    localStorage.setItem('yier.workspace-surface', 'codex')
+
+    let nextAttachmentId = 1
+    const streamedPayloads: Array<{
+      session_id: string
+      message?: string | null
+      attachment_ids?: string[]
+    }> = []
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = input.toString()
+      if (path.endsWith('/api/health')) {
+        return jsonResponse({
+          frontend: { ready: true, mode: 'static' },
+          llm: { ready: true },
+          mcp: { ready: true, runtime: {} },
+          backends: {
+            yier: { ready: true },
+            codex: { ready: true },
+          },
+          allowed_roots: ['/tmp/project'],
+        })
+      }
+      if (path.endsWith('/api/config')) {
+        return jsonResponse({
+          llm: { provider: '', base_url: 'https://example.test', model: 'demo', has_api_key: true },
+          allowed_roots: ['/tmp/project'],
+          mcp_runtime: {},
+          session_defaults: {
+            default_backend_id: 'yier',
+            default_project_path: '/tmp/project',
+            channel_backend_id: 'yier',
+            channel_project_path: '/tmp/project',
+            channel_auto_approve_codex_requests: true,
+          },
+          codex: {
+            launcher_command: 'codex app-server --listen stdio://',
+            model: 'gpt-5.4',
+            sandbox: 'workspace-write',
+            approval_policy: 'on-request',
+            approvals_reviewer: 'user',
+            personality: 'friendly',
+            reasoning_effort: 'medium',
+            service_tier: '',
+          },
+        })
+      }
+      if (path.endsWith('/api/config/mcp')) {
+        return jsonResponse({ mcp_servers: {}, runtime: {} })
+      }
+      if (path.endsWith('/api/codex/workspace')) {
+        return jsonResponse({ projects: [], paired_editors: [] })
+      }
+      if (isSessionListRequest(path, init)) {
+        return jsonResponse({
+          sessions: [
+            {
+              session_id: 'codex-thread',
+              title: 'Codex session',
+              preview: 'Native preview',
+              updated_at: 100,
+              message_count: 2,
+              source: 'chat',
+              backend_id: 'codex',
+              project_path: '/tmp/project',
+              channel_meta: null,
+              codex_work_mode: 'build',
+            },
+          ],
+        })
+      }
+      if (isSessionTranscriptRequest(path, 'codex-thread', init)) {
+        return jsonResponse({
+          session_id: 'codex-thread',
+          source: 'chat',
+          backend_id: 'codex',
+          project_path: '/tmp/project',
+          codex_work_mode: 'build',
+          backend_runtime: {
+            backend_id: 'codex',
+            label: 'Codex App Server',
+            ready: true,
+            status: 'idle',
+            thread_id: 'codex-thread',
+            active_flags: [],
+            detail: null,
+            pending_approval_count: 0,
+          },
+          pending_approvals: [],
+          messages: [{ role: 'assistant', content: 'ready for attachments' }],
+          activity_events: [],
+        })
+      }
+      if (path.endsWith('/api/chat/sessions/codex-thread/attachments') && init?.method === 'POST') {
+        const formData = init.body as FormData
+        const file = formData.get('file')
+        if (!(file instanceof File)) {
+          throw new Error('Expected upload form data to contain a file.')
+        }
+        const attachmentId = `attachment-${nextAttachmentId}`
+        nextAttachmentId += 1
+        const isImage = file.type.startsWith('image/')
+        return jsonResponse({
+          id: attachmentId,
+          name: file.name,
+          mime_type: file.type || (isImage ? 'image/png' : 'application/octet-stream'),
+          size: file.size,
+          kind: isImage ? 'image' : 'binary',
+          preview_url: isImage
+            ? `/api/chat/sessions/codex-thread/attachments/${attachmentId}/content`
+            : null,
+          input_items: [],
+        })
+      }
+      if (path.endsWith('/api/chat/stream') && init?.method === 'POST') {
+        streamedPayloads.push(
+          JSON.parse(String(init.body)) as {
+            session_id: string
+            message?: string | null
+            attachment_ids?: string[]
+          },
+        )
+        return sseResponse(
+          [
+            'event: assistant_message',
+            'data: {"session_id":"codex-thread","content":"received attachments"}',
+            '',
+            'event: done',
+            'data: {"session_id":"codex-thread","finish_reason":"stop"}',
+            '',
+          ].join('\r\n'),
+        )
+      }
+      if (path.endsWith('/api/channel/workspace')) {
+        return jsonResponse({ platforms: [], accounts: [] })
+      }
+      if (path.endsWith('/api/channel/platforms')) {
+        return jsonResponse({ platforms: [] })
+      }
+      if (path.endsWith('/api/channel/config')) {
+        return jsonResponse({ enabled_platforms: [], weixin: {} })
+      }
+      if (path.endsWith('/api/channel/monitor/sessions')) {
+        return jsonResponse({ sessions: [] })
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const wrapper = await mountApp()
+    await flushPromises()
+
+    const fileInput = wrapper.get('input[type="file"]').element as HTMLInputElement
+    const imageFile = new File(['image-bytes'], 'image.png', { type: 'image/png' })
+    const binaryFile = new File(['pdf-bytes'], 'spec.pdf', { type: 'application/pdf' })
+    Object.defineProperty(fileInput, 'files', {
+      configurable: true,
+      value: [imageFile, binaryFile],
+    })
+    await wrapper.get('input[type="file"]').trigger('change')
+    await flushPromises()
+
+    await wrapper.get('textarea.composer-textarea').setValue('Can you see these files?')
+    await wrapper.get('[aria-label="Send message"]').trigger('click')
+    await flushPromises()
+
+    expect(streamedPayloads).toEqual([
+      {
+        session_id: 'codex-thread',
+        message: 'Can you see these files?',
+        attachment_ids: ['attachment-1', 'attachment-2'],
+      },
+    ])
+    expect(wrapper.text()).toContain('Can you see these files?')
+    expect(wrapper.text()).toContain('spec.pdf')
+    expect(wrapper.text()).not.toContain('[Attachment] image.png')
+    expect(wrapper.html()).toContain('alt="image.png"')
+  })
+
   it('shows project-first Codex slash commands in the composer without starting a chat stream', async () => {
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const path = input.toString()

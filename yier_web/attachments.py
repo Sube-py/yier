@@ -9,7 +9,11 @@ from uuid import uuid4
 
 from litestar.datastructures import UploadFile
 
-from yier_web.schemas import AttachmentUploadResponse, CodexInputItem
+from yier_web.schemas import (
+    AttachmentUploadResponse,
+    CodexInputItem,
+    MessageAttachmentPayload,
+)
 
 
 MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
@@ -121,6 +125,33 @@ class AttachmentStorageService:
             for item in input_items
             if isinstance(item, dict) and isinstance(item.get("type"), str)
         ]
+
+    def message_attachment_for_attachment(
+        self,
+        *,
+        session_id: str,
+        attachment_id: str,
+    ) -> MessageAttachmentPayload:
+        record = self._read_record(session_id, attachment_id)
+        normalized_session_id = self._safe_identifier(session_id)
+        name = str(record.get("name") or "attachment")
+        mime_type = str(record.get("mime_type") or "application/octet-stream")
+        size = record.get("size")
+        kind = str(record.get("kind") or "binary")
+        preview_url = record.get("preview_url")
+        content_url = (
+            f"/api/chat/sessions/{normalized_session_id}/attachments/{attachment_id}/content"
+        )
+        return MessageAttachmentPayload(
+            id=attachment_id,
+            name=name,
+            mime_type=mime_type,
+            size=size if isinstance(size, int) else None,
+            kind=kind if kind in {"image", "text", "binary"} else "binary",
+            preview_url=preview_url if isinstance(preview_url, str) else None,
+            content_url=content_url,
+            path=record.get("file_path") if isinstance(record.get("file_path"), str) else None,
+        )
 
     def register_local_image(
         self,

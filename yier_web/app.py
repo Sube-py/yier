@@ -867,7 +867,10 @@ async def stream_chat(data: ChatStreamRequest, state: State) -> ServerSentEvent:
 
     async def event_stream() -> AsyncIterator[ServerSentEventMessage]:
         async for item in services.chat_service.stream_chat(
-            data.session_id, input_payload
+            data.session_id,
+            input_payload,
+            raw_message=data.message,
+            attachment_ids=data.attachment_ids,
         ):
             yield ServerSentEventMessage(
                 event=item["event"],

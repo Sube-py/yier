@@ -119,6 +119,17 @@ export interface ChannelMeta {
   peer_id: string
 }
 
+export interface MessageAttachment {
+  id?: string | null
+  name: string
+  mime_type: string
+  size?: number | null
+  kind: CodexAttachmentKind
+  preview_url?: string | null
+  content_url?: string | null
+  path?: string | null
+}
+
 export interface StoredMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'
   content: string | null
@@ -127,6 +138,7 @@ export interface StoredMessage {
   sequence?: number | null
   source: 'chat' | 'channel'
   channel_meta?: ChannelMeta | null
+  attachments?: MessageAttachment[]
 }
 
 export interface StoredActivityEvent {
@@ -1100,6 +1112,7 @@ export interface UiChatMessage {
   source: 'chat' | 'channel'
   channelMeta?: ChannelMeta | null
   draftId?: string | null
+  attachments?: MessageAttachment[]
 }
 
 export interface ApprovalActivityState {

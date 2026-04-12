@@ -331,6 +331,17 @@ class ActivityHistoryPayload(BaseModel):
     next_before: int | None = None
 
 
+class MessageAttachmentPayload(BaseModel):
+    id: str | None = None
+    name: str = ""
+    mime_type: str = "application/octet-stream"
+    size: int | None = None
+    kind: CodexAttachmentKind = "binary"
+    preview_url: str | None = None
+    content_url: str | None = None
+    path: str | None = None
+
+
 class StoredSessionMessage(BaseModel):
     role: Literal["system", "user", "assistant", "tool"]
     content: str | None = None
@@ -339,6 +350,7 @@ class StoredSessionMessage(BaseModel):
     sequence: int | None = None
     source: SessionSource = "chat"
     channel_meta: ChannelMetaPayload | None = None
+    attachments: list[MessageAttachmentPayload] = Field(default_factory=list)
 
 
 class CodexTurnTimingPayload(BaseModel):

@@ -72,12 +72,12 @@ function messageFieldsetPt() {
       legend="You"
       :pt="messageFieldsetPt()"
     >
-      <p
+      <div
         v-if="message.content"
-        class="m-0 whitespace-pre-wrap leading-[1.65]"
-      >
-        {{ message.content }}
-      </p>
+        class="markdown-prose [&>:first-child]:mt-0 [&>:last-child]:mb-0"
+        v-html="renderMarkdown(message.content)"
+        @click="onMarkdownClick"
+      ></div>
       <div
         v-if="imageAttachments.length"
         class="mt-3 grid gap-2"

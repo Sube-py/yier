@@ -345,4 +345,23 @@ describe('ChatTimeline', () => {
     expect(writeText).toHaveBeenCalledWith('const value = 1')
     expect(wrapper.get('[data-copy-markdown-code]').attributes('aria-label')).toBe('Copied')
   })
+
+  it('renders markdown for user messages', async () => {
+    const wrapper = mountTimeline({
+      messages: [
+        createMessage({
+          id: 'user-markdown',
+          role: 'user',
+          content: '**Bold** and `code`',
+          sequence: 1,
+        }),
+      ],
+    })
+
+    await flushPromises()
+
+    const html = wrapper.html()
+    expect(html).toContain('<strong>Bold</strong>')
+    expect(html).toContain('<code>code</code>')
+  })
 })

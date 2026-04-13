@@ -47,12 +47,12 @@ class CodexConversationStateService:
                 "type": runtime.status,
                 "activeFlags": list(runtime.active_flags),
             }
+            thread_rollout_path = thread.get("path")
             extra_state = {
                 "preview": thread.get("preview"),
                 "cliVersion": thread.get("cliVersion"),
                 "ephemeral": thread.get("ephemeral"),
                 "modelProvider": thread.get("modelProvider"),
-                "path": thread.get("path"),
                 "agentNickname": thread.get("agentNickname"),
                 "agentRole": thread.get("agentRole"),
             }
@@ -75,6 +75,7 @@ class CodexConversationStateService:
                 "type": runtime.status,
                 "activeFlags": list(runtime.active_flags),
             }
+            thread_rollout_path = None
             extra_state = {}
 
         pending_requests = self._requests(session_id)
@@ -106,7 +107,7 @@ class CodexConversationStateService:
             "previousTurnModel": None,
             "latestCollaborationMode": latest_collaboration_mode,
             "hasUnreadTurn": bool(backend_state.get("has_unread_turn")),
-            "rolloutPath": backend_state.get("rollout_path") or "",
+            "rolloutPath": thread_rollout_path or backend_state.get("rollout_path") or "",
             "gitInfo": git_info,
             "resumeState": backend_state.get("resume_state") or "resumed",
             "latestTokenUsageInfo": backend_state.get("latest_token_usage_info"),

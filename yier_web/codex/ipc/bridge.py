@@ -563,6 +563,30 @@ class CodexThreadFollowerBridge:
         )
         return {"ok": True}
 
+    async def interrupt_owner_turn(
+        self,
+        *,
+        session_id: str,
+    ) -> dict[str, Any]:
+        if not self.client.is_connected:
+            raise RuntimeError("IPC not connected.")
+        metadata = self.chat_service.get_session_metadata(session_id)
+        backend_state = metadata.get("backend_state", {})
+        target_client_id = backend_state.get("ipc_source_client_id")
+        if not isinstance(target_client_id, str) or not target_client_id:
+            raise RuntimeError("No IPC owner client found.")
+        ipc_debug_log(
+            "interrupt owner turn",
+            session_id=session_id,
+            target_client_id=target_client_id,
+        )
+        response = await self.client.send_request(
+            "thread-follower-interrupt-turn",
+            {"conversationId": session_id},
+            target_client_id=target_client_id,
+        )
+        return response
+
     async def _handle_set_model_and_reasoning(
         self, request: dict[str, Any]
     ) -> dict[str, Any]:

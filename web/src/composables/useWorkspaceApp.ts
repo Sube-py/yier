@@ -1759,6 +1759,16 @@ function createWorkspaceApp() {
     return `${buildSessionGoalLoopPath(sessionId)}/actions`
   }
 
+  function syncIsSendingFromRuntime(runtime: BackendRuntime | null | undefined) {
+    if (runtime?.status === 'active') {
+      if (!isSending.value) {
+        isSending.value = true
+      }
+    } else if (isSending.value && !isFlushingQueuedComposerFollowups) {
+      isSending.value = false
+    }
+  }
+
   async function loadSessionTranscript(sessionId: string) {
     const requestId = ++latestSessionLoadRequestId
     const transcript = await apiGet<SessionTranscriptResponse>(
@@ -1780,6 +1790,7 @@ function createWorkspaceApp() {
       ? transcript.codex_turn_timings
       : []
     activeSessionRuntime.value = transcript.backend_runtime ?? null
+    syncIsSendingFromRuntime(transcript.backend_runtime)
     activeCodexWorkMode.value = transcript.codex_work_mode ?? 'build'
     activeCodexGoalLoop.value = normalizeCodexGoalLoopState(transcript.codex_goal_loop)
     hydrateCodexGoalLoopDraft(activeCodexGoalLoop.value)

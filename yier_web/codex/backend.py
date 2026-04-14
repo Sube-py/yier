@@ -303,6 +303,35 @@ class CodexAppServerBackend(ChatBackend):
         )
         detail = runtime.detail if runtime else context.backend_state.get("detail")
         pending_count = len(runtime.pending_requests) if runtime else 0
+        if runtime is None:
+            ipc_state = context.backend_state.get("ipc_conversation_state")
+            if isinstance(ipc_state, dict):
+                trs = ipc_state.get("threadRuntimeStatus")
+                if isinstance(trs, dict):
+                    trs_type = trs.get("type")
+                    if isinstance(trs_type, str) and trs_type:
+                        status = trs_type
+                    trs_flags = trs.get("activeFlags")
+                    if isinstance(trs_flags, list):
+                        active_flags = [
+                            str(f.get("value") if isinstance(f, dict) else f)
+                            for f in trs_flags
+                        ]
+                # Override: if the latest turn is inProgress, always report active
+                turns = ipc_state.get("turns")
+                if isinstance(turns, list) and turns:
+                    last_turn = turns[-1]
+                    if isinstance(last_turn, dict):
+                        last_status = last_turn.get("status")
+                        if last_status == "inProgress":
+                            status = "active"
+                        _codex_ipc_debug_log(
+                            "runtime_payload ipc fallback",
+                            session_id=context.session_id,
+                            trs_type=trs_type,
+                            last_turn_status=last_status,
+                            resolved_status=status,
+                        )
         return {
             "backend_id": self.backend_id,
             "label": self.label,
@@ -312,6 +341,7 @@ class CodexAppServerBackend(ChatBackend):
             "active_flags": active_flags,
             "detail": detail,
             "pending_approval_count": pending_count,
+            "ipc_owner_client_id": context.backend_state.get("ipc_source_client_id"),
         }
 
     def pending_approvals(self, context: ChatSessionContext) -> list[dict[str, Any]]:

@@ -1008,8 +1008,16 @@ class ChatService:
             )
         return session_id
 
-    def get_session_context(self, session_id: str) -> ChatSessionContext:
-        metadata = self.get_session_metadata(session_id)
+    def get_session_context(
+        self,
+        session_id: str,
+        *,
+        include_conversation_state: bool = False,
+    ) -> ChatSessionContext:
+        metadata = self.get_session_metadata(
+            session_id,
+            include_conversation_state=include_conversation_state,
+        )
         return ChatSessionContext(
             session_id=session_id,
             source=metadata["source"],
@@ -1833,7 +1841,7 @@ class ChatService:
             await event_queue.put(None)
 
     def get_backend_runtime(self, session_id: str) -> BackendRuntimePayload:
-        context = self.get_session_context(session_id)
+        context = self.get_session_context(session_id, include_conversation_state=True)
         backend = self.backends.get(context.backend_id)
         if backend is None:
             return BackendRuntimePayload(
@@ -2279,6 +2287,11 @@ class ChatService:
         backend = self.backends.get(context.backend_id)
         if not isinstance(backend, CodexAppServerBackend):
             raise RuntimeError("Codex backend is not available.")
+        source_client_id = context.backend_state.get("ipc_source_client_id")
+        if isinstance(source_client_id, str) and source_client_id:
+            return await self.codex_ipc_bridge.interrupt_owner_turn(
+                session_id=session_id,
+            )
         return await backend.interrupt_turn(context, turn_id)
 
     def edit_last_codex_user_turn(

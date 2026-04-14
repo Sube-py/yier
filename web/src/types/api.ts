@@ -421,6 +421,7 @@ export interface BackendRuntime {
   active_flags: string[]
   detail?: string | null
   pending_approval_count: number
+  ipc_owner_client_id?: string | null
 }
 
 export interface ApprovalResponseRequest {

@@ -269,6 +269,7 @@ class BackendRuntimePayload(BaseModel):
     active_flags: list[str] = Field(default_factory=list)
     detail: str | None = None
     pending_approval_count: int = 0
+    ipc_owner_client_id: str | None = None
 
 
 class CreateSessionRequest(BaseModel):

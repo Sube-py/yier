@@ -435,6 +435,7 @@ export type ApprovalFormFieldKind = 'text' | 'number' | 'boolean' | 'select' | '
 export interface ApprovalFormOption {
   label: string
   value: string
+  description?: string
 }
 
 export interface ApprovalFormFieldState {
@@ -1137,6 +1138,11 @@ export interface ActivityMediaPreview {
   size?: number | null
 }
 
+export interface PlanImplementationState {
+  planContent: string
+  submittedAt: number | null
+}
+
 export interface ChatActivity {
   id: string
   sequence?: number
@@ -1153,6 +1159,7 @@ export interface ChatActivity {
   tool: ToolActivityState | null
   approval?: ApprovalActivityState | null
   media?: ActivityMediaPreview | null
+  planImplementation?: PlanImplementationState | null
 }
 
 export interface EditableMcpServer {

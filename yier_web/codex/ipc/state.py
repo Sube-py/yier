@@ -79,6 +79,9 @@ class CodexConversationStateService:
             extra_state = {}
 
         pending_requests = self._requests(session_id)
+        turns, pending_requests = self._inject_plan_state(
+            turns, pending_requests, session_id,
+        )
         latest_collaboration_mode = self._collaboration_mode(
             backend_state.get("collaboration_mode"),
             latest_model=latest_model,
@@ -327,6 +330,83 @@ class CodexConversationStateService:
             for approval in self.chat_service.get_pending_approvals(session_id)
         ]
 
+    def _inject_plan_state(
+        self,
+        turns: list[dict[str, Any]],
+        pending_requests: list[dict[str, Any]],
+        session_id: str,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Inject planImplementation items and pending requests for plan turns.
+
+        When a turn contains a ``proposed-plan`` item but no
+        ``plan-implementation`` item, add one (``isCompleted: False``)
+        so IPC clients can offer the "Implement plan" action.
+        Also inject an ``item/plan/requestImplementation`` pending request.
+        """
+        existing_plan_impl_methods = {
+            r.get("params", {}).get("turnId")
+            for r in pending_requests
+            if isinstance(r, dict) and r.get("method") == "item/plan/requestImplementation"
+        }
+        for turn in turns:
+            if not isinstance(turn, dict):
+                continue
+            turn_id = turn.get("turnId") or turn.get("id")
+            if not isinstance(turn_id, str) or not turn_id:
+                continue
+            items = turn.get("items")
+            if not isinstance(items, list):
+                continue
+
+            # Find proposed-plan content and check for existing planImplementation.
+            plan_content = None
+            has_plan_impl = False
+            has_incomplete_plan_impl = False
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") == "proposed-plan":
+                    text = item.get("content", "")
+                    if isinstance(text, str) and text.strip():
+                        plan_content = text.strip()
+                elif item.get("type") == "plan-implementation":
+                    has_plan_impl = True
+                    if not item.get("isCompleted"):
+                        has_incomplete_plan_impl = True
+
+            if plan_content is None:
+                continue
+
+            # Add planImplementation item if missing.
+            if not has_plan_impl:
+                items.append(
+                    {
+                        "type": "plan-implementation",
+                        "id": f"{turn_id}:plan-impl",
+                        "turnId": turn_id,
+                        "planContent": plan_content,
+                        "isCompleted": False,
+                    }
+                )
+                has_incomplete_plan_impl = True
+
+            # Add pending request if not already present.
+            if has_incomplete_plan_impl and turn_id not in existing_plan_impl_methods:
+                pending_requests.append(
+                    {
+                        "id": f"{turn_id}:plan-request",
+                        "method": "item/plan/requestImplementation",
+                        "params": {
+                            "threadId": session_id,
+                            "turnId": turn_id,
+                            "planContent": plan_content,
+                        },
+                    }
+                )
+                existing_plan_impl_methods.add(turn_id)
+
+        return turns, pending_requests
+
     def _collaboration_mode(
         self,
         value: Any,
@@ -437,6 +517,7 @@ class CodexConversationStateService:
             "item/fileChange/requestApproval",
             "item/commandExecution/requestApproval",
             "item/permissions/requestApproval",
+            "item/tool/requestUserInput",
             "mcpServer/elicitation/request",
             "elicitation/create",
         }

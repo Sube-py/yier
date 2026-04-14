@@ -127,7 +127,7 @@ class CodexThreadFollowerBridge:
             return
 
         # --- incremental patches for real-time streaming progress ---
-        if event in {"assistant_delta", "assistant_message", "token_usage_updated"}:
+        if event in {"assistant_delta", "assistant_message", "token_usage_updated", "plan"}:
             patches = await self._compute_patches(session_id, event, data)
             if patches:
                 await self._send_stream_patches(session_id, event, patches)
@@ -257,6 +257,14 @@ class CodexThreadFollowerBridge:
             "client-status-changed",
             self._handle_client_status_changed_broadcast,
         )
+        self.client.add_broadcast_handler(
+            "thread-archived",
+            self._handle_thread_archived_broadcast,
+        )
+        self.client.add_broadcast_handler(
+            "thread-unarchived",
+            self._handle_thread_unarchived_broadcast,
+        )
 
     async def _handle_thread_stream_state_changed_broadcast(
         self,
@@ -267,6 +275,12 @@ class CodexThreadFollowerBridge:
         if not session_id or not self._is_codex_session(session_id):
             return
 
+        source_client_id = message.get("sourceClientId")
+        if isinstance(source_client_id, str) and source_client_id:
+            self.chat_service.update_session_backend_state(
+                session_id,
+                {"ipc_source_client_id": source_client_id},
+            )
         change = p.get("change")
         change_type = change.get("type") if isinstance(change, dict) else None
         if isinstance(change, dict) and hasattr(
@@ -276,14 +290,14 @@ class CodexThreadFollowerBridge:
         ipc_debug_log(
             "handle stream state broadcast",
             session_id=session_id,
-            source_client_id=message.get("sourceClientId"),
+            source_client_id=source_client_id,
             change_type=change_type,
         )
         await self.chat_service.event_broker.publish(
             "codex_session_updated",
             {
                 "session_id": session_id,
-                "source_client_id": message.get("sourceClientId"),
+                "source_client_id": source_client_id,
                 "change_type": str(change_type or ""),
             },
         )
@@ -362,6 +376,44 @@ class CodexThreadFollowerBridge:
                 "client_id": p.get("clientId"),
                 "client_type": p.get("clientType"),
                 "status": p.get("status"),
+                "source_client_id": message.get("sourceClientId"),
+            },
+        )
+
+    async def _handle_thread_archived_broadcast(
+        self,
+        message: dict[str, Any],
+    ) -> None:
+        p = params(message)
+        session_id = conversation_id(p)
+        ipc_debug_log(
+            "handle thread archived broadcast",
+            session_id=session_id,
+            source_client_id=message.get("sourceClientId"),
+        )
+        await self.chat_service.event_broker.publish(
+            "codex_thread_archived",
+            {
+                "session_id": session_id,
+                "source_client_id": message.get("sourceClientId"),
+            },
+        )
+
+    async def _handle_thread_unarchived_broadcast(
+        self,
+        message: dict[str, Any],
+    ) -> None:
+        p = params(message)
+        session_id = conversation_id(p)
+        ipc_debug_log(
+            "handle thread unarchived broadcast",
+            session_id=session_id,
+            source_client_id=message.get("sourceClientId"),
+        )
+        await self.chat_service.event_broker.publish(
+            "codex_thread_unarchived",
+            {
+                "session_id": session_id,
                 "source_client_id": message.get("sourceClientId"),
             },
         )
@@ -633,6 +685,72 @@ class CodexThreadFollowerBridge:
         )
         await self.broadcast_queued_followups(session_id)
         return {"ok": True}
+
+    async def respond_to_pending_request(
+        self,
+        *,
+        session_id: str,
+        request: dict[str, Any],
+        response_payload: dict[str, Any],
+        decision: str,
+    ) -> bool:
+        if not self.client.is_connected:
+            return False
+
+        metadata = self.chat_service.get_session_metadata(session_id)
+        backend_state = metadata.get("backend_state", {})
+        target_client_id = (
+            backend_state.get("ipc_source_client_id")
+            if isinstance(backend_state, dict)
+            else None
+        )
+        if not isinstance(target_client_id, str) or not target_client_id.strip():
+            return False
+
+        method = request.get("method")
+        request_params = request.get("params")
+        if not isinstance(method, str) or not isinstance(request_params, dict):
+            return False
+
+        follower_method = {
+            "item/commandExecution/requestApproval": "thread-follower-command-approval-decision",
+            "item/fileChange/requestApproval": "thread-follower-file-approval-decision",
+            "item/tool/requestUserInput": "thread-follower-submit-user-input",
+            "mcpServer/elicitation/request": "thread-follower-submit-mcp-server-elicitation-response",
+            "elicitation/create": "thread-follower-submit-mcp-server-elicitation-response",
+        }.get(method)
+        if follower_method is None:
+            return False
+
+        outbound_params: dict[str, Any] = {
+            "conversationId": session_id,
+            "threadId": request_params.get("threadId") or session_id,
+            "turnId": request_params.get("turnId"),
+            "itemId": request_params.get("itemId"),
+            "requestId": request_params.get("_ipc_request_id", request.get("id")),
+        }
+        if follower_method in {
+            "thread-follower-command-approval-decision",
+            "thread-follower-file-approval-decision",
+        }:
+            outbound_params["decision"] = decision
+        else:
+            outbound_params["response"] = response_payload
+
+        try:
+            response = await self.client.send_request(
+                follower_method,
+                {
+                    key: value
+                    for key, value in outbound_params.items()
+                    if value is not None
+                },
+                target_client_id=target_client_id,
+            )
+        except Exception:
+            return False
+
+        return response.get("resultType") == "success"
 
     async def _handle_approval_decision(
         self,

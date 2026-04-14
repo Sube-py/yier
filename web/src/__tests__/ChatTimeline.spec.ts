@@ -4,6 +4,7 @@ import PrimeVue from 'primevue/config'
 import Aura from '@primeuix/themes/aura'
 
 import ChatTimeline from '../components/ChatTimeline.vue'
+import ComposerUserInputPanel from '../components/ComposerUserInputPanel.vue'
 
 import type { ChatActivity, UiChatMessage } from '../types/api'
 
@@ -273,6 +274,84 @@ describe('ChatTimeline', () => {
 
     expect(wrapper.emitted('approvalAction')).toEqual([
       ['approval-1', 'accept', '{"target":"prod"}'],
+    ])
+  })
+
+  it('wraps request-user-input answers in the expected payload shape', async () => {
+    const wrapper = mount(ComposerUserInputPanel, {
+      props: {
+        activity: createActivity({
+          id: 'approval-user-input',
+          sequence: 1,
+          kind: 'approval',
+          title: 'User input required',
+          detail: '',
+          state: 'queued',
+          approval: {
+            requestId: 'approval-3',
+            method: 'item/tool/requestUserInput',
+            kind: 'user_input',
+            options: [{ label: 'Submit', value: 'accept' }],
+            payload: {
+              request: {
+                kind: 'user_input',
+                questions: [
+                  {
+                    id: 'question_style',
+                    header: 'Test style',
+                    question: 'What should I do next?',
+                    isOther: true,
+                  },
+                ],
+              },
+            },
+            formMode: 'structured',
+            formFields: [
+              {
+                id: 'question_style',
+                label: 'Test style',
+                prompt: 'What should I do next?',
+                kind: 'select',
+                required: false,
+                value: '',
+                options: [{ label: 'Keep going', value: 'Keep going' }],
+              },
+              {
+                id: 'question_style__other',
+                label: 'Test style (Other)',
+                prompt: 'Provide a custom answer instead of the preset options.',
+                kind: 'text',
+                required: false,
+                value: '',
+              },
+            ],
+            responseDraft: '',
+            validationError: null,
+            submittedDecision: null,
+          },
+        }),
+      },
+      global: {
+        plugins: [[PrimeVue, { theme: { preset: Aura } }]],
+      },
+      attachTo: document.body,
+    })
+
+    await flushPromises()
+
+    const submitButton = wrapper.get('[data-testid="composer-user-input-submit"]')
+    await submitButton.trigger('click')
+    await flushPromises()
+    expect(wrapper.emitted('submitApproval')).toBeUndefined()
+    expect(wrapper.text()).toContain('Test style is required.')
+
+    await wrapper.get('[data-testid="composer-user-input-option-question_style-Keep going"]').trigger('click')
+    await flushPromises()
+    await submitButton.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.emitted('submitApproval')).toEqual([
+      ['approval-3', 'accept', '{"answers":{"question_style":["Keep going"]}}'],
     ])
   })
 

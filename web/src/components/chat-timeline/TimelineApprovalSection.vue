@@ -218,7 +218,7 @@ function submitApproval(decision: ApprovalDecision) {
       v-if="activity.approval?.submittedDecision"
       class="m-0 text-[0.8rem] text-[color:var(--app-text-soft)]"
     >
-      Submitted {{ activity.approval.submittedDecision }}. Waiting for Codex to continue.
+      Submitted {{ activity.approval.submittedDecision }}.
     </p>
   </div>
 </template>

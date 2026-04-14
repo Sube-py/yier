@@ -1850,10 +1850,50 @@ class ChatService:
         backend = self.backends.get(context.backend_id)
         if backend is None:
             return []
-        return [
-            PendingApproval.model_validate(item)
-            for item in backend.pending_approvals(context)
-        ]
+        pending_items = list(backend.pending_approvals(context))
+        seen_request_ids = {
+            item.get("request_id")
+            for item in pending_items
+            if isinstance(item, dict) and isinstance(item.get("request_id"), str)
+        }
+        if isinstance(backend, CodexAppServerBackend):
+            metadata = self.get_session_metadata(
+                session_id,
+                include_conversation_state=True,
+            )
+            conversation_state = metadata["backend_state"].get("ipc_conversation_state")
+            requests = (
+                conversation_state.get("requests")
+                if isinstance(conversation_state, dict)
+                else None
+            )
+            if isinstance(requests, list):
+                for request in requests:
+                    if not isinstance(request, dict):
+                        continue
+                    method = request.get("method")
+                    params = request.get("params")
+                    record = (
+                        backend.build_pending_approval_record(
+                            request.get("id"),
+                            method,
+                            params,
+                        )
+                        if isinstance(method, str) and isinstance(params, dict)
+                        else None
+                    )
+                    if record is None:
+                        continue
+                    request_id_value = record.get("request_id")
+                    if (
+                        isinstance(request_id_value, str)
+                        and request_id_value in seen_request_ids
+                    ):
+                        continue
+                    pending_items.append(record)
+                    if isinstance(request_id_value, str):
+                        seen_request_ids.add(request_id_value)
+        return [PendingApproval.model_validate(item) for item in pending_items]
 
     async def respond_to_approval(
         self,
@@ -1866,7 +1906,33 @@ class ChatService:
         backend = self.backends.get(context.backend_id)
         if backend is None:
             return False
-        return await backend.respond_to_approval(context, request_id, decision, content)
+        handled = await backend.respond_to_approval(
+            context,
+            request_id,
+            decision,
+            content,
+        )
+        if handled or not isinstance(backend, CodexAppServerBackend):
+            return handled
+        raw_request = self._pending_ipc_request(session_id, request_id)
+        if raw_request is None:
+            return False
+        method = raw_request.get("method")
+        params = raw_request.get("params")
+        if not isinstance(method, str) or not isinstance(params, dict):
+            return False
+        response_payload = backend.build_response_payload_for_request(
+            method,
+            params,
+            decision,
+            content,
+        )
+        return await self.codex_ipc_bridge.respond_to_pending_request(
+            session_id=session_id,
+            request=raw_request,
+            response_payload=response_payload,
+            decision=decision,
+        )
 
     async def respond_to_codex_raw_request(
         self,
@@ -1895,6 +1961,33 @@ class ChatService:
                     return approval.request_id
         if pending_approvals:
             return pending_approvals[0].request_id
+        return None
+
+    def _pending_ipc_request(
+        self,
+        session_id: str,
+        request_id: str,
+    ) -> dict[str, Any] | None:
+        metadata = self.get_session_metadata(
+            session_id,
+            include_conversation_state=True,
+        )
+        conversation_state = metadata["backend_state"].get("ipc_conversation_state")
+        requests = conversation_state.get("requests") if isinstance(conversation_state, dict) else None
+        if not isinstance(requests, list):
+            return None
+        context = self.get_session_context(session_id)
+        backend = self.backends.get(context.backend_id)
+        if not isinstance(backend, CodexAppServerBackend):
+            return None
+        for request in requests:
+            if not isinstance(request, dict):
+                continue
+            normalized_request_id = backend.normalize_pending_request_id(
+                request.get("id")
+            )
+            if normalized_request_id == request_id:
+                return request
         return None
 
     async def _publish_goal_loop_event(self, event: str, data: dict[str, Any]) -> None:

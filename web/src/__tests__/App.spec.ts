@@ -679,6 +679,9 @@ describe('App', () => {
           ],
         })
       }
+      if (isCodexSessionCreateRequest(path, init)) {
+        return jsonResponse({ session_id: 'codex-thread' })
+      }
       if (isSessionTranscriptRequest(path, 'codex-thread', init)) {
         return jsonResponse({
           session_id: 'codex-thread',
@@ -3819,6 +3822,194 @@ describe('App', () => {
     expect(wrapper.text()).toContain('confirmed')
     expect(wrapper.find('.approval-card textarea').exists()).toBe(false)
     expect(wrapper.find('.approval-select').exists()).toBe(true)
+  })
+
+  it('replaces the composer with a request-user-input panel for codex plan questions', async () => {
+    localStorage.setItem('yier.active-session-id', 'codex-thread')
+    localStorage.setItem('yier.workspace-surface', 'codex')
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = input.toString()
+      if (path.endsWith('/api/health')) {
+        return jsonResponse({
+          frontend: { ready: true, mode: 'static' },
+          llm: { ready: true },
+          mcp: { ready: true, runtime: {} },
+          backends: {
+            yier: { ready: true },
+            codex: { ready: true },
+          },
+          allowed_roots: ['/tmp/project'],
+        })
+      }
+      if (path.endsWith('/api/config') && (!init || init.method === 'GET')) {
+        return jsonResponse({
+          llm: { provider: '', base_url: 'https://example.test', model: 'demo', has_api_key: true },
+          allowed_roots: ['/tmp/project'],
+          mcp_runtime: {},
+          session_defaults: {
+            default_backend_id: 'yier',
+            default_project_path: '/tmp/project',
+            channel_backend_id: 'yier',
+            channel_project_path: '/tmp/project',
+            channel_auto_approve_codex_requests: true,
+            workspace_surface: 'codex',
+          },
+          codex: {
+            launcher_command: 'codex app-server --listen stdio://',
+            model: 'gpt-5.4',
+            sandbox: 'workspace-write',
+            approval_policy: 'on-request',
+            approvals_reviewer: 'user',
+            personality: 'friendly',
+            reasoning_effort: 'medium',
+            service_tier: '',
+          },
+        })
+      }
+      if (path.endsWith('/api/config/mcp')) {
+        return jsonResponse({ mcp_servers: {}, runtime: {} })
+      }
+      if (path.endsWith('/api/codex/workspace')) {
+        return jsonResponse({ projects: [] })
+      }
+      if (isSessionListRequest(path, init)) {
+        return jsonResponse({
+          sessions: [
+            {
+              session_id: 'codex-thread',
+              title: 'Codex session',
+              preview: 'Native preview',
+              updated_at: 100,
+              message_count: 2,
+              source: 'chat',
+              backend_id: 'codex',
+              project_path: '/tmp/project',
+              channel_meta: null,
+              codex_work_mode: 'plan',
+            },
+          ],
+        })
+      }
+      if (isSessionTranscriptRequest(path, 'codex-thread', init)) {
+        return jsonResponse({
+          session_id: 'codex-thread',
+          source: 'chat',
+          backend_id: 'codex',
+          project_path: '/tmp/project',
+          codex_work_mode: 'plan',
+          backend_runtime: {
+            backend_id: 'codex',
+            label: 'Codex App Server',
+            ready: true,
+            status: 'active',
+            thread_id: 'codex-thread',
+            active_flags: ['waitingOnApproval'],
+            detail: null,
+            pending_approval_count: 1,
+          },
+          pending_approvals: [
+            {
+              request_id: 'approval-ask',
+              method: 'item/tool/requestUserInput',
+              kind: 'user_input',
+              title: 'User input required',
+              detail: 'If a feature needs edits, how should I proceed?',
+              options: [
+                { value: 'accept', label: 'Submit' },
+                { value: 'cancel', label: 'Cancel' },
+              ],
+              payload: {
+                request: {
+                  kind: 'user_input',
+                  mode: 'form',
+                  message: 'If a feature needs edits, how should I proceed?',
+                  questions: [
+                    {
+                      id: 'approach',
+                      header: 'Approach',
+                      question: 'If a feature needs edits, how should I proceed?',
+                      isOther: false,
+                    },
+                  ],
+                  requestedSchema: {
+                    type: 'object',
+                    properties: {
+                      approach: {
+                        type: 'string',
+                        oneOf: [
+                          {
+                            const: 'Small changes first',
+                            title: 'Small changes first',
+                            description: 'Start with the narrowest safe patch.',
+                          },
+                          {
+                            const: 'Do a light refactor',
+                            title: 'Do a light refactor',
+                            description: 'Tidy nearby code while making the change.',
+                          },
+                        ],
+                      },
+                    },
+                    required: ['approach'],
+                  },
+                },
+              },
+            },
+          ],
+          messages: [{ role: 'assistant', content: 'waiting for user input' }],
+          activity_events: [],
+        })
+      }
+      if (
+        (path.endsWith('/api/codex/sessions/codex-thread/approvals/respond') ||
+          path.endsWith('/api/chat/sessions/codex-thread/approvals/respond')) &&
+        init?.method === 'POST'
+      ) {
+        return jsonResponse({ ok: true })
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const wrapper = await mountApp()
+    await flushPromises()
+
+    expect(wrapper.find('textarea.composer-textarea').exists()).toBe(false)
+    expect(wrapper.text()).toContain('If a feature needs edits, how should I proceed?')
+    expect(wrapper.text()).toContain('Small changes first')
+    expect(wrapper.text()).toContain('Start with the narrowest safe patch.')
+    expect(wrapper.text()).not.toContain('Codex is waiting for your answer before it can continue.')
+
+    await wrapper.get('[data-testid="composer-user-input-option-approach-Small changes first"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="composer-user-input-submit"]').trigger('click')
+    await flushPromises()
+
+    const approvalRequest = fetchMock.mock.calls.find(
+      ([calledPath, calledInit]) =>
+        typeof calledPath === 'string' &&
+        calledPath.endsWith('/approvals/respond') &&
+        calledInit &&
+        typeof calledInit === 'object' &&
+        'method' in calledInit &&
+        calledInit.method === 'POST',
+    )
+    expect(approvalRequest).toBeTruthy()
+    expect(approvalRequest?.[1]).toEqual(
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          request_id: 'approval-ask',
+          decision: 'accept',
+          content: {
+            answers: {
+              approach: ['Small changes first'],
+            },
+          },
+        }),
+      }),
+    )
   })
 
   it('deletes the active session and switches to the next saved session', async () => {

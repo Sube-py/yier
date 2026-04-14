@@ -21,6 +21,7 @@ import {
   shellRuntime,
 } from './helpers'
 import TimelineApprovalSection from './TimelineApprovalSection.vue'
+import TimelinePlanImplementationSection from './TimelinePlanImplementationSection.vue'
 
 const props = defineProps<{
   display: ActivityDisplayItem
@@ -31,6 +32,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
+  implementPlan: [{ planContent: string; userInput: string | null }]
   submitApproval: [{ requestId: string; decision: ApprovalDecision; contentText: string }]
 }>()
 
@@ -124,6 +126,28 @@ function formatBytes(size: number | null | undefined) {
       :activity="display.activity"
       @submit-approval="emit('submitApproval', $event)"
     />
+
+    <TimelinePlanImplementationSection
+      v-if="
+        display.activity.kind === 'plan'
+        && display.activity.planImplementation
+        && !display.activity.planImplementation.submittedAt
+      "
+      :activity="display.activity"
+      @implement-plan="emit('implementPlan', $event)"
+    />
+
+    <p
+      v-else-if="
+        display.activity.kind === 'plan'
+        && display.activity.planImplementation
+        && display.activity.planImplementation.submittedAt
+        && display.activity.planImplementation.submittedAt > 0
+      "
+      class="m-0 text-[0.8rem] text-[color:var(--app-text-soft)]"
+    >
+      Plan submitted. Codex is implementing...
+    </p>
   </div>
 
   <div

@@ -1505,3 +1505,48 @@ def test_codex_backend_thread_runtime_status_payload_normalizes_root_active_flag
         "type": "active",
         "activeFlags": ["waitingOnApproval"],
     }
+
+
+def test_codex_backend_build_pending_approval_record_normalizes_request_user_input() -> None:
+    backend = CodexAppServerBackend(SimpleNamespace())
+
+    record = backend.build_pending_approval_record(
+        0,
+        "item/tool/requestUserInput",
+        {
+            "questions": [
+                {
+                    "id": "question_style",
+                    "header": "Test style",
+                    "question": "What should I do next?",
+                    "isOther": True,
+                    "options": [
+                        {
+                            "label": "Keep going",
+                            "description": "Ask one more question.",
+                        }
+                    ],
+                }
+            ]
+        },
+    )
+
+    assert record is not None
+    assert record["request_id"] == "0"
+    assert record["kind"] == "user_input"
+    assert record["title"] == "User input required"
+    assert record["detail"] == "What should I do next?"
+    assert record["options"] == [
+        {"value": "accept", "label": "Submit"},
+        {"value": "cancel", "label": "Cancel"},
+    ]
+    payload = record["payload"]
+    assert payload["_ipc_request_id"] == 0
+    request = payload["request"]
+    assert request["kind"] == "user_input"
+    assert request["message"] == "What should I do next?"
+    assert request["questions"][0]["id"] == "question_style"
+    assert (
+        request["requestedSchema"]["properties"]["question_style__other"]["type"]
+        == "string"
+    )

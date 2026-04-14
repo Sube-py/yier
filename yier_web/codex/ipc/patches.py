@@ -26,6 +26,7 @@ class StreamTracking:
 
     agent_item_index: int = -1
     final_assistant_started_sent: bool = False
+    plan_item_index: int = -1
 
 
 def patches_for_stream_event(
@@ -59,6 +60,10 @@ def patches_for_stream_event(
         )
     if event == "assistant_message":
         return assistant_message_patches(tracking, latest_turn_index, items)
+    if event == "plan":
+        return plan_delta_patches(
+            tracking, latest_turn_index, latest_turn, items, data
+        )
     return []
 
 
@@ -147,6 +152,57 @@ def assistant_message_patches(
             "value": agent_item if isinstance(agent_item, dict) else {},
         }
     ]
+
+
+def plan_delta_patches(
+    tracking: StreamTracking,
+    turn_index: int,
+    turn: dict[str, Any],
+    items: list[dict[str, Any]],
+    data: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Patches for a plan content delta."""
+    content = data.get("content", "")
+    if not isinstance(content, str) or not content.strip():
+        return []
+
+    # Find or create the proposed-plan item index.
+    if tracking.plan_item_index < 0:
+        for i in range(len(items) - 1, -1, -1):
+            if isinstance(items[i], dict) and items[i].get("type") == "proposed-plan":
+                tracking.plan_item_index = i
+                break
+        if tracking.plan_item_index < 0:
+            tracking.plan_item_index = len(items)
+
+    idx = tracking.plan_item_index
+    patches: list[dict[str, Any]] = []
+
+    if idx >= len(items):
+        # Add new proposed-plan item.
+        patches.append(
+            {
+                "op": "add",
+                "path": ["turns", turn_index, "items", idx],
+                "value": {
+                    "type": "proposed-plan",
+                    "id": f"{data.get('session_id', '')}:plan",
+                    "content": content,
+                    "completed": False,
+                },
+            }
+        )
+    else:
+        # Replace content of existing proposed-plan item.
+        patches.append(
+            {
+                "op": "replace",
+                "path": ["turns", turn_index, "items", idx, "content"],
+                "value": content,
+            }
+        )
+
+    return patches
 
 
 def build_stream_patches_payload(

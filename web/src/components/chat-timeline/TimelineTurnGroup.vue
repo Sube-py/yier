@@ -15,6 +15,7 @@ defineProps<{
 }>()
 
 const emit = defineEmits<{
+  implementPlan: [{ planContent: string; userInput: string | null }]
   submitApproval: [{ requestId: string; decision: ApprovalDecision; contentText: string }]
   toggle: [event: Event]
 }>()
@@ -58,6 +59,7 @@ const emit = defineEmits<{
           :render-markdown="renderMarkdown"
           variant="group"
           @submit-approval="emit('submitApproval', $event)"
+          @implement-plan="emit('implementPlan', $event)"
         />
       </template>
     </div>

@@ -4,12 +4,20 @@ import Message from 'primevue/message'
 import ProgressSpinner from 'primevue/progressspinner'
 
 import ChatComposer from '../components/ChatComposer.vue'
+import ComposerUserInputPanel from '../components/ComposerUserInputPanel.vue'
 import CodexAdvancedModeDock from '../components/CodexAdvancedModeDock.vue'
 import ChatTimeline from '../components/ChatTimeline.vue'
 import CodexWorkbar from '../components/CodexWorkbar.vue'
 import { useWorkspaceAppContext } from '../composables/useWorkspaceApp'
 
 const workspace = useWorkspaceAppContext()
+
+async function handleImplementPlan(payload: { planContent: string; userInput: string | null }) {
+  const message = payload.userInput?.trim()
+    ? payload.userInput.trim()
+    : `PLEASE IMPLEMENT THIS PLAN:\n${payload.planContent}`
+  await workspace.sendComposerMessage(message)
+}
 </script>
 
 <template>
@@ -79,6 +87,7 @@ const workspace = useWorkspaceAppContext()
           :compact-header="workspace.isMobileChatPage"
           :show-reasoning-cards="workspace.appForm.codexShowReasoningCards"
           @approval-action="workspace.submitApprovalDecision"
+          @implement-plan="handleImplementPlan"
         />
       </div>
       <div class="shrink-0 px-[1.1rem] pt-2 pb-4 max-[1023px]:px-4 max-sm:px-3 max-sm:pb-3">
@@ -139,7 +148,14 @@ const workspace = useWorkspaceAppContext()
             {{ workspace.activeSession.channel_meta?.platform ?? 'channel' }} and is read-only in
             the chat workspace.
           </Message>
+          <ComposerUserInputPanel
+            v-if="workspace.composerUserInputActivity"
+            :activity="workspace.composerUserInputActivity"
+            :disabled="workspace.isSwitchingSession"
+            @submit-approval="workspace.submitApprovalDecision"
+          />
           <ChatComposer
+            v-else
             v-model="workspace.composerText"
             :disabled="!workspace.canComposeToSession"
             :is-sending="workspace.isSending"

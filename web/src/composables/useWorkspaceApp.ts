@@ -466,6 +466,14 @@ function createWorkspaceApp() {
         : 'Ask for follow-up changes'
       : 'Ask yier to inspect code, read files...',
   )
+  const composerUserInputActivity = computed(() =>
+    [...activities.value].reverse().find(
+      (activity) =>
+        activity.kind === 'approval' &&
+        activity.approval?.kind === 'user_input' &&
+        activity.state !== 'done',
+    ) ?? null,
+  )
   const hasCodexGoalLoop = computed(
     () => isCodexWorkspace.value && activeCodexGoalLoop.value !== null,
   )
@@ -2731,6 +2739,15 @@ function createWorkspaceApp() {
           activeSessionRuntime.value.status = 'idle'
           activeSessionRuntime.value.detail = 'Turn completed.'
         }
+        const planActivity = [...activities.value].reverse().find(
+          (a) => a.kind === 'plan' && a.state !== 'running',
+        )
+        if (planActivity && !planActivity.planImplementation?.submittedAt) {
+          planActivity.planImplementation = {
+            planContent: planActivity.detail || '',
+            submittedAt: null,
+          }
+        }
         return
       }
 
@@ -3385,6 +3402,7 @@ function createWorkspaceApp() {
         value,
         label:
           typeof titles[index] === 'string' && titles[index].trim() ? titles[index] : value,
+        description: undefined,
       }))
     }
 
@@ -3404,6 +3422,10 @@ function createWorkspaceApp() {
         return {
           value,
           label: typeof entry.title === 'string' && entry.title.trim() ? entry.title : value,
+          description:
+            typeof entry.description === 'string' && entry.description.trim()
+              ? entry.description
+              : undefined,
         }
       })
     }
@@ -3426,6 +3448,7 @@ function createWorkspaceApp() {
       return items.enum.map((value) => ({
         value,
         label: value,
+        description: undefined,
       }))
     }
 
@@ -3445,6 +3468,10 @@ function createWorkspaceApp() {
         return {
           value,
           label: typeof entry.title === 'string' && entry.title.trim() ? entry.title : value,
+          description:
+            typeof entry.description === 'string' && entry.description.trim()
+              ? entry.description
+              : undefined,
         }
       })
     }
@@ -3514,12 +3541,62 @@ function createWorkspaceApp() {
     }
   }
 
+  function approvalAnswersSummary(activity: ChatActivity | undefined) {
+    const request = activity?.approval?.payload.request
+    const answers = activity?.approval?.payload.answers
+    if (
+      !request ||
+      typeof request !== 'object' ||
+      Array.isArray(request) ||
+      !answers ||
+      typeof answers !== 'object' ||
+      Array.isArray(answers)
+    ) {
+      return ''
+    }
+
+    const questions = Array.isArray((request as Record<string, unknown>).questions)
+      ? ((request as Record<string, unknown>).questions as Array<Record<string, unknown>>)
+      : []
+    const answerMap = answers as Record<string, unknown>
+    const lines: string[] = []
+    for (const question of questions) {
+      const questionId = typeof question.id === 'string' ? question.id : ''
+      if (!questionId) {
+        continue
+      }
+      const rawValues = answerMap[questionId]
+      const values = Array.isArray(rawValues)
+        ? rawValues.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+        : typeof rawValues === 'string' && rawValues.trim()
+          ? [rawValues.trim()]
+          : []
+      if (!values.length) {
+        continue
+      }
+      const label =
+        typeof question.header === 'string' && question.header.trim()
+          ? question.header.trim()
+          : typeof question.question === 'string' && question.question.trim()
+            ? question.question.trim()
+            : questionId
+      lines.push(`${label}: ${values.join(', ')}`)
+    }
+    return lines.join('\n')
+  }
+
   function resolveApprovalActivity(requestId: string, decision: string) {
+    const existing = activities.value.find((item) => item.id === approvalActivityId(requestId))
+    const summary = approvalAnswersSummary(existing)
     upsertActivity(approvalActivityId(requestId), {
       id: approvalActivityId(requestId),
       kind: 'approval',
-      title: 'Approval resolved',
-      detail: `Decision: ${decision}.`,
+      title:
+        existing?.approval?.kind === 'user_input' ? 'User input submitted' : 'Approval resolved',
+      detail:
+        existing?.approval?.kind === 'user_input' && summary
+          ? summary
+          : `Decision: ${decision}.`,
       state: 'done',
       command: '',
       cwd: '',
@@ -3558,9 +3635,15 @@ function createWorkspaceApp() {
       )
       const activity = activities.value.find((item) => item.id === approvalActivityId(requestId))
       if (activity?.approval) {
+        if (content && typeof content === 'object' && !Array.isArray(content)) {
+          activity.approval.payload = {
+            ...activity.approval.payload,
+            ...content,
+          }
+        }
         activity.approval.submittedDecision = decision
         activity.state = 'running'
-        activity.detail = `Submitted ${decision}. Waiting for Codex to continue.`
+        activity.detail = `Submitted ${decision}.`
       }
     } catch (error) {
       errorMessage.value = toErrorMessage(error)
@@ -4556,6 +4639,7 @@ function createWorkspaceApp() {
     target.tool = nextValue.tool
     target.approval = nextValue.approval ?? target.approval
     target.media = nextValue.media ?? target.media
+    target.planImplementation = nextValue.planImplementation ?? target.planImplementation
   }
 
   function upsertShellActivity(activityId: string, nextValue: ChatActivity) {
@@ -4583,6 +4667,7 @@ function createWorkspaceApp() {
     target.tool = nextValue.tool ?? target.tool
     target.approval = nextValue.approval ?? target.approval
     target.media = nextValue.media ?? target.media
+    target.planImplementation = nextValue.planImplementation ?? target.planImplementation
   }
 
   function rekeyActivity(sourceId: string, targetId: string) {
@@ -5229,6 +5314,7 @@ function createWorkspaceApp() {
     workspaceSurfaceOptions,
     workspaceSurfaceModel,
     composerPlaceholder,
+    composerUserInputActivity,
     showQueuedComposerFollowupsPanel,
     hasCodexGoalLoop,
     codexGoalLoopSummary,
@@ -5273,6 +5359,7 @@ function createWorkspaceApp() {
     stopChannelAccount,
     submitApprovalDecision,
     submitMessage,
+    sendComposerMessage,
     submitQueuedComposerFollowupSteer,
     removeQueuedComposerFollowup,
     uploadComposerFiles,

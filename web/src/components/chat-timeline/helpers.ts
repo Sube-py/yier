@@ -376,6 +376,14 @@ export function activitySummaryText(display: ActivityDisplayItem, isSending = fa
 }
 
 export function isHiddenActivity(activity: ChatActivity, showReasoningCards = false) {
+  if (
+    activity.kind === 'approval' &&
+    approvalIsUserInput(activity) &&
+    activity.state !== 'done'
+  ) {
+    return true
+  }
+
   if (activity.kind === 'approval') {
     return false
   }
@@ -405,6 +413,11 @@ function approvalRequest(activity: ChatActivity) {
     return null
   }
   return request as Record<string, unknown>
+}
+
+function approvalIsUserInput(activity: ChatActivity) {
+  const request = approvalRequest(activity)
+  return request?.kind === 'user_input' || activity.approval?.kind === 'user_input'
 }
 
 export function approvalUsesStructuredForm(activity: ChatActivity) {
@@ -550,6 +563,38 @@ export function approvalContentText(activity: ChatActivity) {
   }
 
   activity.approval.validationError = null
+  if (approvalIsUserInput(activity)) {
+    const request = approvalRequest(activity)
+    const questions = Array.isArray(request?.questions) ? request.questions : []
+    const answers: Record<string, { answers: string[] }> = {}
+    for (const rawQuestion of questions) {
+      if (!rawQuestion || typeof rawQuestion !== 'object' || Array.isArray(rawQuestion)) {
+        continue
+      }
+      const question = rawQuestion as Record<string, unknown>
+      const questionId = typeof question.id === 'string' ? question.id : ''
+      if (!questionId) {
+        continue
+      }
+      const directValue = typeof content[questionId] === 'string' ? content[questionId].trim() : ''
+      const otherEntry = content[`${questionId}__other`]
+      const otherValue =
+        typeof otherEntry === 'string'
+          ? otherEntry.trim()
+          : ''
+      const answerValues = otherValue ? [otherValue] : directValue ? [directValue] : []
+      if (!answerValues.length) {
+        const header =
+          typeof question.header === 'string' && question.header.trim()
+            ? question.header.trim()
+            : questionId
+        activity.approval.validationError = `${header} is required.`
+        return ''
+      }
+      answers[questionId] = { answers: answerValues }
+    }
+    return JSON.stringify({ answers })
+  }
   return JSON.stringify(content)
 }
 

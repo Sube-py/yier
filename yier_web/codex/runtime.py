@@ -28,6 +28,7 @@ class TurnSnapshotState:
     final_assistant_started_at_ms: int | None = None
     assistant_item_id: str | None = None
     assistant_text: str = ""
+    plan_text: str = ""
 
 
 @dataclass(slots=True)

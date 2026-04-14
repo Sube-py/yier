@@ -354,12 +354,17 @@ class CodexAppServerBackend(ChatBackend):
         if pending is None:
             return False
         pending.decision = decision
-        pending.response = self._build_approval_response(
-            method=pending.method,
-            params=pending.payload,
-            decision=decision,
-            content=content,
-        )
+        if pending.method == "item/tool/requestUserInput":
+            pending.response = (
+                dict(content) if isinstance(content, dict) else {"answers": {}}
+            )
+        else:
+            pending.response = self._build_approval_response(
+                method=pending.method,
+                params=pending.payload,
+                decision=decision,
+                content=content,
+            )
         pending.event.set()
         return True
 
@@ -1267,6 +1272,9 @@ class CodexAppServerBackend(ChatBackend):
             )
             if activity_id and isinstance(delta, str) and delta:
                 content = self._accumulate_plan_delta(runtime, activity_id, delta)
+                snapshot = runtime.turn_snapshots.get(activity_id)
+                if snapshot is not None:
+                    snapshot.plan_text = content
                 self._emit_from_thread(
                     runtime,
                     "plan",
@@ -1318,6 +1326,9 @@ class CodexAppServerBackend(ChatBackend):
                 content = "\n".join(lines)
                 if activity_id:
                     runtime.plan_buffers[activity_id] = content
+                    snapshot = runtime.turn_snapshots.get(activity_id)
+                    if snapshot is not None:
+                        snapshot.plan_text = content
                 self._emit_from_thread(
                     runtime,
                     "plan",
@@ -1929,6 +1940,13 @@ class CodexAppServerBackend(ChatBackend):
             title = "MCP server input"
             if isinstance(request, dict):
                 detail = request.get("message") or detail
+        elif kind == "user_input":
+            request = self._normalized_user_input_request(method, params)
+            title = "User input required"
+            if isinstance(request, dict):
+                message = request.get("message")
+                if isinstance(message, str) and message.strip():
+                    detail = message.strip()
 
         return {
             "method": method,
@@ -1943,6 +1961,10 @@ class CodexAppServerBackend(ChatBackend):
     def _approval_payload(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         payload = dict(params)
         request = self._normalized_elicitation_request(method, params)
+        if request is not None:
+            payload["request"] = request
+            return payload
+        request = self._normalized_user_input_request(method, params)
         if request is not None:
             payload["request"] = request
         return payload
@@ -1985,6 +2007,123 @@ class CodexAppServerBackend(ChatBackend):
 
         return None
 
+    def _normalized_user_input_request(
+        self,
+        method: str,
+        params: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if method != "item/tool/requestUserInput":
+            return None
+
+        questions = params.get("questions")
+        if not isinstance(questions, list):
+            return None
+
+        schema_properties: dict[str, Any] = {}
+        schema_required: list[str] = []
+        normalized_questions: list[dict[str, Any]] = []
+
+        for entry in questions:
+            if not isinstance(entry, dict):
+                continue
+            question_id = entry.get("id")
+            if not isinstance(question_id, str) or not question_id.strip():
+                continue
+            normalized_id = question_id.strip()
+            prompt = entry.get("question")
+            header = entry.get("header")
+            options = entry.get("options")
+            is_other = bool(entry.get("isOther"))
+
+            normalized_question = {
+                "id": normalized_id,
+                "header": header if isinstance(header, str) else "",
+                "question": prompt if isinstance(prompt, str) else "",
+                "isOther": is_other,
+                "isSecret": bool(entry.get("isSecret")),
+                "options": [
+                    {
+                        "label": str(option.get("label") or "").strip(),
+                        "description": str(option.get("description") or "").strip(),
+                    }
+                    for option in options
+                    if isinstance(option, dict)
+                    and isinstance(option.get("label"), str)
+                    and option.get("label", "").strip()
+                ]
+                if isinstance(options, list)
+                else [],
+            }
+            normalized_questions.append(normalized_question)
+
+            schema_entry: dict[str, Any] = {
+                "title": (
+                    header.strip()
+                    if isinstance(header, str) and header.strip()
+                    else normalized_id
+                ),
+                "description": (
+                    prompt.strip() if isinstance(prompt, str) and prompt.strip() else ""
+                ),
+            }
+            option_entries = normalized_question["options"]
+            if option_entries:
+                schema_entry["type"] = "string"
+                schema_entry["oneOf"] = [
+                    {
+                        "const": option["label"],
+                        "title": option["label"],
+                        "description": option["description"],
+                    }
+                    for option in option_entries
+                ]
+            else:
+                schema_entry["type"] = "string"
+            schema_properties[normalized_id] = schema_entry
+
+            if is_other:
+                schema_properties[f"{normalized_id}__other"] = {
+                    "type": "string",
+                    "title": (
+                        f"{schema_entry['title']} (Other)"
+                        if isinstance(schema_entry["title"], str)
+                        else f"{normalized_id} (Other)"
+                    ),
+                    "description": "Provide a custom answer instead of the preset options.",
+                }
+            else:
+                schema_required.append(normalized_id)
+
+        if not normalized_questions:
+            return None
+
+        requested_schema: dict[str, Any] = {
+            "type": "object",
+            "properties": schema_properties,
+        }
+        if schema_required:
+            requested_schema["required"] = schema_required
+
+        prompt_text = self._user_input_prompt_text(normalized_questions)
+        return {
+            "kind": "user_input",
+            "mode": "form",
+            "message": prompt_text,
+            "questions": normalized_questions,
+            "requestedSchema": requested_schema,
+        }
+
+    def _user_input_prompt_text(self, questions: list[dict[str, Any]]) -> str:
+        for entry in questions:
+            prompt = entry.get("question")
+            if isinstance(prompt, str) and prompt.strip():
+                return prompt.strip()
+        for entry in questions:
+            header = entry.get("header")
+            if isinstance(header, str) and header.strip():
+                return header.strip()
+        return "Please answer the questions below."
+
     def _approval_kind(self, method: str) -> str:
         if method == "item/commandExecution/requestApproval":
             return "command"
@@ -1994,6 +2133,8 @@ class CodexAppServerBackend(ChatBackend):
             return "permissions"
         if method in {"mcpServer/elicitation/request", "elicitation/create"}:
             return "mcp_elicitation"
+        if method == "item/tool/requestUserInput":
+            return "user_input"
         return "approval"
 
     def _approval_options(self, kind: str) -> list[dict[str, str]]:
@@ -2002,6 +2143,11 @@ class CodexAppServerBackend(ChatBackend):
                 {"value": "accept", "label": "Accept once"},
                 {"value": "accept_for_session", "label": "Accept for session"},
                 {"value": "decline", "label": "Decline"},
+                {"value": "cancel", "label": "Cancel"},
+            ]
+        if kind == "user_input":
+            return [
+                {"value": "accept", "label": "Submit"},
                 {"value": "cancel", "label": "Cancel"},
             ]
         return [
@@ -2022,6 +2168,8 @@ class CodexAppServerBackend(ChatBackend):
             or not settings.channel_auto_approve_codex_requests
         ):
             return None
+        if method == "item/tool/requestUserInput":
+            return {"answers": {}}
         if method in {"mcpServer/elicitation/request", "elicitation/create"}:
             return {"action": "decline", "content": None}
         return self._build_approval_response(method, params, "accept", None)
@@ -2034,6 +2182,10 @@ class CodexAppServerBackend(ChatBackend):
         content: dict[str, Any] | None,
     ) -> dict[str, Any]:
         normalized_decision = decision.strip().lower()
+        if method == "item/tool/requestUserInput":
+            if normalized_decision == "cancel":
+                return {"answers": {}}
+            return dict(content) if isinstance(content, dict) else {"answers": {}}
         if method in {"mcpServer/elicitation/request", "elicitation/create"}:
             if normalized_decision == "accept":
                 return {"action": "accept", "content": content}
@@ -2061,6 +2213,44 @@ class CodexAppServerBackend(ChatBackend):
         if normalized_decision == "cancel":
             return {"decision": "cancel"}
         return {"decision": "accept"}
+
+    def normalize_pending_request_id(self, value: Any) -> str | None:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, int):
+            return str(value)
+        return None
+
+    def build_pending_approval_record(
+        self,
+        request_id: Any,
+        method: str,
+        params: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        normalized_request_id = self.normalize_pending_request_id(request_id)
+        if normalized_request_id is None:
+            return None
+        record = self._build_pending_approval(normalized_request_id, method, params)
+        payload = record.get("payload")
+        if isinstance(payload, dict) and not isinstance(request_id, str):
+            payload = {
+                **payload,
+                "_ipc_request_id": request_id,
+            }
+        return {
+            "request_id": normalized_request_id,
+            **record,
+            "payload": payload if isinstance(payload, dict) else record.get("payload"),
+        }
+
+    def build_response_payload_for_request(
+        self,
+        method: str,
+        params: dict[str, Any],
+        decision: str,
+        content: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return self._build_approval_response(method, params, decision, content)
 
     def _preview_metadata_for_local_image(
         self,
@@ -2343,6 +2533,26 @@ class CodexAppServerBackend(ChatBackend):
                 }
             )
 
+        # Convert raw "plan" items to "proposed-plan" format for IPC clients.
+        has_plan_item = False
+        for item in items:
+            if item.get("type") == "plan":
+                has_plan_item = True
+                item["type"] = "proposed-plan"
+                item["content"] = item.pop("text", "")
+                item["completed"] = True
+
+        # If snapshot has plan_text but no plan item in the turn, inject one.
+        if not has_plan_item and snapshot.plan_text:
+            items.append(
+                {
+                    "type": "proposed-plan",
+                    "id": f"{turn.get('id')}:plan",
+                    "content": snapshot.plan_text,
+                    "completed": True,
+                }
+            )
+
         return items
 
     def _build_turn_state_params(
@@ -2573,6 +2783,15 @@ class CodexAppServerBackend(ChatBackend):
         )
         for turn in normalized_turns:
             for raw_item in turn.get("items", []) or []:
+                if self._append_raw_ipc_item_view(
+                    context,
+                    raw_item,
+                    messages,
+                    activity_events,
+                    activity_event_counter,
+                    sequence_counter,
+                ):
+                    continue
                 item = self._coerce_thread_item(raw_item)
                 if item is None:
                     continue
@@ -2633,6 +2852,15 @@ class CodexAppServerBackend(ChatBackend):
             if not isinstance(items, list):
                 continue
             for raw_item in items:
+                if self._append_raw_ipc_item_view(
+                    context,
+                    raw_item,
+                    messages,
+                    activity_events,
+                    activity_event_counter,
+                    sequence_counter,
+                ):
+                    continue
                 item = self._coerce_thread_item(raw_item)
                 if item is None:
                     continue
@@ -2644,6 +2872,15 @@ class CodexAppServerBackend(ChatBackend):
                     activity_event_counter,
                     sequence_counter,
                 )
+        requests = conversation_state.get("requests")
+        if isinstance(requests, list):
+            self._append_ipc_request_activity_events(
+                context,
+                requests,
+                activity_events,
+                activity_event_counter=activity_event_counter,
+                sequence_counter=sequence_counter,
+            )
 
         title = (
             conversation_state.get("title")
@@ -2675,6 +2912,105 @@ class CodexAppServerBackend(ChatBackend):
             },
             "codex_turn_timings": self._codex_turn_timings_from_turns(normalized_turns),
         }
+
+    def _append_raw_ipc_item_view(
+        self,
+        context: ChatSessionContext,
+        raw_item: Any,
+        messages: list[StoredSessionMessage],
+        activity_events: list[dict[str, Any]] | deque[dict[str, Any]],
+        activity_event_counter: list[int],
+        sequence_counter: list[int],
+    ) -> bool:
+        if not isinstance(raw_item, dict):
+            return False
+        item_type = raw_item.get("type")
+        if item_type != "userInputResponse":
+            return False
+        if not raw_item.get("completed"):
+            return False
+
+        request_id = self.normalize_pending_request_id(raw_item.get("requestId"))
+        if request_id is None:
+            return False
+
+        request_payload = self._approval_payload(
+            "item/tool/requestUserInput",
+            {"questions": raw_item.get("questions")},
+        )
+        detail = "Please answer the questions below."
+        request = request_payload.get("request")
+        if isinstance(request, dict):
+            message = request.get("message")
+            if isinstance(message, str) and message.strip():
+                detail = message.strip()
+        answers = raw_item.get("answers")
+        if isinstance(answers, dict):
+            request_payload = {
+                **request_payload,
+                "answers": answers,
+            }
+
+        self._append_activity_event(
+            activity_events,
+            "approval_requested",
+            {
+                "session_id": context.session_id,
+                "request_id": request_id,
+                "method": "item/tool/requestUserInput",
+                "kind": "user_input",
+                "title": "User input required",
+                "detail": detail,
+                "options": self._approval_options("user_input"),
+                "payload": request_payload,
+            },
+            activity_event_counter=activity_event_counter,
+            sequence_counter=sequence_counter,
+        )
+        self._append_activity_event(
+            activity_events,
+            "approval_resolved",
+            {
+                "session_id": context.session_id,
+                "request_id": request_id,
+                "decision": "accept",
+            },
+            activity_event_counter=activity_event_counter,
+            sequence_counter=sequence_counter,
+        )
+        return True
+
+    def _append_ipc_request_activity_events(
+        self,
+        context: ChatSessionContext,
+        requests: list[dict[str, Any]],
+        activity_events: list[dict[str, Any]] | deque[dict[str, Any]],
+        *,
+        activity_event_counter: list[int],
+        sequence_counter: list[int],
+    ) -> None:
+        for request in requests:
+            if not isinstance(request, dict):
+                continue
+            method = request.get("method")
+            params = request.get("params")
+            record = (
+                self.build_pending_approval_record(request.get("id"), method, params)
+                if isinstance(method, str) and isinstance(params, dict)
+                else None
+            )
+            if record is None:
+                continue
+            self._append_activity_event(
+                activity_events,
+                "approval_requested",
+                {
+                    "session_id": context.session_id,
+                    **record,
+                },
+                activity_event_counter=activity_event_counter,
+                sequence_counter=sequence_counter,
+            )
 
     def _codex_turn_timings_from_turns(
         self,

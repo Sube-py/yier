@@ -27,7 +27,6 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   approvalAction: [requestId: string, decision: ApprovalDecision, contentText: string]
-  implementPlan: [{ planContent: string; userInput: string | null }]
 }>()
 
 const timelineBody = ref<HTMLElement | null>(null)
@@ -84,10 +83,6 @@ async function scrollToBottomIfNeeded() {
 
 function forwardApproval(payload: { requestId: string; decision: ApprovalDecision; contentText: string }) {
   emit('approvalAction', payload.requestId, payload.decision, payload.contentText)
-}
-
-function forwardImplementPlan(payload: { planContent: string; userInput: string | null }) {
-  emit('implementPlan', payload)
 }
 
 onMounted(async () => {
@@ -171,7 +166,6 @@ watch(
             :render-markdown="renderMarkdown"
             :turn-timings="turnTimings"
             @submit-approval="forwardApproval"
-            @implement-plan="forwardImplementPlan"
             @toggle="onTurnGroupToggle(entry, $event)"
           />
 
@@ -184,7 +178,6 @@ watch(
             :render-markdown="renderMarkdown"
             variant="standalone"
             @submit-approval="forwardApproval"
-            @implement-plan="forwardImplementPlan"
             @toggle="onActivityToggle(entry.display, $event)"
           />
         </template>

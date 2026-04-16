@@ -230,6 +230,10 @@ class PendingApproval(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class PendingRequest(PendingApproval):
+    item_id: str | None = None
+
+
 class CodexGoalLoopState(BaseModel):
     status: CodexGoalLoopStatus = "idle"
     goal: str = ""
@@ -268,6 +272,7 @@ class BackendRuntimePayload(BaseModel):
     thread_id: str | None = None
     active_flags: list[str] = Field(default_factory=list)
     detail: str | None = None
+    pending_request_count: int = 0
     pending_approval_count: int = 0
     ipc_owner_client_id: str | None = None
 
@@ -369,6 +374,7 @@ class SessionTranscriptResponse(BaseModel):
     codex_work_mode: CodexWorkMode | None = None
     codex_goal_loop: CodexGoalLoopState | None = None
     backend_runtime: BackendRuntimePayload | None = None
+    pending_requests: list[PendingRequest] = Field(default_factory=list)
     pending_approvals: list[PendingApproval] = Field(default_factory=list)
     messages: list[StoredSessionMessage] = Field(default_factory=list)
     activity_events: list[StoredActivityEvent] = Field(default_factory=list)

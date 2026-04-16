@@ -38,7 +38,6 @@ import type {
   ChannelPlatformsResponse,
   ChannelWorkspaceResponse,
   ChatActivity,
-  ChatApprovalRequestedEvent,
   ChatAssistantDeltaEvent,
   ChatStreamDoneEvent,
   ChatStreamErrorEvent,
@@ -66,7 +65,7 @@ import type {
   McpConfigResponse,
   MessageAttachment,
   OpenCodexSessionResponse,
-  PendingApproval,
+  PendingRequest,
   SaveAppSettingsRequest,
   SessionActivityPageResponse,
   SessionListResponse,
@@ -335,7 +334,7 @@ function createWorkspaceApp() {
   const backgroundActivityIdsByToolCallId = new Map<string, string>()
   const loadedTranscriptMessagesRaw = ref<StoredMessage[]>([])
   const loadedActivityEventsRaw = ref<SessionTranscriptResponse['activity_events']>([])
-  const loadedPendingApprovals = ref<PendingApproval[]>([])
+  const loadedPendingRequests = ref<PendingRequest[]>([])
   const activityHistoryMeta = ref<ActivityHistory | null>(null)
   let hydratingLlmForm = false
 
@@ -466,13 +465,12 @@ function createWorkspaceApp() {
         : 'Ask for follow-up changes'
       : 'Ask yier to inspect code, read files...',
   )
-  const composerUserInputActivity = computed(() =>
-    [...activities.value].reverse().find(
-      (activity) =>
-        activity.kind === 'approval' &&
-        activity.approval?.kind === 'user_input' &&
-        activity.state !== 'done',
-    ) ?? null,
+  const composerPendingRequest = computed(() => loadedPendingRequests.value[0] ?? null)
+  const composerUserInputRequest = computed(() =>
+    loadedPendingRequests.value.find((request) => request.kind === 'user_input') ?? null,
+  )
+  const composerImplementPlanRequest = computed(() =>
+    loadedPendingRequests.value.find((request) => request.kind === 'plan_implementation') ?? null,
   )
   const hasCodexGoalLoop = computed(
     () => isCodexWorkspace.value && activeCodexGoalLoop.value !== null,
@@ -1649,7 +1647,7 @@ function createWorkspaceApp() {
   function resetLoadedTranscriptState() {
     loadedTranscriptMessagesRaw.value = []
     loadedActivityEventsRaw.value = []
-    loadedPendingApprovals.value = []
+    loadedPendingRequests.value = []
     activityHistoryMeta.value = null
     isHydratingOlderActivity.value = false
   }
@@ -1660,7 +1658,6 @@ function createWorkspaceApp() {
     activities.value = []
     backgroundActivityIdsByToolCallId.clear()
     replaySessionActivityEvents(loadedActivityEventsRaw.value)
-    appendPendingApprovalActivities(loadedPendingApprovals.value)
   }
 
   async function hydrateOlderActivityEvents(
@@ -1731,6 +1728,10 @@ function createWorkspaceApp() {
     return `${buildSessionBasePath(sessionId)}/approvals/respond`
   }
 
+  function buildSessionPendingRequestPath(sessionId: string): string {
+    return buildSessionApprovalPath(sessionId)
+  }
+
   function buildSessionAttachmentPath(sessionId: string): string {
     return `/api/chat/sessions/${encodeURIComponent(sessionId)}/attachments`
   }
@@ -1781,7 +1782,7 @@ function createWorkspaceApp() {
     loadedActivityEventsRaw.value = Array.isArray(transcript.activity_events)
       ? transcript.activity_events
       : []
-    loadedPendingApprovals.value = transcript.pending_approvals ?? []
+    loadedPendingRequests.value = transcript.pending_requests ?? transcript.pending_approvals ?? []
     activityHistoryMeta.value = normalizeActivityHistory(
       transcript.activity_history,
       loadedActivityEventsRaw.value.length,
@@ -1882,7 +1883,7 @@ function createWorkspaceApp() {
   async function updateCodexWorkMode(mode: CodexWorkMode) {
     if (
       !activeSessionId.value ||
-      activeBackendId.value !== 'codex' ||
+      !activeBackendReady.value ||
       activeCodexWorkMode.value === mode
     ) {
       return
@@ -2709,34 +2710,37 @@ function createWorkspaceApp() {
 
       if (event.event === 'approval_requested') {
         if (!isReplayingSessionActivityEvents) {
-          loadedPendingApprovals.value = [
-            ...loadedPendingApprovals.value.filter(
-              (approval) => approval.request_id !== event.data.request_id,
+          loadedPendingRequests.value = [
+            ...loadedPendingRequests.value.filter(
+              (request) => request.request_id !== event.data.request_id,
             ),
             event.data,
           ]
         }
         if (activeSessionRuntime.value) {
+          activeSessionRuntime.value.pending_request_count += 1
           activeSessionRuntime.value.pending_approval_count += 1
           activeSessionRuntime.value.status = 'active'
         }
-        upsertApprovalActivity(event.data)
         return
       }
 
       if (event.event === 'approval_resolved') {
         if (!isReplayingSessionActivityEvents) {
-          loadedPendingApprovals.value = loadedPendingApprovals.value.filter(
-            (approval) => approval.request_id !== event.data.request_id,
+          loadedPendingRequests.value = loadedPendingRequests.value.filter(
+            (request) => request.request_id !== event.data.request_id,
           )
         }
         if (activeSessionRuntime.value) {
+          activeSessionRuntime.value.pending_request_count = Math.max(
+            0,
+            activeSessionRuntime.value.pending_request_count - 1,
+          )
           activeSessionRuntime.value.pending_approval_count = Math.max(
             0,
             activeSessionRuntime.value.pending_approval_count - 1,
           )
         }
-        resolveApprovalActivity(event.data.request_id, event.data.decision)
         return
       }
 
@@ -2749,15 +2753,6 @@ function createWorkspaceApp() {
         if (activeSessionRuntime.value) {
           activeSessionRuntime.value.status = 'idle'
           activeSessionRuntime.value.detail = 'Turn completed.'
-        }
-        const planActivity = [...activities.value].reverse().find(
-          (a) => a.kind === 'plan' && a.state !== 'running',
-        )
-        if (planActivity && !planActivity.planImplementation?.submittedAt) {
-          planActivity.planImplementation = {
-            planContent: planActivity.detail || '',
-            submittedAt: null,
-          }
         }
         return
       }
@@ -3218,414 +3213,61 @@ function createWorkspaceApp() {
     currentStreamSequenceHint = null
   }
 
-  function defaultApprovalResponseDraft(approval: PendingApproval) {
-    const request = approval.payload.request
-    if (!request || typeof request !== 'object' || Array.isArray(request)) {
-      return ''
-    }
-    return (request as Record<string, unknown>).mode === 'form' ? '{}' : ''
-  }
-
-  function approvalRequestPayload(payload: Record<string, unknown>) {
-    const request = payload.request
-    if (!request || typeof request !== 'object' || Array.isArray(request)) {
-      return null
-    }
-    return request as Record<string, unknown>
-  }
-
-  function approvalFormState(payload: Record<string, unknown>): {
-    formMode: ApprovalFormMode
-    formFields: ApprovalFormFieldState[]
-    responseDraft: string
-  } {
-    const request = approvalRequestPayload(payload)
-    if (!request || request.mode !== 'form') {
-      return {
-        formMode: 'none',
-        formFields: [],
-        responseDraft: '',
-      }
-    }
-
-    const requestedSchema = request.requestedSchema
-    if (
-      !requestedSchema ||
-      typeof requestedSchema !== 'object' ||
-      Array.isArray(requestedSchema)
-    ) {
-      return {
-        formMode: 'json',
-        formFields: [],
-        responseDraft: '{}',
-      }
-    }
-
-    const schema = requestedSchema as Record<string, unknown>
-    if (schema.type !== 'object') {
-      return {
-        formMode: 'json',
-        formFields: [],
-        responseDraft: '{}',
-      }
-    }
-
-    const properties = schema.properties
-    if (!properties || typeof properties !== 'object' || Array.isArray(properties)) {
-      return {
-        formMode: 'none',
-        formFields: [],
-        responseDraft: '',
-      }
-    }
-
-    const required = new Set(
-      Array.isArray(schema.required)
-        ? schema.required.filter((item): item is string => typeof item === 'string')
-        : [],
-    )
-
-    const formFields: ApprovalFormFieldState[] = []
-    for (const [fieldId, rawSchema] of Object.entries(properties as Record<string, unknown>)) {
-      if (!rawSchema || typeof rawSchema !== 'object' || Array.isArray(rawSchema)) {
-        return {
-          formMode: 'json',
-          formFields: [],
-          responseDraft: '{}',
-        }
-      }
-
-      const field = approvalFieldState(
-        fieldId,
-        rawSchema as Record<string, unknown>,
-        required.has(fieldId),
-      )
-      if (!field) {
-        return {
-          formMode: 'json',
-          formFields: [],
-          responseDraft: '{}',
-        }
-      }
-      formFields.push(field)
-    }
-
-    if (!formFields.length) {
-      return {
-        formMode: 'none',
-        formFields: [],
-        responseDraft: '',
-      }
-    }
-
-    return {
-      formMode: 'structured',
-      formFields,
-      responseDraft: '',
-    }
-  }
-
-  function approvalFieldState(
-    fieldId: string,
-    schema: Record<string, unknown>,
-    required: boolean,
-  ): ApprovalFormFieldState | null {
-    const label = typeof schema.title === 'string' && schema.title.trim() ? schema.title : fieldId
-    const prompt =
-      typeof schema.description === 'string' && schema.description.trim()
-        ? schema.description
-        : label
-
-    if (schema.type === 'boolean') {
-      return {
-        id: fieldId,
-        label,
-        prompt,
-        kind: 'boolean',
-        required,
-        value: typeof schema.default === 'boolean' ? schema.default : null,
-      }
-    }
-
-    if (schema.type === 'number' || schema.type === 'integer') {
-      return {
-        id: fieldId,
-        label,
-        prompt,
-        kind: 'number',
-        required,
-        value:
-          typeof schema.default === 'number' && Number.isFinite(schema.default)
-            ? String(schema.default)
-            : '',
-        min: typeof schema.minimum === 'number' ? schema.minimum : null,
-        max: typeof schema.maximum === 'number' ? schema.maximum : null,
-        integer: schema.type === 'integer',
-      }
-    }
-
-    const legacyEnumOptions = approvalEnumOptions(schema)
-    if (legacyEnumOptions) {
-      return {
-        id: fieldId,
-        label,
-        prompt,
-        kind: 'select',
-        required,
-        value: typeof schema.default === 'string' ? schema.default : '',
-        options: legacyEnumOptions,
-      }
-    }
-
-    const multiSelectOptions = approvalMultiSelectOptions(schema)
-    if (multiSelectOptions) {
-      return {
-        id: fieldId,
-        label,
-        prompt,
-        kind: 'multiselect',
-        required,
-        value: Array.isArray(schema.default)
-          ? schema.default.filter((item): item is string => typeof item === 'string')
-          : [],
-        options: multiSelectOptions,
-      }
-    }
-
-    if (schema.type === 'string') {
-      return {
-        id: fieldId,
-        label,
-        prompt,
-        kind: 'text',
-        required,
-        value: typeof schema.default === 'string' ? schema.default : '',
-      }
-    }
-
-    return null
-  }
-
-  function approvalEnumOptions(schema: Record<string, unknown>) {
-    if (Array.isArray(schema.enum) && schema.enum.every((item) => typeof item === 'string')) {
-      const titles = Array.isArray(schema.enumNames) ? schema.enumNames : []
-      return schema.enum.map((value, index) => ({
-        value,
-        label:
-          typeof titles[index] === 'string' && titles[index].trim() ? titles[index] : value,
-        description: undefined,
-      }))
-    }
-
-    if (
-      Array.isArray(schema.oneOf) &&
-      schema.oneOf.every(
-        (item) =>
-          item &&
-          typeof item === 'object' &&
-          !Array.isArray(item) &&
-          typeof (item as Record<string, unknown>).const === 'string',
-      )
-    ) {
-      return schema.oneOf.map((item) => {
-        const entry = item as Record<string, unknown>
-        const value = String(entry.const)
-        return {
-          value,
-          label: typeof entry.title === 'string' && entry.title.trim() ? entry.title : value,
-          description:
-            typeof entry.description === 'string' && entry.description.trim()
-              ? entry.description
-              : undefined,
-        }
-      })
-    }
-
-    return null
-  }
-
-  function approvalMultiSelectOptions(schema: Record<string, unknown>) {
-    if (
-      schema.type !== 'array' ||
-      !schema.items ||
-      typeof schema.items !== 'object' ||
-      Array.isArray(schema.items)
-    ) {
-      return null
-    }
-
-    const items = schema.items as Record<string, unknown>
-    if (Array.isArray(items.enum) && items.enum.every((item) => typeof item === 'string')) {
-      return items.enum.map((value) => ({
-        value,
-        label: value,
-        description: undefined,
-      }))
-    }
-
-    if (
-      Array.isArray(items.anyOf) &&
-      items.anyOf.every(
-        (item) =>
-          item &&
-          typeof item === 'object' &&
-          !Array.isArray(item) &&
-          typeof (item as Record<string, unknown>).const === 'string',
-      )
-    ) {
-      return items.anyOf.map((item) => {
-        const entry = item as Record<string, unknown>
-        const value = String(entry.const)
-        return {
-          value,
-          label: typeof entry.title === 'string' && entry.title.trim() ? entry.title : value,
-          description:
-            typeof entry.description === 'string' && entry.description.trim()
-              ? entry.description
-              : undefined,
-        }
-      })
-    }
-
-    return null
-  }
-
-  function approvalActivityId(requestId: string) {
-    return `approval:${requestId}`
-  }
-
-  function upsertApprovalActivity(event: ChatApprovalRequestedEvent['data']) {
-    const activityId = approvalActivityId(event.request_id)
-    const formState = approvalFormState(event.payload)
-    upsertActivity(
-      activityId,
-      makeActivity({
-        id: activityId,
-        title: event.title,
-        detail: event.detail,
-        state: 'queued',
-        kind: 'approval',
-        approval: {
-          requestId: event.request_id,
-          method: event.method,
-          kind: event.kind,
-          options: event.options,
-          payload: event.payload,
-          formMode: formState.formMode,
-          formFields: formState.formFields,
-          responseDraft:
-            formState.formMode === 'json'
-              ? formState.responseDraft
-              : defaultApprovalResponseDraft({
-                request_id: event.request_id,
-                method: event.method,
-                kind: event.kind,
-                title: event.title,
-                detail: event.detail,
-                options: event.options,
-                payload: event.payload,
-              }),
-          validationError: null,
-          submittedDecision: null,
-        },
-      }),
-    )
-  }
-
-  function appendPendingApprovalActivities(
-    pendingApprovals: PendingApproval[] | null | undefined,
-  ) {
-    if (!Array.isArray(pendingApprovals)) {
-      return
-    }
-    for (const approval of pendingApprovals) {
-      upsertApprovalActivity({
-        session_id: activeSessionId.value,
-        request_id: approval.request_id,
-        method: approval.method,
-        kind: approval.kind,
-        title: approval.title,
-        detail: approval.detail,
-        options: approval.options,
-        payload: approval.payload,
-      })
-    }
-  }
-
-  function approvalAnswersSummary(activity: ChatActivity | undefined) {
-    const request = activity?.approval?.payload.request
-    const answers = activity?.approval?.payload.answers
-    if (
-      !request ||
-      typeof request !== 'object' ||
-      Array.isArray(request) ||
-      !answers ||
-      typeof answers !== 'object' ||
-      Array.isArray(answers)
-    ) {
-      return ''
-    }
-
-    const questions = Array.isArray((request as Record<string, unknown>).questions)
-      ? ((request as Record<string, unknown>).questions as Array<Record<string, unknown>>)
-      : []
-    const answerMap = answers as Record<string, unknown>
-    const lines: string[] = []
-    for (const question of questions) {
-      const questionId = typeof question.id === 'string' ? question.id : ''
-      if (!questionId) {
-        continue
-      }
-      const rawValues = answerMap[questionId]
-      const values = Array.isArray(rawValues)
-        ? rawValues.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
-        : typeof rawValues === 'string' && rawValues.trim()
-          ? [rawValues.trim()]
-          : []
-      if (!values.length) {
-        continue
-      }
-      const label =
-        typeof question.header === 'string' && question.header.trim()
-          ? question.header.trim()
-          : typeof question.question === 'string' && question.question.trim()
-            ? question.question.trim()
-            : questionId
-      lines.push(`${label}: ${values.join(', ')}`)
-    }
-    return lines.join('\n')
-  }
-
-  function resolveApprovalActivity(requestId: string, decision: string) {
-    const existing = activities.value.find((item) => item.id === approvalActivityId(requestId))
-    const summary = approvalAnswersSummary(existing)
-    upsertActivity(approvalActivityId(requestId), {
-      id: approvalActivityId(requestId),
-      kind: 'approval',
-      title:
-        existing?.approval?.kind === 'user_input' ? 'User input submitted' : 'Approval resolved',
-      detail:
-        existing?.approval?.kind === 'user_input' && summary
-          ? summary
-          : `Decision: ${decision}.`,
-      state: 'done',
-      command: '',
-      cwd: '',
-      stdout: '',
-      stderr: '',
-      meta: [],
-      shell: null,
-      tool: null,
-      approval: null,
-    })
-  }
-
-  async function submitApprovalDecision(
+  async function submitPendingRequestDecision(
     requestId: string,
     decision: ApprovalDecision,
     contentText: string,
   ) {
     errorMessage.value = ''
+    const implementPlanRequest = composerImplementPlanRequest.value
+    if (implementPlanRequest?.request_id === requestId) {
+      let content: Record<string, unknown> | null = null
+      if (contentText.trim()) {
+        try {
+          content = JSON.parse(contentText) as Record<string, unknown>
+        } catch (error) {
+          errorMessage.value = `Invalid JSON approval response: ${toErrorMessage(error)}`
+          return
+        }
+      }
+
+      loadedPendingRequests.value = loadedPendingRequests.value.filter(
+        (request) => request.request_id !== requestId,
+      )
+      if (activeSessionRuntime.value) {
+        activeSessionRuntime.value.pending_request_count = Math.max(
+          0,
+          activeSessionRuntime.value.pending_request_count - 1,
+        )
+        activeSessionRuntime.value.pending_approval_count = Math.max(
+          0,
+          activeSessionRuntime.value.pending_approval_count - 1,
+        )
+      }
+
+      if (decision !== 'accept') {
+        return
+      }
+
+      const planContent = typeof content?.planContent === 'string'
+        ? content.planContent
+        : typeof implementPlanRequest.payload.planContent === 'string'
+          ? implementPlanRequest.payload.planContent
+          : ''
+      const followup = typeof content?.followupMessage === 'string'
+        ? content.followupMessage.trim()
+        : ''
+      const message = followup || `PLEASE IMPLEMENT THIS PLAN:\n${planContent}`.trim()
+      if (!message) {
+        return
+      }
+      if (activeCodexWorkMode.value === 'plan') {
+        await updateCodexWorkMode('build')
+      }
+      await sendComposerMessage(message)
+      return
+    }
+
     let content: Record<string, unknown> | null | undefined = undefined
     if (contentText.trim()) {
       try {
@@ -3637,24 +3279,25 @@ function createWorkspaceApp() {
     }
     try {
       await apiPost<{ ok: boolean }>(
-        buildSessionApprovalPath(activeSessionId.value),
+        buildSessionPendingRequestPath(activeSessionId.value),
         {
           request_id: requestId,
           decision,
           content,
         } satisfies ApprovalResponseRequest,
       )
-      const activity = activities.value.find((item) => item.id === approvalActivityId(requestId))
-      if (activity?.approval) {
-        if (content && typeof content === 'object' && !Array.isArray(content)) {
-          activity.approval.payload = {
-            ...activity.approval.payload,
-            ...content,
-          }
-        }
-        activity.approval.submittedDecision = decision
-        activity.state = 'running'
-        activity.detail = `Submitted ${decision}.`
+      loadedPendingRequests.value = loadedPendingRequests.value.filter(
+        (request) => request.request_id !== requestId,
+      )
+      if (activeSessionRuntime.value) {
+        activeSessionRuntime.value.pending_request_count = Math.max(
+          0,
+          activeSessionRuntime.value.pending_request_count - 1,
+        )
+        activeSessionRuntime.value.pending_approval_count = Math.max(
+          0,
+          activeSessionRuntime.value.pending_approval_count - 1,
+        )
       }
     } catch (error) {
       errorMessage.value = toErrorMessage(error)
@@ -5325,7 +4968,9 @@ function createWorkspaceApp() {
     workspaceSurfaceOptions,
     workspaceSurfaceModel,
     composerPlaceholder,
-    composerUserInputActivity,
+    composerPendingRequest,
+    composerUserInputRequest,
+    composerImplementPlanRequest,
     showQueuedComposerFollowupsPanel,
     hasCodexGoalLoop,
     codexGoalLoopSummary,
@@ -5368,7 +5013,7 @@ function createWorkspaceApp() {
     loginWeixin,
     startChannelAccount,
     stopChannelAccount,
-    submitApprovalDecision,
+    submitPendingRequestDecision,
     submitMessage,
     sendComposerMessage,
     submitQueuedComposerFollowupSteer,

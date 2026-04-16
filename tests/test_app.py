@@ -172,6 +172,9 @@ class FakeChatService:
     def get_pending_approvals(self, session_id: str) -> list[dict[str, Any]]:
         return []
 
+    def get_pending_requests(self, session_id: str) -> list[dict[str, Any]]:
+        return []
+
     def is_channel_session(self, session_id: str) -> bool:
         return False
 
@@ -398,7 +401,27 @@ class FakeChatService:
     ) -> bool:
         return True
 
-    async def stream_chat(self, session_id: str, user_message: str):
+    async def respond_to_pending_request(
+        self,
+        session_id: str,
+        request_id: str,
+        decision: str,
+        content: dict[str, Any] | None = None,
+    ) -> bool:
+        return await self.respond_to_approval(
+            session_id,
+            request_id,
+            decision,
+            content,
+        )
+
+    async def stream_chat(
+        self,
+        session_id: str,
+        user_message: str,
+        raw_message: str | None = None,
+        attachment_ids: list[str] | None = None,
+    ):
         yield {"event": "run_started", "data": {"session_id": session_id}}
         yield {
             "event": "tool_call_start",
@@ -1694,6 +1717,67 @@ def test_chat_service_create_codex_session_uses_native_thread_id(
     asyncio.run(scenario())
 
 
+def test_chat_service_update_codex_session_mode_normalizes_protocol_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        monkeypatch.setattr(
+            SkillCatalog, "discover", lambda *args, **kwargs: SkillCatalog()
+        )
+
+        project_root = tmp_path / "project"
+        project_root.mkdir(parents=True)
+        service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
+        chat_service = ChatService(
+            project_root=project_root,
+            config_service=service,
+            mcp_manager=FakeMCPManager(),  # type: ignore[arg-type]
+        )
+        codex_backend = chat_service.backends["codex"]
+        assert isinstance(codex_backend, CodexAppServerBackend)
+
+        async def fake_bootstrap_session(
+            project_path: Path,
+            source: str = "chat",
+            channel_meta: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            return {
+                "thread_id": "thread-native-43",
+                "status": "idle",
+                "active_flags": [],
+                "detail": None,
+            }
+
+        monkeypatch.setattr(
+            codex_backend,
+            "bootstrap_session",
+            fake_bootstrap_session,
+        )
+        monkeypatch.setattr(
+            chat_service,
+            "_schedule_ipc_collaboration_mode_broadcast",
+            lambda session_id: None,
+        )
+
+        session_id = await chat_service.create_session(backend_id="codex")
+
+        assert chat_service.update_codex_session_mode(session_id, "build") is True
+
+        metadata = chat_service.get_session_metadata(session_id)
+        assert metadata["codex_work_mode"] == "build"
+        assert metadata["backend_state"]["collaboration_mode"] == {
+            "mode": "default",
+            "settings": {
+                "model": "",
+                "reasoning_effort": None,
+                "developer_instructions": None,
+            },
+        }
+
+    asyncio.run(scenario())
+
+
 def test_chat_service_build_codex_ipc_conversation_state_prefers_raw_requests_and_runtime_status(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2190,6 +2274,7 @@ def test_chat_service_background_codex_turn_replays_events_to_ipc_and_broker(
                 "sequence": 0,
                 "source": "chat",
                 "channel_meta": None,
+                "attachments": [],
             }
         ]
 
@@ -2273,6 +2358,7 @@ def test_chat_service_load_session_view_uses_local_snapshot_for_active_codex_ses
                 "sequence": 0,
                 "source": "chat",
                 "channel_meta": None,
+                "attachments": [],
             },
             {
                 "role": "assistant",
@@ -2282,6 +2368,7 @@ def test_chat_service_load_session_view_uses_local_snapshot_for_active_codex_ses
                 "sequence": 1,
                 "source": "chat",
                 "channel_meta": None,
+                "attachments": [],
             },
         ]
         assert activity_events == [

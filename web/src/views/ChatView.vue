@@ -8,15 +8,15 @@ import ComposerUserInputPanel from '../components/ComposerUserInputPanel.vue'
 import CodexAdvancedModeDock from '../components/CodexAdvancedModeDock.vue'
 import ChatTimeline from '../components/ChatTimeline.vue'
 import CodexWorkbar from '../components/CodexWorkbar.vue'
+import PlanModeSuggestion from '../components/PlanModeSuggestion.vue'
+import { toggleWorkMode } from '../composables/usePlanModeKeyboard'
 import { useWorkspaceAppContext } from '../composables/useWorkspaceApp'
 
 const workspace = useWorkspaceAppContext()
 
-async function handleImplementPlan(payload: { planContent: string; userInput: string | null }) {
-  const message = payload.userInput?.trim()
-    ? payload.userInput.trim()
-    : `PLEASE IMPLEMENT THIS PLAN:\n${payload.planContent}`
-  await workspace.sendComposerMessage(message)
+function handleTogglePlanMode() {
+  const next = toggleWorkMode(workspace.activeCodexWorkMode)
+  workspace.updateCodexWorkMode(next)
 }
 </script>
 
@@ -86,8 +86,7 @@ async function handleImplementPlan(payload: { planContent: string; userInput: st
           :assistant-label="workspace.assistantLabel"
           :compact-header="workspace.isMobileChatPage"
           :show-reasoning-cards="workspace.appForm.codexShowReasoningCards"
-          @approval-action="workspace.submitApprovalDecision"
-          @implement-plan="handleImplementPlan"
+          @approval-action="workspace.submitPendingRequestDecision"
         />
       </div>
       <div class="shrink-0 px-[1.1rem] pt-2 pb-4 max-[1023px]:px-4 max-sm:px-3 max-sm:pb-3">
@@ -149,42 +148,60 @@ async function handleImplementPlan(payload: { planContent: string; userInput: st
             the chat workspace.
           </Message>
           <ComposerUserInputPanel
-            v-if="workspace.composerUserInputActivity"
-            :activity="workspace.composerUserInputActivity"
+            v-if="workspace.composerUserInputRequest"
+            :request="workspace.composerUserInputRequest"
+            :pending-request="workspace.composerPendingRequest"
             :disabled="workspace.isSwitchingSession"
-            @submit-approval="workspace.submitApprovalDecision"
+            @submit-request="workspace.submitPendingRequestDecision"
           />
-          <ChatComposer
-            v-else
-            v-model="workspace.composerText"
-            :disabled="!workspace.canComposeToSession"
-            :is-sending="workspace.isSending"
-            :submit-mode="workspace.isSending ? 'interrupt' : 'send'"
-            :interrupting="workspace.isInterrupting"
-            :attachments="workspace.composerAttachments"
-            :attachments-enabled="workspace.isCodexWorkspace && workspace.activeSession?.source !== 'channel'"
-            :attachments-locked="
-              workspace.isSending || workspace.isInterrupting || workspace.isSwitchingSession
-            "
-            :model-label="workspace.isCodexWorkspace ? workspace.appForm.codexModel : ''"
-            :reasoning-label="
-              workspace.isCodexWorkspace ? workspace.appForm.codexReasoningEffort : ''
-            "
-            :placeholder="workspace.composerPlaceholder"
-            :sandbox="workspace.isCodexWorkspace ? workspace.appForm.codexSandbox : null"
-            :saving-sandbox="workspace.savingState.codexSandbox"
-            :selection-start="workspace.composerSelectionStart"
-            :selection-end="workspace.composerSelectionEnd"
-            :selection-version="workspace.composerSelectionVersion"
-            @update-sandbox="workspace.appForm.codexSandbox = $event"
-            @save-sandbox="workspace.saveCodexSandboxMode"
-            @upload-files="workspace.uploadComposerFiles"
-            @remove-attachment="workspace.removeComposerAttachment"
-            @retry-attachment="workspace.retryComposerAttachment"
-            @selection-change="workspace.handleComposerSelectionChange"
-            @interrupt="workspace.interruptCodexTurn"
-            @submit="workspace.submitMessage"
+          <ComposerUserInputPanel
+            v-else-if="workspace.composerImplementPlanRequest"
+            :request="workspace.composerImplementPlanRequest"
+            :pending-request="workspace.composerPendingRequest"
+            :disabled="workspace.isSwitchingSession"
+            @submit-request="workspace.submitPendingRequestDecision"
           />
+          <template v-else>
+            <PlanModeSuggestion
+              v-if="workspace.isCodexWorkspace"
+              :composer-text="workspace.composerText"
+              :is-plan-mode="workspace.activeCodexWorkMode === 'plan'"
+              @activate-plan="workspace.updateCodexWorkMode('plan')"
+            />
+            <ChatComposer
+              v-model="workspace.composerText"
+              :disabled="!workspace.canComposeToSession"
+              :is-sending="workspace.isSending"
+              :submit-mode="workspace.isSending ? 'interrupt' : 'send'"
+              :interrupting="workspace.isInterrupting"
+              :attachments="workspace.composerAttachments"
+              :attachments-enabled="workspace.isCodexWorkspace && workspace.activeSession?.source !== 'channel'"
+              :attachments-locked="
+                workspace.isSending || workspace.isInterrupting || workspace.isSwitchingSession
+              "
+              :model-label="workspace.isCodexWorkspace ? workspace.appForm.codexModel : ''"
+              :reasoning-label="
+                workspace.isCodexWorkspace ? workspace.appForm.codexReasoningEffort : ''
+              "
+              :placeholder="workspace.composerPlaceholder"
+              :sandbox="workspace.isCodexWorkspace ? workspace.appForm.codexSandbox : null"
+              :saving-sandbox="workspace.savingState.codexSandbox"
+              :selection-start="workspace.composerSelectionStart"
+              :selection-end="workspace.composerSelectionEnd"
+              :selection-version="workspace.composerSelectionVersion"
+              :plan-mode="workspace.isCodexWorkspace ? workspace.activeCodexWorkMode : undefined"
+              :plan-mode-enabled="workspace.isCodexWorkspace"
+              @update-sandbox="workspace.appForm.codexSandbox = $event"
+              @save-sandbox="workspace.saveCodexSandboxMode"
+              @upload-files="workspace.uploadComposerFiles"
+              @remove-attachment="workspace.removeComposerAttachment"
+              @retry-attachment="workspace.retryComposerAttachment"
+              @selection-change="workspace.handleComposerSelectionChange"
+              @interrupt="workspace.interruptCodexTurn"
+              @submit="workspace.submitMessage"
+              @toggle-plan-mode="handleTogglePlanMode"
+            />
+          </template>
         </div>
       </div>
     </div>

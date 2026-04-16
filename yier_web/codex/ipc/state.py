@@ -5,6 +5,7 @@ from time import time
 from typing import TYPE_CHECKING, Any
 
 from yier_web.codex.backend import CodexAppServerBackend
+from yier_web.codex.collaboration_mode import normalize_protocol_collaboration_mode
 
 if TYPE_CHECKING:
     from yier_web.chat import ChatService
@@ -326,8 +327,8 @@ class CodexConversationStateService:
             if raw_requests:
                 return raw_requests
         return [
-            approval.model_dump(mode="json")
-            for approval in self.chat_service.get_pending_approvals(session_id)
+            request.model_dump(mode="json")
+            for request in self.chat_service.get_pending_requests(session_id)
         ]
 
     def _inject_plan_state(
@@ -414,48 +415,11 @@ class CodexConversationStateService:
         latest_model: str,
         latest_reasoning_effort: Any,
     ) -> dict[str, Any]:
-        default_settings = {
-            "model": latest_model,
-            "reasoning_effort": (
-                latest_reasoning_effort
-                if latest_reasoning_effort is None
-                else str(latest_reasoning_effort)
-            ),
-            "developer_instructions": None,
-        }
-        default_mode = {
-            "mode": "default",
-            "settings": default_settings,
-        }
-        if isinstance(value, dict):
-            mode = value.get("mode")
-            settings = value.get("settings")
-            if isinstance(mode, str) and mode.strip():
-                normalized = dict(value)
-                normalized["mode"] = mode.strip()
-                merged_settings = dict(default_settings)
-                if isinstance(settings, dict):
-                    model = settings.get("model")
-                    if isinstance(model, str):
-                        merged_settings["model"] = model
-                    reasoning_effort = settings.get("reasoning_effort")
-                    if reasoning_effort is None or isinstance(reasoning_effort, str):
-                        merged_settings["reasoning_effort"] = reasoning_effort
-                    developer_instructions = settings.get("developer_instructions")
-                    if developer_instructions is None or isinstance(
-                        developer_instructions, str
-                    ):
-                        merged_settings["developer_instructions"] = (
-                            developer_instructions
-                        )
-                normalized["settings"] = merged_settings
-                return normalized
-        if isinstance(value, str) and value.strip():
-            return {
-                "mode": value.strip(),
-                "settings": default_settings,
-            }
-        return default_mode
+        return normalize_protocol_collaboration_mode(
+            value,
+            default_model=latest_model,
+            default_reasoning_effort=latest_reasoning_effort,
+        )
 
     def _thread_runtime_status(
         self,

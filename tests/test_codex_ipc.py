@@ -68,6 +68,7 @@ class FakeChatService:
         self.interrupted_turns: list[tuple[str, str | None]] = []
         self.responded_raw_requests: list[tuple[str, str, dict[str, Any]]] = []
         self.updated_backend_states: list[tuple[str, dict[str, Any]]] = []
+        self.synced_collaboration_modes: list[tuple[str, dict[str, Any] | str]] = []
         self.published_events: list[tuple[str, dict[str, Any]]] = []
         self.followup_queue = _FakeFollowupQueue(["Review logs", "Push update"])
         self.event_broker = SimpleNamespace(publish=self._publish_event)
@@ -144,8 +145,32 @@ class FakeChatService:
             return "approval-1"
         return None
 
+    def resolve_pending_request_id(
+        self,
+        session_id: str,
+        *,
+        preferred_kind: str | None = None,
+    ) -> str | None:
+        return self.resolve_pending_approval_request_id(
+            session_id,
+            preferred_kind=preferred_kind,
+        )
+
     def update_session_backend_state(self, session_id: str, updates: dict[str, Any]) -> None:
         self.updated_backend_states.append((session_id, updates))
+
+    def sync_codex_collaboration_mode(
+        self,
+        session_id: str,
+        collaboration_mode: dict[str, Any] | str,
+        *,
+        broadcast: bool = False,
+    ) -> bool:
+        self.synced_collaboration_modes.append((session_id, collaboration_mode))
+        self.updated_backend_states.append(
+            (session_id, {"collaboration_mode": collaboration_mode})
+        )
+        return True
 
     def get_session_metadata(self, session_id: str) -> dict[str, Any]:
         if session_id == "thread-1":
@@ -680,6 +705,95 @@ def test_codex_thread_follower_bridge_accepts_object_collaboration_mode() -> Non
                             "developer_instructions": None,
                         },
                     }
+                },
+            )
+        finally:
+            await bridge.stop()
+            if server_writer is not None:
+                server_writer.close()
+                await server_writer.wait_closed()
+            server.close()
+            socket_path.unlink(missing_ok=True)
+
+    asyncio.run(scenario())
+
+
+def test_codex_thread_follower_bridge_normalizes_legacy_build_collaboration_mode() -> None:
+    async def scenario() -> None:
+        socket_path = _test_socket_path()
+        messages_from_client: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        client_ready = asyncio.Event()
+        server_writer: asyncio.StreamWriter | None = None
+
+        async def handle_connection(
+            reader: asyncio.StreamReader,
+            writer: asyncio.StreamWriter,
+        ) -> None:
+            nonlocal server_writer
+            initialize_request = await _read_frame(reader)
+            server_writer = writer
+            await _send_frame(
+                writer,
+                {
+                    "type": "response",
+                    "requestId": initialize_request["requestId"],
+                    "resultType": "success",
+                    "method": "initialize",
+                    "handledByClientId": "router-client",
+                    "result": {"clientId": "client-yier"},
+                },
+            )
+            client_ready.set()
+            while True:
+                try:
+                    message = await _read_frame(reader)
+                except asyncio.IncompleteReadError:
+                    break
+                await messages_from_client.put(message)
+
+        server = await asyncio.start_unix_server(handle_connection, path=socket_path)
+        fake_chat_service = FakeChatService()
+        bridge = CodexThreadFollowerBridge(
+            chat_service=fake_chat_service,  # type: ignore[arg-type]
+            socket_path=socket_path,
+        )
+
+        try:
+            await bridge.start()
+            assert await bridge.client.wait_until_connected(timeout=2.0)
+            await asyncio.wait_for(client_ready.wait(), timeout=2.0)
+            assert server_writer is not None
+
+            await _send_frame(
+                server_writer,
+                {
+                    "type": "request",
+                    "requestId": "set-collab-build-1",
+                    "method": "thread-follower-set-collaboration-mode",
+                    "params": {
+                        "conversationId": "thread-1",
+                        "collaborationMode": "build",
+                    },
+                    "version": 1,
+                },
+            )
+
+            request_response = await _wait_for_message(
+                messages_from_client,
+                predicate=lambda message: message.get("type") == "response"
+                and message.get("requestId") == "set-collab-build-1",
+            )
+            assert request_response["resultType"] == "success"
+            assert request_response["result"] == {"ok": True}
+            assert fake_chat_service.synced_collaboration_modes[-1] == (
+                "thread-1",
+                {
+                    "mode": "default",
+                    "settings": {
+                        "model": "",
+                        "reasoning_effort": None,
+                        "developer_instructions": None,
+                    },
                 },
             )
         finally:

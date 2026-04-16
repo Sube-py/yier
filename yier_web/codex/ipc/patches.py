@@ -27,6 +27,10 @@ class StreamTracking:
     agent_item_index: int = -1
     final_assistant_started_sent: bool = False
     plan_item_index: int = -1
+    latest_turn_index: int = -1
+    latest_turn_id: str = ""
+    user_message_sent: bool = False
+    completion_sent: bool = False
 
 
 def patches_for_stream_event(
@@ -134,6 +138,7 @@ def assistant_message_patches(
     items: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """Patches for a completed assistant message."""
+    should_add = tracking.agent_item_index < 0
     if tracking.agent_item_index < 0:
         for i in range(len(items) - 1, -1, -1):
             if isinstance(items[i], dict) and items[i].get("type") == "agentMessage":
@@ -143,7 +148,7 @@ def assistant_message_patches(
             tracking.agent_item_index = len(items)
 
     idx = tracking.agent_item_index
-    op = "replace" if idx < len(items) else "add"
+    op = "add" if should_add else ("replace" if idx < len(items) else "add")
     agent_item = items[idx] if idx < len(items) else {}
     return [
         {

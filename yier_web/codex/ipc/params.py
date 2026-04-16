@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from yier_web.codex.collaboration_mode import normalize_protocol_collaboration_mode
+
 
 def conversation_id(params: dict[str, Any]) -> str:
     """Extract the conversation/thread ID from params."""
@@ -159,9 +161,9 @@ def collaboration_mode_value(
     for key in ("collaborationMode", "collaboration_mode"):
         value = params.get(key)
         if isinstance(value, dict):
-            return dict(value)
+            return normalize_protocol_collaboration_mode(value)
         if isinstance(value, str) and value.strip():
-            return value.strip()
+            return normalize_protocol_collaboration_mode(value)
     return None
 
 

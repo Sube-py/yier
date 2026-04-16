@@ -42,6 +42,7 @@ from yier_agents import (
 from yier_agents.src.config import AssistantSettings
 
 from yier_web.agent_backends import (
+    PLAN_MODE_PROMPT,
     ChatSessionContext,
     CodexAppServerBackend,
     YierAgentBackend,
@@ -58,6 +59,11 @@ from yier_web.codex.background import (
     create_start_codex_background_session_tool,
 )
 from yier_web.config import AppConfigService
+from yier_web.codex.collaboration_mode import (
+    codex_work_mode_from_collaboration_mode,
+    normalize_protocol_collaboration_mode,
+    protocol_collaboration_mode_for_work_mode,
+)
 from yier_web.codex.ipc import CodexConversationStateService, CodexThreadFollowerBridge
 from yier_web.codex.pairing import CodexPairedEditorBridge
 from yier_web.codex.sdk.workspace import CodexWorkspaceService
@@ -74,6 +80,7 @@ from yier_web.schemas import (
     CodexWorkMode,
     MessageAttachmentPayload,
     PendingApproval,
+    PendingRequest,
     MCPRuntimeEntry,
     SessionSummary,
     StoredLLMSettings,
@@ -1210,8 +1217,11 @@ class ChatService:
         self, session_id: str, codex_work_mode: CodexWorkMode
     ) -> bool:
         metadata = self.get_session_metadata(session_id)
-        if metadata["backend_id"] != "codex":
+        # Allow plan mode for both codex and yier backends.
+        if metadata["backend_id"] not in {"codex", "yier"}:
             return False
+
+        # Persist the work mode to session metadata.
         self.ensure_session_metadata(
             session_id,
             source=metadata["source"],
@@ -1224,7 +1234,86 @@ class ChatService:
             preview=metadata["preview"],
             updated_at=metadata["updated_at"],
         )
+
+        # For codex sessions, also update the collaboration_mode in
+        # backend_state and broadcast the change to the Codex CLI via IPC
+        # so that turn state params carry the correct collaborationMode.
+        if metadata["backend_id"] == "codex":
+            backend_state = metadata["backend_state"]
+            collaboration_mode = protocol_collaboration_mode_for_work_mode(
+                codex_work_mode,
+                current_value=backend_state.get("collaboration_mode"),
+                default_model=(
+                    backend_state.get("model")
+                    if isinstance(backend_state.get("model"), str)
+                    else ""
+                ),
+                default_reasoning_effort=backend_state.get("reasoning_effort"),
+            )
+            self.sync_codex_collaboration_mode(
+                session_id,
+                collaboration_mode,
+                broadcast=True,
+            )
+
         return True
+
+    def sync_codex_collaboration_mode(
+        self,
+        session_id: str,
+        collaboration_mode: Any,
+        *,
+        broadcast: bool = False,
+    ) -> bool:
+        metadata = self.get_session_metadata(session_id)
+        if metadata["backend_id"] != "codex":
+            return False
+
+        backend_state = metadata["backend_state"]
+        normalized_mode = normalize_protocol_collaboration_mode(
+            collaboration_mode,
+            default_model=(
+                backend_state.get("model")
+                if isinstance(backend_state.get("model"), str)
+                else ""
+            ),
+            default_reasoning_effort=backend_state.get("reasoning_effort"),
+        )
+        codex_work_mode = codex_work_mode_from_collaboration_mode(normalized_mode)
+        self.ensure_session_metadata(
+            session_id,
+            source=metadata["source"],
+            channel_meta=metadata["channel_meta"],
+            backend_id=metadata["backend_id"],
+            project_path=metadata["project_path"],
+            backend_state=backend_state,
+            codex_work_mode=codex_work_mode,
+            title=metadata["title"],
+            preview=metadata["preview"],
+            updated_at=metadata["updated_at"],
+        )
+        self.update_session_backend_state(
+            session_id,
+            {"collaboration_mode": normalized_mode},
+        )
+        if broadcast:
+            self._schedule_ipc_collaboration_mode_broadcast(session_id)
+        return True
+
+    def _schedule_ipc_collaboration_mode_broadcast(
+        self, session_id: str
+    ) -> None:
+        """Fire-and-forget IPC broadcast for collaboration mode change."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(
+            self.codex_ipc_bridge.broadcast_stream_state(
+                session_id,
+                trigger_event="thread-follower-set-collaboration-mode",
+            )
+        )
 
     def update_codex_goal_loop(
         self,
@@ -1853,12 +1942,12 @@ class ChatService:
             )
         return BackendRuntimePayload.model_validate(backend.runtime_payload(context))
 
-    def get_pending_approvals(self, session_id: str) -> list[PendingApproval]:
+    def get_pending_requests(self, session_id: str) -> list[PendingRequest]:
         context = self.get_session_context(session_id)
         backend = self.backends.get(context.backend_id)
         if backend is None:
             return []
-        pending_items = list(backend.pending_approvals(context))
+        pending_items = list(backend.pending_requests(context))
         seen_request_ids = {
             item.get("request_id")
             for item in pending_items
@@ -1901,9 +1990,15 @@ class ChatService:
                     pending_items.append(record)
                     if isinstance(request_id_value, str):
                         seen_request_ids.add(request_id_value)
-        return [PendingApproval.model_validate(item) for item in pending_items]
+        return [PendingRequest.model_validate(item) for item in pending_items]
 
-    async def respond_to_approval(
+    def get_pending_approvals(self, session_id: str) -> list[PendingApproval]:
+        return [
+            PendingApproval.model_validate(item.model_dump(mode="json"))
+            for item in self.get_pending_requests(session_id)
+        ]
+
+    async def respond_to_pending_request(
         self,
         session_id: str,
         request_id: str,
@@ -1914,7 +2009,7 @@ class ChatService:
         backend = self.backends.get(context.backend_id)
         if backend is None:
             return False
-        handled = await backend.respond_to_approval(
+        handled = await backend.respond_to_pending_request(
             context,
             request_id,
             decision,
@@ -1942,6 +2037,20 @@ class ChatService:
             decision=decision,
         )
 
+    async def respond_to_approval(
+        self,
+        session_id: str,
+        request_id: str,
+        decision: str,
+        content: dict[str, Any] | None = None,
+    ) -> bool:
+        return await self.respond_to_pending_request(
+            session_id,
+            request_id,
+            decision,
+            content,
+        )
+
     async def respond_to_codex_raw_request(
         self,
         session_id: str,
@@ -1956,20 +2065,31 @@ class ChatService:
             context, request_id, response_payload
         )
 
+    def resolve_pending_request_id(
+        self,
+        session_id: str,
+        *,
+        preferred_kind: str | None = None,
+    ) -> str | None:
+        pending_requests = self.get_pending_requests(session_id)
+        if preferred_kind:
+            for request in pending_requests:
+                if request.kind == preferred_kind:
+                    return request.request_id
+        if pending_requests:
+            return pending_requests[0].request_id
+        return None
+
     def resolve_pending_approval_request_id(
         self,
         session_id: str,
         *,
         preferred_kind: str | None = None,
     ) -> str | None:
-        pending_approvals = self.get_pending_approvals(session_id)
-        if preferred_kind:
-            for approval in pending_approvals:
-                if approval.kind == preferred_kind:
-                    return approval.request_id
-        if pending_approvals:
-            return pending_approvals[0].request_id
-        return None
+        return self.resolve_pending_request_id(
+            session_id,
+            preferred_kind=preferred_kind,
+        )
 
     def _pending_ipc_request(
         self,
@@ -2338,6 +2458,12 @@ class ChatService:
                 },
             )
             return "error"
+
+        # Plan mode: inject planning instructions before the user message.
+        # This mirrors the Codex backend's _normalize_turn_input_payload behavior.
+        metadata = self.get_session_metadata(session_id)
+        if metadata.get("codex_work_mode") == "plan":
+            prompt = f"{PLAN_MODE_PROMPT}\n\n{prompt}"
 
         return await self._run_agent_prompt(
             agent=agent,

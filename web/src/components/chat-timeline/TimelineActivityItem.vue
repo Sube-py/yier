@@ -23,7 +23,6 @@ const props = withDefaults(
 )
 
 const emit = defineEmits<{
-  implementPlan: [{ planContent: string; userInput: string | null }]
   submitApproval: [{ requestId: string; decision: ApprovalDecision; contentText: string }]
   toggle: [event: Event]
 }>()
@@ -80,7 +79,6 @@ const simpleClass = computed(() =>
       :render-markdown="renderMarkdown"
       :variant="variant"
       @submit-approval="emit('submitApproval', $event)"
-      @implement-plan="emit('implementPlan', $event)"
     />
   </details>
 

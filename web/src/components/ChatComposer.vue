@@ -5,7 +5,9 @@ import Button from 'primevue/button'
 import Select from 'primevue/select'
 import Textarea from 'primevue/textarea'
 
-import type { ComposerAttachmentState } from '../types/api'
+import ComposerModeChip from './ComposerModeChip.vue'
+import { toggleWorkMode, usePlanModeKeyboard } from '../composables/usePlanModeKeyboard'
+import type { CodexWorkMode, ComposerAttachmentState } from '../types/api'
 
 const model = defineModel<string>({ required: true })
 
@@ -25,6 +27,8 @@ const props = defineProps<{
   selectionStart?: number
   selectionEnd?: number
   selectionVersion?: number
+  planMode?: CodexWorkMode
+  planModeEnabled?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -36,6 +40,7 @@ const emit = defineEmits<{
   retryAttachment: [localId: string]
   selectionChange: [payload: { start: number; end: number }]
   updateSandbox: [value: 'read-only' | 'workspace-write' | 'danger-full-access']
+  togglePlanMode: []
 }>()
 
 const textareaRef = ref<unknown>(null)
@@ -103,10 +108,18 @@ const modelDisplayLabel = computed(() => {
 
 const isDangerSandbox = computed(() => props.sandbox === 'danger-full-access')
 
+const planModeKeyboard = usePlanModeKeyboard({
+  isPlanMode: computed(() => props.planMode === 'plan'),
+  disabled: computed(() => !props.planModeEnabled || props.disabled),
+  onToggle: () => emit('togglePlanMode'),
+})
+
 function onKeydown(event: KeyboardEvent) {
   if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
     emit('submit')
+    return
   }
+  planModeKeyboard.onComposerKeydown(event)
 }
 
 function onPrimaryAction() {
@@ -404,6 +417,14 @@ onMounted(async () => {
                 :disabled="savingSandbox"
                 aria-label="Choose permission mode"
                 @update:model-value="onSandboxChange"
+              />
+            </template>
+            <template v-if="planModeEnabled && planMode">
+              <span class="h-3.5 w-px bg-[rgba(34,66,72,0.1)]"></span>
+              <ComposerModeChip
+                :mode="planMode"
+                :disabled="disabled"
+                @toggle="emit('togglePlanMode')"
               />
             </template>
           </div>

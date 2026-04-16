@@ -495,6 +495,7 @@ async def get_codex_session(
         codex_work_mode=metadata["codex_work_mode"],
         codex_goal_loop=metadata["codex_goal_loop"],
         backend_runtime=services.chat_service.get_backend_runtime(session_id),
+        pending_requests=services.chat_service.get_pending_requests(session_id),
         pending_approvals=services.chat_service.get_pending_approvals(session_id),
         messages=transcript.messages,
         activity_events=transcript.activity_events,
@@ -650,6 +651,7 @@ async def get_session(
         codex_work_mode=metadata["codex_work_mode"],
         codex_goal_loop=metadata["codex_goal_loop"],
         backend_runtime=services.chat_service.get_backend_runtime(session_id),
+        pending_requests=services.chat_service.get_pending_requests(session_id),
         pending_approvals=services.chat_service.get_pending_approvals(session_id),
         messages=transcript.messages,
         activity_events=transcript.activity_events,
@@ -697,7 +699,7 @@ async def respond_to_approval(
     data: ApprovalResponseRequest,
     state: State,
 ) -> Response:
-    handled = await get_services(state).chat_service.respond_to_approval(
+    handled = await get_services(state).chat_service.respond_to_pending_request(
         session_id=session_id,
         request_id=data.request_id,
         decision=data.decision,
@@ -716,7 +718,7 @@ async def respond_to_codex_approval(
     data: ApprovalResponseRequest,
     state: State,
 ) -> Response:
-    handled = await get_services(state).chat_service.respond_to_approval(
+    handled = await get_services(state).chat_service.respond_to_pending_request(
         session_id=session_id,
         request_id=data.request_id,
         decision=data.decision,

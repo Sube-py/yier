@@ -4,6 +4,7 @@ import type {
   ChatActivity,
   CodexTurnTiming,
   FileChangeRecord,
+  PendingRequest,
 } from '../../types/api'
 import type { ActivityDisplayItem, TurnGroupEntry } from './types'
 
@@ -405,6 +406,307 @@ export function isHiddenActivity(activity: ChatActivity, showReasoningCards = fa
 
 export function isApprovalActivity(activity: ChatActivity) {
   return activity.kind === 'approval' && Boolean(activity.approval)
+}
+
+export function createApprovalActivity(request: PendingRequest): ChatActivity {
+  return {
+    id: `approval:${request.request_id}`,
+    title: request.title,
+    detail: request.detail,
+    state: 'queued',
+    kind: 'approval',
+    command: '',
+    cwd: '',
+    stdout: '',
+    stderr: '',
+    meta: [],
+    shell: null,
+    tool: null,
+    media: null,
+    approval: {
+      requestId: request.request_id,
+      method: request.method,
+      kind: request.kind,
+      options: request.options,
+      payload: request.payload,
+      formMode: approvalFormStateFromPayload(request.payload).formMode,
+      formFields: approvalFormStateFromPayload(request.payload).formFields,
+      responseDraft:
+        approvalFormStateFromPayload(request.payload).formMode === 'json'
+          ? approvalFormStateFromPayload(request.payload).responseDraft
+          : defaultApprovalResponseDraft(request),
+      validationError: null,
+      submittedDecision: null,
+    },
+  }
+}
+
+function defaultApprovalResponseDraft(approval: PendingRequest) {
+  const request = approval.payload.request
+  if (!request || typeof request !== 'object' || Array.isArray(request)) {
+    return ''
+  }
+  return (request as Record<string, unknown>).mode === 'form' ? '{}' : ''
+}
+
+function approvalFormStateFromPayload(payload: Record<string, unknown>): {
+  formMode: 'none' | 'structured' | 'json'
+  formFields: ApprovalFormFieldState[]
+  responseDraft: string
+} {
+  const request = approvalRequestPayload(payload)
+  if (!request || request.mode !== 'form') {
+    return {
+      formMode: 'none',
+      formFields: [],
+      responseDraft: '',
+    }
+  }
+
+  const requestedSchema = request.requestedSchema
+  if (
+    !requestedSchema ||
+    typeof requestedSchema !== 'object' ||
+    Array.isArray(requestedSchema)
+  ) {
+    return {
+      formMode: 'json',
+      formFields: [],
+      responseDraft: '{}',
+    }
+  }
+
+  const schema = requestedSchema as Record<string, unknown>
+  if (schema.type !== 'object') {
+    return {
+      formMode: 'json',
+      formFields: [],
+      responseDraft: '{}',
+    }
+  }
+
+  const properties = schema.properties
+  if (!properties || typeof properties !== 'object' || Array.isArray(properties)) {
+    return {
+      formMode: 'none',
+      formFields: [],
+      responseDraft: '',
+    }
+  }
+
+  const required = new Set(
+    Array.isArray(schema.required)
+      ? schema.required.filter((item): item is string => typeof item === 'string')
+      : [],
+  )
+
+  const formFields: ApprovalFormFieldState[] = []
+  for (const [fieldId, rawSchema] of Object.entries(properties as Record<string, unknown>)) {
+    if (!rawSchema || typeof rawSchema !== 'object' || Array.isArray(rawSchema)) {
+      return {
+        formMode: 'json',
+        formFields: [],
+        responseDraft: '{}',
+      }
+    }
+
+    const field = approvalFieldState(fieldId, rawSchema as Record<string, unknown>, required.has(fieldId))
+    if (!field) {
+      return {
+        formMode: 'json',
+        formFields: [],
+        responseDraft: '{}',
+      }
+    }
+    formFields.push(field)
+  }
+
+  if (!formFields.length) {
+    return {
+      formMode: 'none',
+      formFields: [],
+      responseDraft: '',
+    }
+  }
+
+  return {
+    formMode: 'structured',
+    formFields,
+    responseDraft: '',
+  }
+}
+
+function approvalRequestPayload(payload: Record<string, unknown>) {
+  const request = payload.request
+  if (!request || typeof request !== 'object' || Array.isArray(request)) {
+    return null
+  }
+  return request as Record<string, unknown>
+}
+
+function approvalFieldState(
+  fieldId: string,
+  schema: Record<string, unknown>,
+  required: boolean,
+): ApprovalFormFieldState | null {
+  const label = typeof schema.title === 'string' && schema.title.trim() ? schema.title : fieldId
+  const prompt =
+    typeof schema.description === 'string' && schema.description.trim()
+      ? schema.description
+      : label
+
+  if (schema.type === 'boolean') {
+    return {
+      id: fieldId,
+      label,
+      prompt,
+      kind: 'boolean',
+      required,
+      value: typeof schema.default === 'boolean' ? schema.default : null,
+    }
+  }
+
+  if (schema.type === 'number' || schema.type === 'integer') {
+    return {
+      id: fieldId,
+      label,
+      prompt,
+      kind: 'number',
+      required,
+      value:
+        typeof schema.default === 'number' && Number.isFinite(schema.default)
+          ? String(schema.default)
+          : '',
+      min: typeof schema.minimum === 'number' ? schema.minimum : null,
+      max: typeof schema.maximum === 'number' ? schema.maximum : null,
+      integer: schema.type === 'integer',
+    }
+  }
+
+  const legacyEnumOptions = approvalEnumOptions(schema)
+  if (legacyEnumOptions) {
+    return {
+      id: fieldId,
+      label,
+      prompt,
+      kind: 'select',
+      required,
+      value: typeof schema.default === 'string' ? schema.default : '',
+      options: legacyEnumOptions,
+    }
+  }
+
+  const multiSelectOptions = approvalMultiSelectOptions(schema)
+  if (multiSelectOptions) {
+    return {
+      id: fieldId,
+      label,
+      prompt,
+      kind: 'multiselect',
+      required,
+      value: Array.isArray(schema.default)
+        ? schema.default.filter((item): item is string => typeof item === 'string')
+        : [],
+      options: multiSelectOptions,
+    }
+  }
+
+  if (schema.type === 'string') {
+    return {
+      id: fieldId,
+      label,
+      prompt,
+      kind: 'text',
+      required,
+      value: typeof schema.default === 'string' ? schema.default : '',
+    }
+  }
+
+  return null
+}
+
+function approvalEnumOptions(schema: Record<string, unknown>) {
+  if (Array.isArray(schema.enum) && schema.enum.every((item) => typeof item === 'string')) {
+    const titles = Array.isArray(schema.enumNames) ? schema.enumNames : []
+    return schema.enum.map((value, index) => ({
+      value,
+      label:
+        typeof titles[index] === 'string' && titles[index].trim() ? titles[index] : value,
+      description: undefined,
+    }))
+  }
+
+  if (
+    Array.isArray(schema.oneOf) &&
+    schema.oneOf.every(
+      (item) =>
+        item &&
+        typeof item === 'object' &&
+        !Array.isArray(item) &&
+        typeof (item as Record<string, unknown>).const === 'string',
+    )
+  ) {
+    return schema.oneOf.map((item) => {
+      const entry = item as Record<string, unknown>
+      const value = String(entry.const)
+      return {
+        value,
+        label: typeof entry.title === 'string' && entry.title.trim() ? entry.title : value,
+        description:
+          typeof entry.description === 'string' && entry.description.trim()
+            ? entry.description
+            : undefined,
+      }
+    })
+  }
+
+  return null
+}
+
+function approvalMultiSelectOptions(schema: Record<string, unknown>) {
+  if (
+    schema.type !== 'array' ||
+    !schema.items ||
+    typeof schema.items !== 'object' ||
+    Array.isArray(schema.items)
+  ) {
+    return null
+  }
+
+  const items = schema.items as Record<string, unknown>
+  if (Array.isArray(items.enum) && items.enum.every((item) => typeof item === 'string')) {
+    return items.enum.map((value) => ({
+      value,
+      label: value,
+      description: undefined,
+    }))
+  }
+
+  if (
+    Array.isArray(items.anyOf) &&
+    items.anyOf.every(
+      (item) =>
+        item &&
+        typeof item === 'object' &&
+        !Array.isArray(item) &&
+        typeof (item as Record<string, unknown>).const === 'string',
+    )
+  ) {
+    return items.anyOf.map((item) => {
+      const entry = item as Record<string, unknown>
+      const value = String(entry.const)
+      return {
+        value,
+        label: typeof entry.title === 'string' && entry.title.trim() ? entry.title : value,
+        description:
+          typeof entry.description === 'string' && entry.description.trim()
+            ? entry.description
+            : undefined,
+      }
+    })
+  }
+
+  return null
 }
 
 function approvalRequest(activity: ChatActivity) {

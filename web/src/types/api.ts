@@ -161,6 +161,7 @@ export interface SessionTranscriptResponse {
   codex_work_mode?: CodexWorkMode | null
   codex_goal_loop?: CodexGoalLoopState | null
   backend_runtime?: BackendRuntime | null
+  pending_requests: PendingRequest[]
   pending_approvals: PendingApproval[]
   messages: StoredMessage[]
   activity_events: StoredActivityEvent[]
@@ -412,6 +413,10 @@ export interface PendingApproval {
   payload: Record<string, unknown>
 }
 
+export interface PendingRequest extends PendingApproval {
+  item_id?: string | null
+}
+
 export interface BackendRuntime {
   backend_id: BackendId
   label: string
@@ -420,6 +425,7 @@ export interface BackendRuntime {
   thread_id?: string | null
   active_flags: string[]
   detail?: string | null
+  pending_request_count: number
   pending_approval_count: number
   ipc_owner_client_id?: string | null
 }

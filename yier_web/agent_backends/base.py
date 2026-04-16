@@ -35,9 +35,21 @@ class ChatBackend(Protocol):
 
     def runtime_payload(self, context: ChatSessionContext) -> dict[str, Any]: ...
 
+    def pending_requests(
+        self, context: ChatSessionContext
+    ) -> list[dict[str, Any]]: ...
+
     def pending_approvals(
         self, context: ChatSessionContext
     ) -> list[dict[str, Any]]: ...
+
+    async def respond_to_pending_request(
+        self,
+        context: ChatSessionContext,
+        request_id: str,
+        decision: str,
+        content: dict[str, Any] | None = None,
+    ) -> bool: ...
 
     async def respond_to_approval(
         self,

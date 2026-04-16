@@ -1487,6 +1487,36 @@ def test_codex_backend_build_turn_state_params_uses_object_collaboration_mode() 
     }
 
 
+def test_codex_backend_build_turn_state_params_normalizes_legacy_build_mode() -> None:
+    settings = WebSettings(codex=StoredCodexSettings(sandbox="workspace-write"))
+    chat_service = SimpleNamespace(
+        config_service=SimpleNamespace(load_web_settings=lambda: settings),
+    )
+    backend = CodexAppServerBackend(chat_service)
+    context = ChatSessionContext(
+        session_id="session-1",
+        source="chat",
+        backend_id="codex",
+        project_path=Path("/tmp/project"),
+        channel_meta=None,
+        backend_state={
+            "thread_id": "thread-1",
+            "collaboration_mode": "build",
+        },
+    )
+
+    payload = backend._build_turn_state_params(context, "hello")
+
+    assert payload["collaborationMode"] == {
+        "mode": "default",
+        "settings": {
+            "model": "",
+            "reasoning_effort": "medium",
+            "developer_instructions": None,
+        },
+    }
+
+
 def test_codex_backend_thread_runtime_status_payload_normalizes_root_active_flags() -> None:
     backend = CodexAppServerBackend(SimpleNamespace())
 

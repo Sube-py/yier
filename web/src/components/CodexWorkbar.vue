@@ -131,8 +131,8 @@ function pairingCapabilitySummary(capabilityNames: string[]) {
           </code>
         </div>
         <div class="flex items-start justify-between gap-3 text-sm text-[color:var(--app-text-soft)]">
-          <span>Pending approvals</span>
-          <strong>{{ runtime?.pending_approval_count ?? 0 }}</strong>
+          <span>Pending requests</span>
+          <strong>{{ runtime?.pending_request_count ?? runtime?.pending_approval_count ?? 0 }}</strong>
         </div>
         <div class="grid gap-1 text-sm text-[color:var(--app-text-soft)]">
           <span>Project</span>

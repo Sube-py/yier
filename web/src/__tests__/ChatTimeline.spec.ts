@@ -6,7 +6,7 @@ import Aura from '@primeuix/themes/aura'
 import ChatTimeline from '../components/ChatTimeline.vue'
 import ComposerUserInputPanel from '../components/ComposerUserInputPanel.vue'
 
-import type { ChatActivity, UiChatMessage } from '../types/api'
+import type { ChatActivity, PendingRequest, UiChatMessage } from '../types/api'
 
 function createMessage(overrides: Partial<UiChatMessage> = {}): UiChatMessage {
   return {
@@ -37,6 +37,20 @@ function createActivity(overrides: Partial<ChatActivity> = {}): ChatActivity {
     shell: null,
     tool: null,
     approval: null,
+    ...overrides,
+  }
+}
+
+function createPendingRequest(overrides: Partial<PendingRequest> = {}): PendingRequest {
+  return {
+    request_id: 'request-1',
+    method: 'item/tool/requestUserInput',
+    kind: 'user_input',
+    title: 'User input required',
+    detail: '',
+    options: [{ label: 'Submit', value: 'accept' }],
+    payload: {},
+    item_id: null,
     ...overrides,
   }
 }
@@ -280,54 +294,42 @@ describe('ChatTimeline', () => {
   it('wraps request-user-input answers in the expected payload shape', async () => {
     const wrapper = mount(ComposerUserInputPanel, {
       props: {
-        activity: createActivity({
-          id: 'approval-user-input',
-          sequence: 1,
-          kind: 'approval',
-          title: 'User input required',
-          detail: '',
-          state: 'queued',
-          approval: {
-            requestId: 'approval-3',
-            method: 'item/tool/requestUserInput',
-            kind: 'user_input',
-            options: [{ label: 'Submit', value: 'accept' }],
-            payload: {
-              request: {
-                kind: 'user_input',
-                questions: [
-                  {
-                    id: 'question_style',
-                    header: 'Test style',
-                    question: 'What should I do next?',
-                    isOther: true,
+        request: createPendingRequest({
+          request_id: 'approval-3',
+          payload: {
+            request: {
+              kind: 'user_input',
+              mode: 'form',
+              requestedSchema: {
+                type: 'object',
+                properties: {
+                  question_style: {
+                    type: 'string',
+                    title: 'Test style',
+                    description: 'What should I do next?',
+                    oneOf: [
+                      {
+                        const: 'Keep going',
+                        title: 'Keep going',
+                      },
+                    ],
                   },
-                ],
+                  question_style__other: {
+                    type: 'string',
+                    title: 'Test style (Other)',
+                    description: 'Provide a custom answer instead of the preset options.',
+                  },
+                },
               },
+              questions: [
+                {
+                  id: 'question_style',
+                  header: 'Test style',
+                  question: 'What should I do next?',
+                  isOther: true,
+                },
+              ],
             },
-            formMode: 'structured',
-            formFields: [
-              {
-                id: 'question_style',
-                label: 'Test style',
-                prompt: 'What should I do next?',
-                kind: 'select',
-                required: false,
-                value: '',
-                options: [{ label: 'Keep going', value: 'Keep going' }],
-              },
-              {
-                id: 'question_style__other',
-                label: 'Test style (Other)',
-                prompt: 'Provide a custom answer instead of the preset options.',
-                kind: 'text',
-                required: false,
-                value: '',
-              },
-            ],
-            responseDraft: '',
-            validationError: null,
-            submittedDecision: null,
           },
         }),
       },
@@ -342,7 +344,7 @@ describe('ChatTimeline', () => {
     const submitButton = wrapper.get('[data-testid="composer-user-input-submit"]')
     await submitButton.trigger('click')
     await flushPromises()
-    expect(wrapper.emitted('submitApproval')).toBeUndefined()
+    expect(wrapper.emitted('submitRequest')).toBeUndefined()
     expect(wrapper.text()).toContain('Test style is required.')
 
     await wrapper.get('[data-testid="composer-user-input-option-question_style-Keep going"]').trigger('click')
@@ -350,8 +352,8 @@ describe('ChatTimeline', () => {
     await submitButton.trigger('click')
     await flushPromises()
 
-    expect(wrapper.emitted('submitApproval')).toEqual([
-      ['approval-3', 'accept', '{"answers":{"question_style":["Keep going"]}}'],
+    expect(wrapper.emitted('submitRequest')).toEqual([
+      ['approval-3', 'accept', '{"answers":{"question_style":{"answers":["Keep going"]}}}'],
     ])
   })
 

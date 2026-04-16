@@ -7,6 +7,29 @@ from yier_web.agent_backends.base import ChatBackend, ChatSessionContext, Stream
 if TYPE_CHECKING:
     from yier_web.chat import ChatService
 
+PLAN_MODE_PROMPT_PREFIX = "<yier-plan-mode>"
+PLAN_MODE_PROMPT = (
+    f"{PLAN_MODE_PROMPT_PREFIX}\n"
+    "You are in PLAN MODE. For this request you MUST NOT make any changes to files, "
+    "run shell commands, or perform any side-effect actions. Instead:\n"
+    "1. Analyze the user's request thoroughly.\n"
+    "2. Read files and inspect the codebase as needed to understand the context.\n"
+    "3. Produce a concrete, step-by-step implementation plan that another engineer "
+    "could execute without ambiguity.\n"
+    "4. Format the plan with clear numbered steps, specifying exact file paths, "
+    "function names, and code changes where applicable.\n"
+    "5. End the plan with a brief summary of the expected outcome.\n\n"
+    "User request:"
+)
+
+PLAN_TOOLS_ALLOWLIST = frozenset({
+    "list_files",
+    "read_file",
+    "search_files",
+    "list_background_commands",
+    "read_background_command",
+})
+
 
 class YierAgentBackend(ChatBackend):
     backend_id = "yier"
@@ -43,11 +66,24 @@ class YierAgentBackend(ChatBackend):
             "detail": None
             if ready
             else "LLM setup is incomplete for the Yier backend.",
+            "pending_request_count": 0,
             "pending_approval_count": 0,
         }
 
-    def pending_approvals(self, context: ChatSessionContext) -> list[dict[str, object]]:
+    def pending_requests(self, context: ChatSessionContext) -> list[dict[str, object]]:
         return []
+
+    def pending_approvals(self, context: ChatSessionContext) -> list[dict[str, object]]:
+        return self.pending_requests(context)
+
+    async def respond_to_pending_request(
+        self,
+        context: ChatSessionContext,
+        request_id: str,
+        decision: str,
+        content: dict[str, object] | None = None,
+    ) -> bool:
+        return False
 
     async def respond_to_approval(
         self,
@@ -56,4 +92,9 @@ class YierAgentBackend(ChatBackend):
         decision: str,
         content: dict[str, object] | None = None,
     ) -> bool:
-        return False
+        return await self.respond_to_pending_request(
+            context,
+            request_id,
+            decision,
+            content,
+        )

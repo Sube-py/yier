@@ -78,6 +78,10 @@ from yier_agents import Message
 
 from yier_web.agent_backends.base import ChatBackend, ChatSessionContext, StreamEmitter
 from yier_web.attachments import AttachmentStorageError
+from yier_web.codex.collaboration_mode import (
+    codex_work_mode_from_collaboration_mode,
+    normalize_protocol_collaboration_mode,
+)
 from yier_web.codex.runtime import (
     CodexSessionRuntime,
     PendingApprovalState,
@@ -104,6 +108,8 @@ if TYPE_CHECKING:
 
 CODEX_IPC_DEBUG_ENV = "YIER_CODEX_IPC_DEBUG"
 logger = logging.getLogger(__name__)
+
+CodexThread = ApprovalAwareAsyncThread
 
 
 async def _maybe_await(value: Any) -> Any:
@@ -340,11 +346,12 @@ class CodexAppServerBackend(ChatBackend):
             "thread_id": thread_id,
             "active_flags": active_flags,
             "detail": detail,
+            "pending_request_count": pending_count,
             "pending_approval_count": pending_count,
             "ipc_owner_client_id": context.backend_state.get("ipc_source_client_id"),
         }
 
-    def pending_approvals(self, context: ChatSessionContext) -> list[dict[str, Any]]:
+    def pending_requests(self, context: ChatSessionContext) -> list[dict[str, Any]]:
         runtime = self._runtimes.get(context.session_id)
         if runtime is None:
             return []
@@ -353,6 +360,9 @@ class CodexAppServerBackend(ChatBackend):
             for pending in runtime.pending_requests.values()
             if not pending.event.is_set()
         ]
+
+    def pending_approvals(self, context: ChatSessionContext) -> list[dict[str, Any]]:
+        return self.pending_requests(context)
 
     def pending_conversation_requests(
         self, context: ChatSessionContext
@@ -370,7 +380,7 @@ class CodexAppServerBackend(ChatBackend):
             if not pending.event.is_set()
         ]
 
-    async def respond_to_approval(
+    async def respond_to_pending_request(
         self,
         context: ChatSessionContext,
         request_id: str,
@@ -388,6 +398,10 @@ class CodexAppServerBackend(ChatBackend):
             pending.response = (
                 dict(content) if isinstance(content, dict) else {"answers": {}}
             )
+        elif pending.method == "item/plan/requestImplementation":
+            pending.response = (
+                dict(content) if isinstance(content, dict) else {}
+            )
         else:
             pending.response = self._build_approval_response(
                 method=pending.method,
@@ -397,6 +411,20 @@ class CodexAppServerBackend(ChatBackend):
             )
         pending.event.set()
         return True
+
+    async def respond_to_approval(
+        self,
+        context: ChatSessionContext,
+        request_id: str,
+        decision: str,
+        content: dict[str, Any] | None = None,
+    ) -> bool:
+        return await self.respond_to_pending_request(
+            context,
+            request_id,
+            decision,
+            content,
+        )
 
     async def steer_turn(
         self,
@@ -1970,6 +1998,9 @@ class CodexAppServerBackend(ChatBackend):
             title = "MCP server input"
             if isinstance(request, dict):
                 detail = request.get("message") or detail
+        elif kind == "plan_implementation":
+            title = "Implement this plan?"
+            detail = "Codex drafted a plan and is waiting for confirmation to implement it."
         elif kind == "user_input":
             request = self._normalized_user_input_request(method, params)
             title = "User input required"
@@ -2159,6 +2190,8 @@ class CodexAppServerBackend(ChatBackend):
             return "command"
         if method == "item/fileChange/requestApproval":
             return "file_change"
+        if method == "item/plan/requestImplementation":
+            return "plan_implementation"
         if method == "item/permissions/requestApproval":
             return "permissions"
         if method in {"mcpServer/elicitation/request", "elicitation/create"}:
@@ -2173,6 +2206,11 @@ class CodexAppServerBackend(ChatBackend):
                 {"value": "accept", "label": "Accept once"},
                 {"value": "accept_for_session", "label": "Accept for session"},
                 {"value": "decline", "label": "Decline"},
+                {"value": "cancel", "label": "Cancel"},
+            ]
+        if kind == "plan_implementation":
+            return [
+                {"value": "accept", "label": "Implement"},
                 {"value": "cancel", "label": "Cancel"},
             ]
         if kind == "user_input":
@@ -2198,6 +2236,8 @@ class CodexAppServerBackend(ChatBackend):
             or not settings.channel_auto_approve_codex_requests
         ):
             return None
+        if method == "item/plan/requestImplementation":
+            return {"implemented": False}
         if method == "item/tool/requestUserInput":
             return {"answers": {}}
         if method in {"mcpServer/elicitation/request", "elicitation/create"}:
@@ -2212,6 +2252,13 @@ class CodexAppServerBackend(ChatBackend):
         content: dict[str, Any] | None,
     ) -> dict[str, Any]:
         normalized_decision = decision.strip().lower()
+        if method == "item/plan/requestImplementation":
+            response: dict[str, Any] = {
+                "implemented": normalized_decision == "accept",
+            }
+            if isinstance(content, dict):
+                response.update(content)
+            return response
         if method == "item/tool/requestUserInput":
             if normalized_decision == "cancel":
                 return {"answers": {}}
@@ -2288,6 +2335,8 @@ class CodexAppServerBackend(ChatBackend):
         path: str | None,
     ) -> dict[str, Any]:
         if not isinstance(path, str) or not path.strip():
+            return {}
+        if not hasattr(self.chat_service, "register_local_image_preview"):
             return {}
         try:
             preview = self.chat_service.register_local_image_preview(session_id, path)
@@ -2692,7 +2741,9 @@ class CodexAppServerBackend(ChatBackend):
     def _thread_handle(
         self, client: ApprovalAwareAppServerClient, thread_id: str
     ) -> ApprovalAwareAsyncThread:
-        return client.thread(thread_id)
+        if hasattr(client, "thread"):
+            return client.thread(thread_id)
+        return CodexThread(client, thread_id)
 
     def _turn_handle(
         self,
@@ -2788,7 +2839,11 @@ class CodexAppServerBackend(ChatBackend):
     def _codex_work_mode(self, context: ChatSessionContext) -> str:
         metadata = self.chat_service.get_session_metadata(context.session_id)
         work_mode = metadata.get("codex_work_mode")
-        return work_mode if work_mode in {"plan", "build"} else "build"
+        if work_mode in {"plan", "build"}:
+            return work_mode
+        return codex_work_mode_from_collaboration_mode(
+            context.backend_state.get("collaboration_mode")
+        )
 
     def _thread_view_payload(
         self,
@@ -3590,6 +3645,8 @@ class CodexAppServerBackend(ChatBackend):
     def _render_user_input_text(self, item: CodexUserInputRoot) -> str:
         if isinstance(item, TextUserInput):
             return item.text.strip()
+        if isinstance(item, LocalImageUserInput):
+            return f"[Local image] {item.path}"
         if isinstance(item, SkillUserInput):
             return f"[Skill] {item.name} ({item.path})"
         if isinstance(item, MentionUserInput):
@@ -3801,49 +3858,15 @@ class CodexAppServerBackend(ChatBackend):
         default_model: Any,
         default_effort: Any,
     ) -> dict[str, Any]:
-        raw_value = context.backend_state.get("collaboration_mode")
-        default_settings = {
-            "model": default_model if isinstance(default_model, str) else "",
-            "reasoning_effort": (
+        return normalize_protocol_collaboration_mode(
+            context.backend_state.get("collaboration_mode"),
+            default_model=default_model if isinstance(default_model, str) else "",
+            default_reasoning_effort=(
                 default_effort
                 if default_effort is None or isinstance(default_effort, str)
                 else None
             ),
-            "developer_instructions": None,
-        }
-        default_mode = {
-            "mode": "default",
-            "settings": default_settings,
-        }
-        if isinstance(raw_value, dict):
-            mode = raw_value.get("mode")
-            settings = raw_value.get("settings")
-            if isinstance(mode, str) and mode.strip():
-                normalized = dict(raw_value)
-                normalized["mode"] = mode.strip()
-                merged_settings = dict(default_settings)
-                if isinstance(settings, dict):
-                    model = settings.get("model")
-                    if isinstance(model, str):
-                        merged_settings["model"] = model
-                    reasoning_effort = settings.get("reasoning_effort")
-                    if reasoning_effort is None or isinstance(reasoning_effort, str):
-                        merged_settings["reasoning_effort"] = reasoning_effort
-                    developer_instructions = settings.get("developer_instructions")
-                    if developer_instructions is None or isinstance(
-                        developer_instructions, str
-                    ):
-                        merged_settings["developer_instructions"] = (
-                            developer_instructions
-                        )
-                normalized["settings"] = merged_settings
-                return normalized
-        if isinstance(raw_value, str) and raw_value.strip():
-            return {
-                "mode": raw_value.strip(),
-                "settings": default_settings,
-            }
-        return default_mode
+        )
 
     def _response_turn_id(
         self, response: TurnStartResponse | BaseModel | dict[str, Any]

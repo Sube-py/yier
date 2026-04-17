@@ -72,7 +72,7 @@ from codex_app_server.generated.v2_all import (
     TurnStatus,
 )
 from codex_app_server.errors import AppServerError, TransportClosedError
-from codex_app_server.models import Notification
+from codex_app_server.models import Notification as VendorNotification
 
 from yier_agents import Message
 
@@ -100,6 +100,8 @@ from yier_web.codex.sdk.client import (
     ApprovalAwareAppServerClient,
     ApprovalAwareAsyncThread,
     ApprovalAwareAsyncTurnHandle,
+    RequestAwareNotification,
+    ToolRequestUserInputParams,
 )
 from yier_web.schemas import MessageAttachmentPayload, StoredSessionMessage
 
@@ -110,6 +112,7 @@ CODEX_IPC_DEBUG_ENV = "YIER_CODEX_IPC_DEBUG"
 logger = logging.getLogger(__name__)
 
 CodexThread = ApprovalAwareAsyncThread
+type Notification = VendorNotification | RequestAwareNotification
 
 
 async def _maybe_await(value: Any) -> Any:
@@ -692,6 +695,7 @@ class CodexAppServerBackend(ChatBackend):
                     params,
                 )
             ),
+            manual_request_methods=frozenset({"item/tool/requestUserInput"}),
         )
         await client.start()
         await client.initialize()
@@ -1497,6 +1501,31 @@ class CodexAppServerBackend(ChatBackend):
                     "decision": pending.decision or "accept",
                 },
             )
+            return
+
+        if notification.method == "item/tool/requestUserInput":
+            request_id = self._request_id_string(getattr(notification, "request_id", None))
+            if not request_id:
+                return
+            params = (
+                payload.model_dump(mode="json", by_alias=True)
+                if isinstance(payload, ToolRequestUserInputParams)
+                else payload
+            )
+            if not isinstance(params, dict):
+                return
+            response = self._handle_server_request(
+                runtime,
+                context,
+                request_id,
+                notification.method,
+                params,
+            )
+            if runtime.client is not None:
+                runtime.loop.create_task(
+                    runtime.client.respond_to_server_request(request_id, response)
+                )
+            return
 
     def _handle_item_started(
         self,

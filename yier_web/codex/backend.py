@@ -72,7 +72,7 @@ from codex_app_server.generated.v2_all import (
     TurnStatus,
 )
 from codex_app_server.errors import AppServerError, TransportClosedError
-from codex_app_server.models import Notification as VendorNotification
+from codex_app_server.models import Notification
 
 from yier_agents import Message
 
@@ -100,10 +100,12 @@ from yier_web.codex.sdk.client import (
     ApprovalAwareAppServerClient,
     ApprovalAwareAsyncThread,
     ApprovalAwareAsyncTurnHandle,
-    RequestAwareNotification,
-    ToolRequestUserInputParams,
 )
-from yier_web.schemas import MessageAttachmentPayload, StoredSessionMessage
+from yier_web.schemas import (
+    MessageAttachmentPayload,
+    StoredCodexSettings,
+    StoredSessionMessage,
+)
 
 if TYPE_CHECKING:
     from yier_web.chat import ChatService
@@ -112,7 +114,6 @@ CODEX_IPC_DEBUG_ENV = "YIER_CODEX_IPC_DEBUG"
 logger = logging.getLogger(__name__)
 
 CodexThread = ApprovalAwareAsyncThread
-type Notification = VendorNotification | RequestAwareNotification
 
 
 async def _maybe_await(value: Any) -> Any:
@@ -398,8 +399,9 @@ class CodexAppServerBackend(ChatBackend):
             return False
         pending.decision = decision
         if pending.method == "item/tool/requestUserInput":
-            pending.response = (
-                dict(content) if isinstance(content, dict) else {"answers": {}}
+            pending.response = self._build_user_input_response(
+                content,
+                cancel=decision.strip().lower() == "cancel",
             )
         elif pending.method == "item/plan/requestImplementation":
             pending.response = (
@@ -695,7 +697,6 @@ class CodexAppServerBackend(ChatBackend):
                     params,
                 )
             ),
-            manual_request_methods=frozenset({"item/tool/requestUserInput"}),
         )
         await client.start()
         await client.initialize()
@@ -761,23 +762,24 @@ class CodexAppServerBackend(ChatBackend):
         runtime: CodexSessionRuntime,
         context: ChatSessionContext,
         turn_input: list[dict[str, Any]] | dict[str, Any] | str,
+        turn_params: dict[str, Any],
     ) -> tuple[Any | None, TurnStartResponse | BaseModel | dict[str, Any], str | None]:
         if isinstance(runtime.client, AsyncAppServerClient):
-            return await self._start_public_sdk_turn(runtime, context, turn_input)
-        return await self._start_low_level_turn(runtime, context, turn_input)
+            return await self._start_public_sdk_turn(runtime, turn_input, turn_params)
+        return await self._start_low_level_turn(runtime, turn_input, turn_params)
 
     async def _start_public_sdk_turn(
         self,
         runtime: CodexSessionRuntime,
-        context: ChatSessionContext,
         turn_input: list[dict[str, Any]] | dict[str, Any] | str,
+        turn_params: dict[str, Any],
     ) -> tuple[Any, dict[str, Any], str]:
         assert runtime.client is not None
         assert runtime.thread_id is not None
         thread_handle = self._thread_handle(runtime.client, runtime.thread_id)
         turn_handle = await thread_handle.turn(
             self._sdk_input_from_payload(turn_input),
-            **self._turn_params(context),
+            **turn_params,
         )
         turn_id = turn_handle.id
         return (
@@ -795,8 +797,8 @@ class CodexAppServerBackend(ChatBackend):
     async def _start_low_level_turn(
         self,
         runtime: CodexSessionRuntime,
-        context: ChatSessionContext,
         turn_input: list[dict[str, Any]] | dict[str, Any] | str,
+        turn_params: dict[str, Any],
     ) -> tuple[None, TurnStartResponse | BaseModel | dict[str, Any], str | None]:
         assert runtime.client is not None
         assert runtime.thread_id is not None
@@ -806,7 +808,7 @@ class CodexAppServerBackend(ChatBackend):
             runtime.client.turn_start(
                 runtime.thread_id,
                 turn_input,
-                params=self._turn_params(context),
+                params=turn_params,
             )
         )
         return (None, response, self._response_turn_id(response))
@@ -822,6 +824,7 @@ class CodexAppServerBackend(ChatBackend):
         runtime.status = "active"
         runtime.detail = None
         turn_input = self._normalize_turn_input_payload(context, input_payload)
+        turn_params = self._turn_params(context)
         _codex_ipc_debug_log(
             "_start_turn before client.turn_start",
             session_id=context.session_id,
@@ -832,6 +835,7 @@ class CodexAppServerBackend(ChatBackend):
             runtime,
             context,
             turn_input,
+            turn_params,
         )
         if not turn_id:
             raise RuntimeError("Codex turn_start response did not include a turn id.")
@@ -844,7 +848,11 @@ class CodexAppServerBackend(ChatBackend):
         if turn_handle is not None:
             runtime.turn_handles[turn_id] = turn_handle
         runtime.turn_snapshots[turn_id] = TurnSnapshotState(
-            params=self._build_turn_state_params(context, turn_input),
+            params=self._build_turn_state_params(
+                context,
+                turn_input,
+                turn_params=turn_params,
+            ),
             turn_started_at_ms=int(time() * 1000),
             final_assistant_started_at_ms=None,
         )
@@ -856,6 +864,10 @@ class CodexAppServerBackend(ChatBackend):
                 "status": runtime.status,
                 "active_flags": runtime.active_flags,
                 "detail": runtime.detail,
+                "model": turn_params.get("model") or "",
+                "reasoning_effort": turn_params.get("effort") or "",
+                "service_tier": turn_params.get("service_tier") or "",
+                "collaboration_mode": turn_params.get("collaboration_mode"),
             },
         )
         return response
@@ -1503,30 +1515,6 @@ class CodexAppServerBackend(ChatBackend):
             )
             return
 
-        if notification.method == "item/tool/requestUserInput":
-            request_id = self._request_id_string(getattr(notification, "request_id", None))
-            if not request_id:
-                return
-            params = (
-                payload.model_dump(mode="json", by_alias=True)
-                if isinstance(payload, ToolRequestUserInputParams)
-                else payload
-            )
-            if not isinstance(params, dict):
-                return
-            response = self._handle_server_request(
-                runtime,
-                context,
-                request_id,
-                notification.method,
-                params,
-            )
-            if runtime.client is not None:
-                runtime.loop.create_task(
-                    runtime.client.respond_to_server_request(request_id, response)
-                )
-            return
-
     def _handle_item_started(
         self,
         runtime: CodexSessionRuntime,
@@ -2123,14 +2111,14 @@ class CodexAppServerBackend(ChatBackend):
             prompt = entry.get("question")
             header = entry.get("header")
             options = entry.get("options")
-            is_other = bool(entry.get("isOther"))
+            is_other = bool(entry.get("isOther") or entry.get("is_other"))
 
             normalized_question = {
                 "id": normalized_id,
                 "header": header if isinstance(header, str) else "",
                 "question": prompt if isinstance(prompt, str) else "",
                 "isOther": is_other,
-                "isSecret": bool(entry.get("isSecret")),
+                "isSecret": bool(entry.get("isSecret") or entry.get("is_secret")),
                 "options": [
                     {
                         "label": str(option.get("label") or "").strip(),
@@ -2291,7 +2279,7 @@ class CodexAppServerBackend(ChatBackend):
         if method == "item/tool/requestUserInput":
             if normalized_decision == "cancel":
                 return {"answers": {}}
-            return dict(content) if isinstance(content, dict) else {"answers": {}}
+            return self._build_user_input_response(content)
         if method in {"mcpServer/elicitation/request", "elicitation/create"}:
             if normalized_decision == "accept":
                 return {"action": "accept", "content": content}
@@ -2319,6 +2307,35 @@ class CodexAppServerBackend(ChatBackend):
         if normalized_decision == "cancel":
             return {"decision": "cancel"}
         return {"decision": "accept"}
+
+    def _build_user_input_response(
+        self,
+        content: dict[str, Any] | None,
+        *,
+        cancel: bool = False,
+    ) -> dict[str, Any]:
+        if cancel or not isinstance(content, dict):
+            return {"answers": {}}
+
+        raw_answers = content.get("answers")
+        if not isinstance(raw_answers, dict):
+            return dict(content)
+
+        answers: dict[str, dict[str, list[str]]] = {}
+        for question_id, raw_answer in raw_answers.items():
+            if not isinstance(question_id, str) or not question_id.strip():
+                continue
+            values = raw_answer.get("answers") if isinstance(raw_answer, dict) else raw_answer
+            if isinstance(values, list):
+                normalized_values = [
+                    value for value in values if isinstance(value, str)
+                ]
+            elif isinstance(values, str):
+                normalized_values = [values]
+            else:
+                normalized_values = []
+            answers[question_id] = {"answers": normalized_values}
+        return {**content, "answers": answers}
 
     def normalize_pending_request_id(self, value: Any) -> str | None:
         if isinstance(value, str) and value.strip():
@@ -2390,16 +2407,15 @@ class CodexAppServerBackend(ChatBackend):
 
     def _thread_params(self, context: ChatSessionContext) -> dict[str, Any]:
         settings = self.chat_service.config_service.load_web_settings().codex
-        model_override = self._context_string_override(context, "model")
-        service_tier_override = self._context_string_override(context, "service_tier")
+        resolved = self._resolved_turn_settings(context, settings=settings)
         params = {
             "cwd": str(context.project_path),
             "approval_policy": settings.approval_policy,
             "approvals_reviewer": settings.approvals_reviewer,
-            "model": model_override or settings.model or None,
+            "model": resolved["model"],
             "personality": settings.personality,
             "sandbox": _codex_thread_sandbox_mode(settings.sandbox),
-            "service_tier": service_tier_override or settings.service_tier or None,
+            "service_tier": resolved["service_tier"],
         }
         pairing_config = self._pairing_mcp_config()
         if pairing_config is not None:
@@ -2411,22 +2427,23 @@ class CodexAppServerBackend(ChatBackend):
         approval_policy = settings.approval_policy
         if context.source == "channel":
             approval_policy = "never"
-        reasoning_effort_override = self._context_string_override(
-            context, "reasoning_effort"
-        )
-        model_override = self._context_string_override(context, "model")
-        service_tier_override = self._context_string_override(context, "service_tier")
+        resolved = self._resolved_turn_settings(context, settings=settings)
         return {
             "cwd": str(context.project_path),
             "approval_policy": approval_policy,
             "approvals_reviewer": settings.approvals_reviewer,
-            "effort": reasoning_effort_override or settings.reasoning_effort,
-            "model": model_override or settings.model or None,
+            "effort": resolved["effort"],
+            "model": resolved["model"],
             "personality": settings.personality,
             "sandbox_policy": {
                 "type": _codex_turn_sandbox_policy_type(settings.sandbox)
             },
-            "service_tier": service_tier_override or settings.service_tier or None,
+            "service_tier": resolved["service_tier"],
+            "collaboration_mode": self._context_collaboration_mode(
+                context,
+                default_model=resolved["model"],
+                default_effort=resolved["effort"],
+            ),
         }
 
     def _pairing_mcp_config(self) -> dict[str, Any] | None:
@@ -2667,25 +2684,27 @@ class CodexAppServerBackend(ChatBackend):
         self,
         context: ChatSessionContext,
         input_payload: list[dict[str, Any]] | dict[str, Any] | str,
+        *,
+        turn_params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        turn_params = self._turn_params(context)
+        resolved_turn_params = turn_params or self._turn_params(context)
         return {
             "threadId": context.backend_state.get("thread_id") or context.session_id,
             "input": self._normalize_input_items_for_state(input_payload),
-            "cwd": turn_params.get("cwd"),
-            "approvalPolicy": turn_params.get("approval_policy"),
-            "approvalsReviewer": turn_params.get("approvals_reviewer"),
-            "sandboxPolicy": turn_params.get("sandbox_policy"),
-            "model": turn_params.get("model"),
-            "serviceTier": turn_params.get("service_tier"),
-            "effort": turn_params.get("effort"),
+            "cwd": resolved_turn_params.get("cwd"),
+            "approvalPolicy": resolved_turn_params.get("approval_policy"),
+            "approvalsReviewer": resolved_turn_params.get("approvals_reviewer"),
+            "sandboxPolicy": resolved_turn_params.get("sandbox_policy"),
+            "model": resolved_turn_params.get("model"),
+            "serviceTier": resolved_turn_params.get("service_tier"),
+            "effort": resolved_turn_params.get("effort"),
             "summary": "none",
-            "personality": turn_params.get("personality"),
+            "personality": resolved_turn_params.get("personality"),
             "outputSchema": None,
             "collaborationMode": self._context_collaboration_mode(
                 context,
-                default_model=turn_params.get("model"),
-                default_effort=turn_params.get("effort"),
+                default_model=resolved_turn_params.get("model"),
+                default_effort=resolved_turn_params.get("effort"),
             ),
             "attachments": [],
         }
@@ -3896,6 +3915,37 @@ class CodexAppServerBackend(ChatBackend):
                 else None
             ),
         )
+
+    def _resolved_turn_settings(
+        self,
+        context: ChatSessionContext,
+        *,
+        settings: StoredCodexSettings | None = None,
+    ) -> dict[str, Any]:
+        codex_settings = (
+            settings or self.chat_service.config_service.load_web_settings().codex
+        )
+        default_settings = StoredCodexSettings()
+        model = (
+            self._context_string_override(context, "model")
+            or codex_settings.model
+            or default_settings.model
+        )
+        effort = (
+            self._context_string_override(context, "reasoning_effort")
+            or codex_settings.reasoning_effort
+            or default_settings.reasoning_effort
+        )
+        service_tier = (
+            self._context_string_override(context, "service_tier")
+            or codex_settings.service_tier
+            or None
+        )
+        return {
+            "model": model,
+            "effort": effort,
+            "service_tier": service_tier,
+        }
 
     def _response_turn_id(
         self, response: TurnStartResponse | BaseModel | dict[str, Any]

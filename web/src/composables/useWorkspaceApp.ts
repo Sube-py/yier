@@ -12,6 +12,7 @@ import {
 } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
+import { createApprovalActivity } from '../components/chat-timeline/helpers'
 import {
   ApiError,
   apiDelete,
@@ -117,6 +118,7 @@ function readCachedWorkspaceSurface(): WorkspaceSurface {
 
 type CodexAdvancedMode = 'ralph-loop'
 type CodexAdvancedModeFabEdge = 'left' | 'right'
+type LoadedPendingRequest = SessionTranscriptResponse['pending_requests'][number]
 
 function normalizeCodexAdvancedMode(value: string | null | undefined): CodexAdvancedMode {
   return value === 'ralph-loop' ? value : 'ralph-loop'
@@ -1658,6 +1660,28 @@ function createWorkspaceApp() {
     activities.value = []
     backgroundActivityIdsByToolCallId.clear()
     replaySessionActivityEvents(loadedActivityEventsRaw.value)
+    appendTimelinePendingRequests()
+  }
+
+  function shouldRenderPendingRequestInComposer(request: LoadedPendingRequest) {
+    return request.kind === 'user_input' || request.kind === 'plan_implementation'
+  }
+
+  function appendTimelinePendingRequests() {
+    const existingApprovalIds = new Set(
+      activities.value
+        .filter((activity) => activity.kind === 'approval')
+        .map((activity) => activity.approval?.requestId)
+        .filter((requestId): requestId is string => typeof requestId === 'string' && requestId.length > 0),
+    )
+
+    for (const request of loadedPendingRequests.value) {
+      if (shouldRenderPendingRequestInComposer(request) || existingApprovalIds.has(request.request_id)) {
+        continue
+      }
+
+      activities.value.push(makeActivity(createApprovalActivity(request)))
+    }
   }
 
   async function hydrateOlderActivityEvents(

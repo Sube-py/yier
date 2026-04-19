@@ -320,6 +320,7 @@ describe('ChatTimeline', () => {
                     description: 'Provide a custom answer instead of the preset options.',
                   },
                 },
+                required: ['question_style'],
               },
               questions: [
                 {

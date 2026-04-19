@@ -4004,7 +4004,9 @@ describe('App', () => {
           decision: 'accept',
           content: {
             answers: {
-              approach: ['Small changes first'],
+              approach: {
+                answers: ['Small changes first'],
+              },
             },
           },
         }),

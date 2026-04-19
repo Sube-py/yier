@@ -72,7 +72,7 @@ class SessionDefaultsSettings(BaseModel):
 
 class StoredCodexSettings(BaseModel):
     launcher_command: str = "codex app-server --listen stdio://"
-    model: str = ""
+    model: str = "gpt-5.4"
     sandbox: CodexSandboxMode = "workspace-write"
     approval_policy: CodexApprovalPolicy = "on-request"
     approvals_reviewer: CodexApprovalsReviewer = "user"
@@ -501,7 +501,7 @@ class ChannelAccountActionResponse(BaseModel):
 
 
 class ApprovalResponseRequest(BaseModel):
-    request_id: str
+    request_id: int
     decision: ApprovalDecision
     content: dict[str, Any] | None = None
 

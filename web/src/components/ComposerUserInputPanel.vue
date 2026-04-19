@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 import Button from 'primevue/button'
 import Textarea from 'primevue/textarea'
@@ -26,7 +26,7 @@ const emit = defineEmits<{
   submitRequest: [requestId: string, decision: ApprovalDecision, contentText: string]
 }>()
 
-const approvalActivity = computed(() => createApprovalActivity(props.request))
+const approvalActivity = ref(createApprovalActivity(props.request))
 const approval = computed(() => approvalActivity.value.approval)
 const isPlanImplementation = computed(() => props.request.kind === 'plan_implementation')
 const planFeedback = ref('')
@@ -60,6 +60,13 @@ const planContent = computed(() => {
   const value = props.request.payload.planContent
   return typeof value === 'string' ? value : ''
 })
+
+watch(
+  () => props.request,
+  (request) => {
+    approvalActivity.value = createApprovalActivity(request)
+  },
+)
 
 function companionOtherField(fieldId: string) {
   return approval.value?.formFields.find((field) => field.id === `${fieldId}__other`) ?? null

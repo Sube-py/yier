@@ -74,7 +74,9 @@ def _params_dict(
         return dumped
     if isinstance(params, dict):
         return params
-    raise TypeError(f"Expected generated params model or dict, got {type(params).__name__}")
+    raise TypeError(
+        f"Expected generated params model or dict, got {type(params).__name__}"
+    )
 
 
 def _installed_codex_path() -> Path:
@@ -239,7 +241,9 @@ class AppServerClient:
 
     def _request_raw(self, method: str, params: JsonObject | None = None) -> JsonValue:
         request_id = str(uuid.uuid4())
-        self._write_message({"id": request_id, "method": method, "params": params or {}})
+        self._write_message(
+            {"id": request_id, "method": method, "params": params or {}}
+        )
 
         while True:
             msg = self._read_message()
@@ -301,8 +305,12 @@ class AppServerClient:
             if self._active_turn_consumer == turn_id:
                 self._active_turn_consumer = None
 
-    def thread_start(self, params: V2ThreadStartParams | JsonObject | None = None) -> ThreadStartResponse:
-        return self.request("thread/start", _params_dict(params), response_model=ThreadStartResponse)
+    def thread_start(
+        self, params: V2ThreadStartParams | JsonObject | None = None
+    ) -> ThreadStartResponse:
+        return self.request(
+            "thread/start", _params_dict(params), response_model=ThreadStartResponse
+        )
 
     def thread_resume(
         self,
@@ -310,12 +318,20 @@ class AppServerClient:
         params: V2ThreadResumeParams | JsonObject | None = None,
     ) -> ThreadResumeResponse:
         payload = {"threadId": thread_id, **_params_dict(params)}
-        return self.request("thread/resume", payload, response_model=ThreadResumeResponse)
+        return self.request(
+            "thread/resume", payload, response_model=ThreadResumeResponse
+        )
 
-    def thread_list(self, params: V2ThreadListParams | JsonObject | None = None) -> ThreadListResponse:
-        return self.request("thread/list", _params_dict(params), response_model=ThreadListResponse)
+    def thread_list(
+        self, params: V2ThreadListParams | JsonObject | None = None
+    ) -> ThreadListResponse:
+        return self.request(
+            "thread/list", _params_dict(params), response_model=ThreadListResponse
+        )
 
-    def thread_read(self, thread_id: str, include_turns: bool = False) -> ThreadReadResponse:
+    def thread_read(
+        self, thread_id: str, include_turns: bool = False
+    ) -> ThreadReadResponse:
         return self.request(
             "thread/read",
             {"threadId": thread_id, "includeTurns": include_turns},
@@ -331,10 +347,18 @@ class AppServerClient:
         return self.request("thread/fork", payload, response_model=ThreadForkResponse)
 
     def thread_archive(self, thread_id: str) -> ThreadArchiveResponse:
-        return self.request("thread/archive", {"threadId": thread_id}, response_model=ThreadArchiveResponse)
+        return self.request(
+            "thread/archive",
+            {"threadId": thread_id},
+            response_model=ThreadArchiveResponse,
+        )
 
     def thread_unarchive(self, thread_id: str) -> ThreadUnarchiveResponse:
-        return self.request("thread/unarchive", {"threadId": thread_id}, response_model=ThreadUnarchiveResponse)
+        return self.request(
+            "thread/unarchive",
+            {"threadId": thread_id},
+            response_model=ThreadUnarchiveResponse,
+        )
 
     def thread_set_name(self, thread_id: str, name: str) -> ThreadSetNameResponse:
         return self.request(
@@ -458,12 +482,16 @@ class AppServerClient:
 
         model = NOTIFICATION_MODELS.get(method)
         if model is None:
-            return Notification(method=method, payload=UnknownNotification(params=params_dict))
+            return Notification(
+                method=method, payload=UnknownNotification(params=params_dict)
+            )
 
         try:
             payload = model.model_validate(params_dict)
         except Exception:  # noqa: BLE001
-            return Notification(method=method, payload=UnknownNotification(params=params_dict))
+            return Notification(
+                method=method, payload=UnknownNotification(params=params_dict)
+            )
         return Notification(method=method, payload=payload)
 
     def _normalize_input_items(
@@ -476,7 +504,9 @@ class AppServerClient:
             return [input_items]
         return input_items
 
-    def _default_approval_handler(self, method: str, params: JsonObject | None) -> JsonObject:
+    def _default_approval_handler(
+        self, method: str, params: JsonObject | None
+    ) -> JsonObject:
         if method == "item/commandExecution/requestApproval":
             return {"decision": "accept"}
         if method == "item/fileChange/requestApproval":

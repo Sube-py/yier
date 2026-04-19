@@ -184,7 +184,7 @@ class ApprovalAwareAppServerClient(AsyncAppServerClient):
     def _handle_server_request(self, msg: dict[str, Any]) -> dict[str, Any]:
         method = msg.get("method")
         request_id = msg.get("id")
-        if not isinstance(method, str) or not isinstance(request_id, str):
+        if not isinstance(method, str) or not isinstance(request_id, (str, int)):
             return {}
         params = msg.get("params")
         if not isinstance(params, dict):

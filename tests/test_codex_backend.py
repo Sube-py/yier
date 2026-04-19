@@ -1487,6 +1487,93 @@ def test_codex_backend_build_turn_state_params_uses_object_collaboration_mode() 
     }
 
 
+def test_codex_backend_turn_params_include_collaboration_mode() -> None:
+    settings = WebSettings(
+        codex=StoredCodexSettings(
+            sandbox="workspace-write",
+            model="gpt-5.4",
+            reasoning_effort="high",
+        )
+    )
+    chat_service = SimpleNamespace(
+        config_service=SimpleNamespace(load_web_settings=lambda: settings),
+    )
+    backend = CodexAppServerBackend(chat_service)
+    context = ChatSessionContext(
+        session_id="session-1",
+        source="chat",
+        backend_id="codex",
+        project_path=Path("/tmp/project"),
+        channel_meta=None,
+        backend_state={
+            "thread_id": "thread-1",
+            "collaboration_mode": {
+                "mode": "plan",
+                "settings": {
+                    "model": "gpt-5.4",
+                    "reasoning_effort": "medium",
+                    "developer_instructions": None,
+                },
+            },
+        },
+    )
+
+    params = backend._turn_params(context)
+
+    assert params["collaboration_mode"] == {
+        "mode": "plan",
+        "settings": {
+            "model": "gpt-5.4",
+            "reasoning_effort": "medium",
+            "developer_instructions": None,
+        },
+    }
+
+
+def test_codex_backend_turn_params_fill_blank_model_from_defaults() -> None:
+    settings = WebSettings(
+        codex=StoredCodexSettings(
+            sandbox="workspace-write",
+            model="",
+            reasoning_effort="medium",
+        )
+    )
+    chat_service = SimpleNamespace(
+        config_service=SimpleNamespace(load_web_settings=lambda: settings),
+    )
+    backend = CodexAppServerBackend(chat_service)
+    context = ChatSessionContext(
+        session_id="session-1",
+        source="chat",
+        backend_id="codex",
+        project_path=Path("/tmp/project"),
+        channel_meta=None,
+        backend_state={
+            "thread_id": "thread-1",
+            "collaboration_mode": {
+                "mode": "plan",
+                "settings": {
+                    "model": "",
+                    "reasoning_effort": "medium",
+                    "developer_instructions": None,
+                },
+            },
+        },
+    )
+
+    params = backend._turn_params(context)
+
+    assert params["model"] == "gpt-5.4"
+    assert params["collaboration_mode"] == {
+        "mode": "plan",
+        "settings": {
+            "model": "gpt-5.4",
+            "reasoning_effort": "medium",
+            "developer_instructions": None,
+        },
+    }
+
+
 def test_codex_backend_build_turn_state_params_normalizes_legacy_build_mode() -> None:
     settings = WebSettings(codex=StoredCodexSettings(sandbox="workspace-write"))
     chat_service = SimpleNamespace(
@@ -1510,7 +1597,7 @@ def test_codex_backend_build_turn_state_params_normalizes_legacy_build_mode() ->
     assert payload["collaborationMode"] == {
         "mode": "default",
         "settings": {
-            "model": "",
+            "model": "gpt-5.4",
             "reasoning_effort": "medium",
             "developer_instructions": None,
         },
@@ -1580,3 +1667,22 @@ def test_codex_backend_build_pending_approval_record_normalizes_request_user_inp
         request["requestedSchema"]["properties"]["question_style__other"]["type"]
         == "string"
     )
+
+
+def test_codex_backend_normalizes_user_input_response_answers() -> None:
+    backend = CodexAppServerBackend(SimpleNamespace())
+
+    response = backend.build_response_payload_for_request(
+        "item/tool/requestUserInput",
+        {},
+        "accept",
+        {"answers": {"approach": ["Small changes first"]}},
+    )
+
+    assert response == {
+        "answers": {
+            "approach": {
+                "answers": ["Small changes first"],
+            },
+        },
+    }

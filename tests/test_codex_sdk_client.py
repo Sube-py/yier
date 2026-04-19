@@ -79,6 +79,47 @@ def test_approval_aware_async_client_can_reply_to_server_requests() -> None:
     asyncio.run(scenario())
 
 
+def test_approval_aware_async_client_accepts_integer_request_ids_in_callback() -> None:
+    captured: dict[str, object] = {}
+
+    client = ApprovalAwareAppServerClient(
+        config=AppServerConfig(),
+        approval_callback=lambda request_id, method, params: captured.update(
+            {
+                "request_id": request_id,
+                "method": method,
+                "params": params,
+            }
+        )
+        or {"answers": {}},
+    )
+
+    response = client._handle_server_request(
+        {
+            "id": 7,
+            "method": "item/tool/requestUserInput",
+            "params": {
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "itemId": "item-1",
+                "questions": [],
+            },
+        }
+    )
+
+    assert captured == {
+        "request_id": 7,
+        "method": "item/tool/requestUserInput",
+        "params": {
+            "threadId": "thread-1",
+            "turnId": "turn-1",
+            "itemId": "item-1",
+            "questions": [],
+        },
+    }
+    assert response == {"answers": {}}
+
+
 def test_approval_aware_thread_turn_embeds_collaboration_mode_in_dict_params() -> None:
     async def scenario() -> None:
         captured: dict[str, object] = {}
@@ -112,5 +153,32 @@ def test_approval_aware_thread_turn_embeds_collaboration_mode_in_dict_params() -
                 "reasoning_effort": "medium",
             },
         }
+
+    asyncio.run(scenario())
+
+
+def test_approval_aware_thread_turn_accepts_dict_collaboration_mode() -> None:
+    async def scenario() -> None:
+        captured: dict[str, object] = {}
+
+        class FakeClient:
+            async def turn_start(self, thread_id, input_items, params=None):  # type: ignore[no-untyped-def]
+                captured["params"] = params
+                return SimpleNamespace(turn=SimpleNamespace(id="turn-123"))
+
+        thread = ApprovalAwareAsyncThread(FakeClient(), "thread-123")  # type: ignore[arg-type]
+        collaboration_mode = {
+            "mode": "plan",
+            "settings": {
+                "model": "gpt-5.4",
+                "reasoning_effort": "medium",
+                "developer_instructions": None,
+            },
+        }
+
+        await thread.turn(TextInput("plan this"), collaboration_mode=collaboration_mode)
+
+        assert isinstance(captured["params"], dict)
+        assert captured["params"]["collaborationMode"] == collaboration_mode
 
     asyncio.run(scenario())

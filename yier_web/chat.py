@@ -83,6 +83,7 @@ from yier_web.schemas import (
     PendingRequest,
     MCPRuntimeEntry,
     SessionSummary,
+    StoredCodexSettings,
     StoredLLMSettings,
     StoredSessionMessage,
 )
@@ -1243,12 +1244,10 @@ class ChatService:
             collaboration_mode = protocol_collaboration_mode_for_work_mode(
                 codex_work_mode,
                 current_value=backend_state.get("collaboration_mode"),
-                default_model=(
-                    backend_state.get("model")
-                    if isinstance(backend_state.get("model"), str)
-                    else ""
+                default_model=self._effective_codex_backend_model(backend_state),
+                default_reasoning_effort=self._effective_codex_backend_effort(
+                    backend_state
                 ),
-                default_reasoning_effort=backend_state.get("reasoning_effort"),
             )
             self.sync_codex_collaboration_mode(
                 session_id,
@@ -1272,12 +1271,10 @@ class ChatService:
         backend_state = metadata["backend_state"]
         normalized_mode = normalize_protocol_collaboration_mode(
             collaboration_mode,
-            default_model=(
-                backend_state.get("model")
-                if isinstance(backend_state.get("model"), str)
-                else ""
+            default_model=self._effective_codex_backend_model(backend_state),
+            default_reasoning_effort=self._effective_codex_backend_effort(
+                backend_state
             ),
-            default_reasoning_effort=backend_state.get("reasoning_effort"),
         )
         codex_work_mode = codex_work_mode_from_collaboration_mode(normalized_mode)
         self.ensure_session_metadata(
@@ -1299,6 +1296,20 @@ class ChatService:
         if broadcast:
             self._schedule_ipc_collaboration_mode_broadcast(session_id)
         return True
+
+    def _effective_codex_backend_model(self, backend_state: dict[str, Any]) -> str:
+        raw_model = backend_state.get("model")
+        if isinstance(raw_model, str) and raw_model.strip():
+            return raw_model.strip()
+        settings = self.config_service.load_web_settings().codex
+        return settings.model or StoredCodexSettings().model
+
+    def _effective_codex_backend_effort(self, backend_state: dict[str, Any]) -> str:
+        raw_effort = backend_state.get("reasoning_effort")
+        if isinstance(raw_effort, str) and raw_effort.strip():
+            return raw_effort.strip()
+        settings = self.config_service.load_web_settings().codex
+        return settings.reasoning_effort or StoredCodexSettings().reasoning_effort
 
     def _schedule_ipc_collaboration_mode_broadcast(
         self, session_id: str

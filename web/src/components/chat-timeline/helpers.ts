@@ -854,6 +854,20 @@ export function approvalContentText(activity: ChatActivity) {
 
   const content: Record<string, unknown> = {}
   for (const field of activity.approval.formFields) {
+    if (approvalIsUserInput(activity)) {
+      const value = field.kind === 'multiselect'
+        ? approvalFieldValue(field)
+        : field.kind === 'boolean' && typeof field.value === 'boolean'
+          ? field.value
+          : typeof field.value === 'string'
+            ? field.value.trim()
+            : undefined
+      if (Array.isArray(value) ? value.length : value !== undefined && value !== '') {
+        content[field.id] = value
+      }
+      continue
+    }
+
     const result = approvalFieldContent(field)
     if (!result.ok) {
       activity.approval.validationError = result.error

@@ -46,11 +46,13 @@ def normalize_protocol_collaboration_mode(
         merged_settings = dict(default_settings)
         if isinstance(settings, dict):
             model = settings.get("model")
-            if isinstance(model, str):
-                merged_settings["model"] = model
+            if isinstance(model, str) and model.strip():
+                merged_settings["model"] = model.strip()
             reasoning_effort = settings.get("reasoning_effort")
-            if reasoning_effort is None or isinstance(reasoning_effort, str):
+            if reasoning_effort is None:
                 merged_settings["reasoning_effort"] = reasoning_effort
+            elif isinstance(reasoning_effort, str) and reasoning_effort.strip():
+                merged_settings["reasoning_effort"] = reasoning_effort.strip()
             developer_instructions = settings.get("developer_instructions")
             if developer_instructions is None or isinstance(
                 developer_instructions, str

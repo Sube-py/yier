@@ -23,9 +23,13 @@ const workspace = useWorkspaceAppContext()
       <p class="m-0 text-[0.68rem] font-bold uppercase tracking-[0.18em] text-[color:var(--app-text-soft)]">
         Workspace
       </p>
-      <div class="mt-1 inline-flex max-w-full items-center gap-2 rounded-full bg-[rgba(21,94,99,0.08)] px-3 py-1.25 text-[color:var(--app-accent-deep)] shadow-[inset_0_1px_0_rgba(255,255,255,0.38)]">
+      <div
+        class="mt-1 inline-flex max-w-full items-center gap-2 rounded-full bg-[rgba(21,94,99,0.08)] px-3 py-1.25 text-[color:var(--app-accent-deep)] shadow-[inset_0_1px_0_rgba(255,255,255,0.38)]"
+      >
         <span class="h-2 w-2 shrink-0 rounded-full bg-[color:var(--app-accent)]"></span>
-        <span class="truncate font-['Iowan_Old_Style','Palatino_Linotype',Palatino,serif] text-[1.05rem] font-semibold leading-none">
+        <span
+          class="truncate font-['Iowan_Old_Style','Palatino_Linotype',Palatino,serif] text-[1.05rem] font-semibold leading-none"
+        >
           {{ workspace.assistantLabel }}
         </span>
       </div>
@@ -46,38 +50,8 @@ const workspace = useWorkspaceAppContext()
   >
     <div>
       <p class="eyebrow">{{ workspace.workspaceEyebrow }}</p>
-      <h2 class="m-0 font-['Iowan_Old_Style','Palatino_Linotype',Palatino,serif] text-[clamp(1.6rem,2vw,2.4rem)] leading-[1.1] font-semibold">
-        {{ workspace.workspaceTitle }}
-      </h2>
     </div>
     <div class="flex items-center gap-3 max-[1023px]:flex-col max-[1023px]:items-stretch">
-      <div
-        v-if="workspace.isCodexWorkspace"
-        class="codex-toolbar-primary inline-flex rounded-full border border-[color:var(--app-border)] bg-[rgba(248,243,233,0.9)] p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.6)]"
-      >
-        <button
-          type="button"
-          class="codex-mode-button min-w-[4.8rem] cursor-pointer rounded-full bg-transparent px-[0.9rem] py-[0.55rem] font-bold text-[color:var(--app-text-soft)] transition disabled:cursor-default disabled:opacity-65"
-          :class="{
-            'bg-[color:var(--app-accent)] text-[#f7f5ef]': workspace.activeCodexWorkMode === 'plan',
-          }"
-          :disabled="workspace.savingState.codexMode"
-          @click="workspace.updateCodexWorkMode('plan')"
-        >
-          Plan
-        </button>
-        <button
-          type="button"
-          class="codex-mode-button min-w-[4.8rem] cursor-pointer rounded-full bg-transparent px-[0.9rem] py-[0.55rem] font-bold text-[color:var(--app-text-soft)] transition disabled:cursor-default disabled:opacity-65"
-          :class="{
-            'bg-[color:var(--app-accent)] text-[#f7f5ef]': workspace.activeCodexWorkMode === 'build',
-          }"
-          :disabled="workspace.savingState.codexMode"
-          @click="workspace.updateCodexWorkMode('build')"
-        >
-          Build
-        </button>
-      </div>
       <Button
         :label="workspace.isChatRoute ? 'Settings' : 'Back to Chat'"
         :icon="workspace.isChatRoute ? 'pi pi-sliders-h' : 'pi pi-comments'"

@@ -405,15 +405,6 @@ function createWorkspaceApp() {
           ? 'Codex workspace'
           : 'Chat workspace',
   )
-  const workspaceTitle = computed(() =>
-    isSettingsRoute.value
-      ? 'Workspace settings'
-      : isChannelRoute.value
-        ? 'Multi-platform runtime, account status, and live channel sessions'
-        : isCodexWorkspace.value
-          ? 'Project-aware Codex sessions with mode and permission control'
-          : 'One calm surface for code, files, and config',
-  )
   const workspaceSessionHistory = computed(() =>
     activeWorkspaceSurface.value === 'codex' ? codexSessionHistory.value : sessionHistory.value,
   )
@@ -5116,7 +5107,6 @@ function createWorkspaceApp() {
     canSendToSession,
     activeProjectPath,
     workspaceEyebrow,
-    workspaceTitle,
     sessionHistoryCount,
     sidebarSessionHistory,
     sidebarSessionHistoryCount,

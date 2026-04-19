@@ -31,7 +31,9 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  submitApproval: [{ requestId: string; decision: ApprovalDecision; contentText: string }]
+  submitApproval: [
+    { requestId: string | number; decision: ApprovalDecision; contentText: string },
+  ]
 }>()
 
 const changeSummary = computed(() => (props.display.change ? fileChangeSummary(props.display.change) : null))

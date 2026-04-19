@@ -1254,6 +1254,11 @@ class ChatService:
                 collaboration_mode,
                 broadcast=True,
             )
+            backend = self.backends.get("codex")
+            if isinstance(backend, CodexAppServerBackend):
+                loop = self._running_loop()
+                if loop is not None:
+                    loop.create_task(backend.close_session(session_id))
 
         return True
 
@@ -1315,9 +1320,8 @@ class ChatService:
         self, session_id: str
     ) -> None:
         """Fire-and-forget IPC broadcast for collaboration mode change."""
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
+        loop = self._running_loop()
+        if loop is None:
             return
         loop.create_task(
             self.codex_ipc_bridge.broadcast_stream_state(
@@ -1325,6 +1329,12 @@ class ChatService:
                 trigger_event="thread-follower-set-collaboration-mode",
             )
         )
+
+    def _running_loop(self) -> asyncio.AbstractEventLoop | None:
+        try:
+            return asyncio.get_running_loop()
+        except RuntimeError:
+            return None
 
     def update_codex_goal_loop(
         self,

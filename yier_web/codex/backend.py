@@ -1740,6 +1740,16 @@ class CodexAppServerBackend(ChatBackend):
                 )
             return
 
+        if isinstance(item, PlanThreadItem):
+            self._queue_plan_implementation_request(
+                runtime,
+                context,
+                turn_id=turn_id,
+                item_id=item.id,
+                plan_content=item.text,
+            )
+            return
+
         if isinstance(item, FileChangeThreadItem):
             self._emit_from_thread(
                 runtime,
@@ -2408,13 +2418,16 @@ class CodexAppServerBackend(ChatBackend):
     def _thread_params(self, context: ChatSessionContext) -> dict[str, Any]:
         settings = self.chat_service.config_service.load_web_settings().codex
         resolved = self._resolved_turn_settings(context, settings=settings)
+        sandbox_mode = (
+            "read-only" if self._codex_work_mode(context) == "plan" else settings.sandbox
+        )
         params = {
             "cwd": str(context.project_path),
             "approval_policy": settings.approval_policy,
             "approvals_reviewer": settings.approvals_reviewer,
             "model": resolved["model"],
             "personality": settings.personality,
-            "sandbox": _codex_thread_sandbox_mode(settings.sandbox),
+            "sandbox": _codex_thread_sandbox_mode(sandbox_mode),
             "service_tier": resolved["service_tier"],
         }
         pairing_config = self._pairing_mcp_config()
@@ -2428,6 +2441,9 @@ class CodexAppServerBackend(ChatBackend):
         if context.source == "channel":
             approval_policy = "never"
         resolved = self._resolved_turn_settings(context, settings=settings)
+        sandbox_mode = (
+            "read-only" if self._codex_work_mode(context) == "plan" else settings.sandbox
+        )
         return {
             "cwd": str(context.project_path),
             "approval_policy": approval_policy,
@@ -2436,7 +2452,7 @@ class CodexAppServerBackend(ChatBackend):
             "model": resolved["model"],
             "personality": settings.personality,
             "sandbox_policy": {
-                "type": _codex_turn_sandbox_policy_type(settings.sandbox)
+                "type": _codex_turn_sandbox_policy_type(sandbox_mode)
             },
             "service_tier": resolved["service_tier"],
             "collaboration_mode": self._context_collaboration_mode(
@@ -2842,6 +2858,58 @@ class CodexAppServerBackend(ChatBackend):
         if include_detail:
             updates["detail"] = runtime.detail
         self.chat_service.update_session_backend_state(context.session_id, updates)
+
+    def _queue_plan_implementation_request(
+        self,
+        runtime: CodexSessionRuntime,
+        context: ChatSessionContext,
+        *,
+        turn_id: str | None,
+        item_id: str | None,
+        plan_content: str | None,
+    ) -> None:
+        if self._codex_work_mode(context) != "plan":
+            return
+        if not isinstance(turn_id, str) or not turn_id:
+            return
+        if not isinstance(plan_content, str) or not plan_content.strip():
+            return
+
+        request_id = f"{turn_id}:plan-request"
+        if request_id in runtime.pending_requests:
+            return
+
+        params: dict[str, Any] = {
+            "threadId": runtime.thread_id or context.session_id,
+            "turnId": turn_id,
+            "planContent": plan_content.strip(),
+        }
+        if isinstance(item_id, str) and item_id:
+            params["itemId"] = item_id
+
+        record = self._build_pending_approval(
+            request_id,
+            "item/plan/requestImplementation",
+            params,
+        )
+        pending = PendingApprovalState(
+            request_id=request_id,
+            method="item/plan/requestImplementation",
+            payload=params,
+            record={
+                "request_id": request_id,
+                **record,
+            },
+        )
+        runtime.pending_requests[request_id] = pending
+        self._emit_from_thread(
+            runtime,
+            "approval_requested",
+            {
+                "session_id": context.session_id,
+                **pending.record,
+            },
+        )
 
     def _emit_from_thread(
         self,

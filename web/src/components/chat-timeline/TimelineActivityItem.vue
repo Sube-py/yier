@@ -23,7 +23,9 @@ const props = withDefaults(
 )
 
 const emit = defineEmits<{
-  submitApproval: [{ requestId: string; decision: ApprovalDecision; contentText: string }]
+  submitApproval: [
+    { requestId: string | number; decision: ApprovalDecision; contentText: string },
+  ]
   toggle: [event: Event]
 }>()
 

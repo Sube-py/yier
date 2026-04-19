@@ -404,7 +404,7 @@ export interface ApprovalOption {
 }
 
 export interface PendingApproval {
-  request_id: string
+  request_id: string | number
   method: string
   kind: string
   title: string
@@ -431,7 +431,7 @@ export interface BackendRuntime {
 }
 
 export interface ApprovalResponseRequest {
-  request_id: string
+  request_id: string | number
   decision: ApprovalDecision
   content?: Record<string, unknown> | null
 }
@@ -929,7 +929,7 @@ export interface ChatApprovalRequestedEvent {
   event: 'approval_requested'
   data: {
     session_id: string
-    request_id: string
+    request_id: string | number
     method: string
     kind: string
     title: string
@@ -944,7 +944,7 @@ export interface ChatApprovalResolvedEvent {
   event: 'approval_resolved'
   data: {
     session_id: string
-    request_id: string
+    request_id: string | number
     decision: string
   }
 }
@@ -1124,7 +1124,7 @@ export interface UiChatMessage {
 }
 
 export interface ApprovalActivityState {
-  requestId: string
+  requestId: string | number
   method: string
   kind: string
   options: ApprovalOption[]

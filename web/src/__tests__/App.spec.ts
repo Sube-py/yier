@@ -4014,6 +4014,152 @@ describe('App', () => {
     )
   })
 
+  it('renders only the first pending plan implementation request at a time', async () => {
+    localStorage.setItem('yier.active-session-id', 'codex-thread')
+    localStorage.setItem('yier.workspace-surface', 'codex')
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = input.toString()
+      if (path.endsWith('/api/health')) {
+        return jsonResponse({
+          frontend: { ready: true, mode: 'static' },
+          llm: { ready: true },
+          mcp: { ready: true, runtime: {} },
+          backends: {
+            yier: { ready: true },
+            codex: { ready: true },
+          },
+          allowed_roots: ['/tmp/project'],
+        })
+      }
+      if (path.endsWith('/api/config') && (!init || init.method === 'GET')) {
+        return jsonResponse({
+          llm: { base_url: 'https://example.test', model: 'demo', has_api_key: true },
+          allowed_roots: ['/tmp/project'],
+          mcp_runtime: {},
+          session_defaults: { workspace_surface: 'codex' },
+          codex: {
+            launcher_command: 'codex app-server --listen stdio://',
+            model: 'gpt-5.4',
+            sandbox: 'workspace-write',
+            approval_policy: 'on-request',
+            approvals_reviewer: 'user',
+            personality: 'friendly',
+            reasoning_effort: 'medium',
+            service_tier: '',
+          },
+        })
+      }
+      if (path.endsWith('/api/config/mcp')) {
+        return jsonResponse({ mcp_servers: {}, runtime: {} })
+      }
+      if (path.endsWith('/api/codex/workspace')) {
+        return jsonResponse({ projects: [] })
+      }
+      if (isSessionListRequest(path, init)) {
+        return jsonResponse({
+          sessions: [
+            {
+              session_id: 'codex-thread',
+              title: 'Codex session',
+              preview: 'Native preview',
+              updated_at: 100,
+              message_count: 2,
+              source: 'chat',
+              backend_id: 'codex',
+              project_path: '/tmp/project',
+              channel_meta: null,
+              codex_work_mode: 'plan',
+            },
+          ],
+        })
+      }
+      if (isSessionTranscriptRequest(path, 'codex-thread', init)) {
+        return jsonResponse({
+          session_id: 'codex-thread',
+          source: 'chat',
+          backend_id: 'codex',
+          project_path: '/tmp/project',
+          codex_work_mode: 'plan',
+          backend_runtime: {
+            backend_id: 'codex',
+            label: 'Codex App Server',
+            ready: true,
+            status: 'active',
+            thread_id: 'codex-thread',
+            active_flags: ['waitingOnApproval'],
+            detail: null,
+            pending_approval_count: 2,
+          },
+          pending_approvals: [
+            {
+              request_id: 'plan-1',
+              method: 'item/plan/requestImplementation',
+              kind: 'plan_implementation',
+              title: 'Implement this plan?',
+              detail: 'Codex drafted a plan and is waiting for confirmation to implement it.',
+              options: [
+                { value: 'accept', label: 'Implement' },
+                { value: 'cancel', label: 'Cancel' },
+              ],
+              payload: { turnId: 'turn-1', planContent: 'Plan A' },
+            },
+            {
+              request_id: 'plan-2',
+              method: 'item/plan/requestImplementation',
+              kind: 'plan_implementation',
+              title: 'Implement this plan?',
+              detail: 'Codex drafted a plan and is waiting for confirmation to implement it.',
+              options: [
+                { value: 'accept', label: 'Implement' },
+                { value: 'cancel', label: 'Cancel' },
+              ],
+              payload: { turnId: 'turn-2', planContent: 'Plan B' },
+            },
+          ],
+          messages: [{ role: 'assistant', content: 'two plans ready' }],
+          activity_events: [],
+        })
+      }
+      if (
+        (path.endsWith('/api/codex/sessions/codex-thread/mode') ||
+          path.endsWith('/api/chat/sessions/codex-thread/codex-mode')) &&
+        init?.method === 'PUT'
+      ) {
+        return jsonResponse({ ok: true })
+      }
+      if (path.endsWith('/api/chat/stream') && init?.method === 'POST') {
+        return sseResponse('event: done\ndata: {"session_id":"codex-thread","finish_reason":"stop"}\n\n')
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const wrapper = await mountApp()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Plan A')
+    expect(wrapper.text()).not.toContain('Plan B')
+
+    await wrapper.get('[data-testid="composer-user-input-submit"]').trigger('click')
+    await flushPromises()
+    await nextTick()
+    await flushPromises()
+
+    expect(
+      fetchMock.mock.calls.some(
+        ([calledPath, calledInit]) =>
+          typeof calledPath === 'string' &&
+          calledPath.endsWith('/api/chat/stream') &&
+          calledInit &&
+          typeof calledInit === 'object' &&
+          'method' in calledInit &&
+          calledInit.method === 'POST',
+      ),
+    ).toBe(true)
+    expect(wrapper.text()).toContain('Plan B')
+  })
+
   it('deletes the active session and switches to the next saved session', async () => {
     localStorage.setItem('yier.active-session-id', 'session-1')
 

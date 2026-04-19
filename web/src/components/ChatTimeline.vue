@@ -26,7 +26,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  approvalAction: [requestId: string, decision: ApprovalDecision, contentText: string]
+  approvalAction: [requestId: string | number, decision: ApprovalDecision, contentText: string]
 }>()
 
 const timelineBody = ref<HTMLElement | null>(null)
@@ -81,7 +81,11 @@ async function scrollToBottomIfNeeded() {
   timelineBody.value.scrollTop = timelineBody.value.scrollHeight
 }
 
-function forwardApproval(payload: { requestId: string; decision: ApprovalDecision; contentText: string }) {
+function forwardApproval(payload: {
+  requestId: string | number
+  decision: ApprovalDecision
+  contentText: string
+}) {
   emit('approvalAction', payload.requestId, payload.decision, payload.contentText)
 }
 

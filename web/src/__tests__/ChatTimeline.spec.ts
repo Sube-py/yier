@@ -358,6 +358,100 @@ describe('ChatTimeline', () => {
     ])
   })
 
+  it('asks request-user-input questions one at a time and submits all collected answers together', async () => {
+    const wrapper = mount(ComposerUserInputPanel, {
+      props: {
+        request: createPendingRequest({
+          request_id: 101,
+          payload: {
+            request: {
+              kind: 'user_input',
+              mode: 'form',
+              message: 'Please answer these questions.',
+              requestedSchema: {
+                type: 'object',
+                properties: {
+                  language: {
+                    type: 'string',
+                    title: '实现语言',
+                    description: '请选择实现语言',
+                    oneOf: [
+                      {
+                        const: 'Python',
+                        title: 'Python',
+                      },
+                    ],
+                  },
+                  output_format: {
+                    type: 'string',
+                    title: '输出形式',
+                    description: '请选择输出形式',
+                    oneOf: [
+                      {
+                        const: 'Patch',
+                        title: 'Patch',
+                      },
+                    ],
+                  },
+                },
+                required: ['language', 'output_format'],
+              },
+              questions: [
+                {
+                  id: 'language',
+                  header: '实现语言',
+                  question: '请选择实现语言',
+                },
+                {
+                  id: 'output_format',
+                  header: '输出形式',
+                  question: '请选择输出形式',
+                },
+              ],
+            },
+          },
+        }),
+      },
+      global: {
+        plugins: [[PrimeVue, { theme: { preset: Aura } }]],
+      },
+      attachTo: document.body,
+    })
+
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Question 1 of 2')
+    expect(wrapper.text()).toContain('实现语言')
+    expect(wrapper.text()).not.toContain('输出形式')
+
+    await wrapper.get('[data-testid="composer-user-input-submit"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.emitted('submitRequest')).toBeUndefined()
+    expect(wrapper.text()).toContain('实现语言 is required.')
+
+    await wrapper.get('[data-testid="composer-user-input-option-language-Python"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="composer-user-input-submit"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Question 2 of 2')
+    expect(wrapper.text()).toContain('输出形式')
+    expect(wrapper.text()).not.toContain('实现语言 is required.')
+
+    await wrapper.get('[data-testid="composer-user-input-option-output_format-Patch"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="composer-user-input-submit"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.emitted('submitRequest')).toEqual([
+      [
+        101,
+        'accept',
+        '{"answers":{"language":{"answers":["Python"]},"output_format":{"answers":["Patch"]}}}',
+      ],
+    ])
+  })
+
   it('submits JSON fallback approval responses', async () => {
     const wrapper = mountTimeline({
       activities: [

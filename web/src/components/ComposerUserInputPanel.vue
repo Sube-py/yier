@@ -23,18 +23,84 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  submitRequest: [requestId: string, decision: ApprovalDecision, contentText: string]
+  submitRequest: [requestId: string | number, decision: ApprovalDecision, contentText: string]
 }>()
 
 const approvalActivity = ref(createApprovalActivity(props.request))
 const approval = computed(() => approvalActivity.value.approval)
 const isPlanImplementation = computed(() => props.request.kind === 'plan_implementation')
+const isUserInputRequest = computed(() => props.request.kind === 'user_input')
 const planFeedback = ref('')
+const currentQuestionIndex = ref(0)
 
 const baseFields = computed(() =>
   (approval.value?.formFields ?? []).filter((field) => !field.id.endsWith('__other')),
 )
 const singleField = computed(() => (baseFields.value.length === 1 ? baseFields.value[0] : null))
+const requestQuestions = computed(() => {
+  const rawRequest = props.request.payload.request
+  if (!rawRequest || typeof rawRequest !== 'object' || Array.isArray(rawRequest)) {
+    return [] as Array<{ id: string; header: string; question: string }>
+  }
+  const rawQuestions = (rawRequest as Record<string, unknown>).questions
+  if (!Array.isArray(rawQuestions)) {
+    return [] as Array<{ id: string; header: string; question: string }>
+  }
+  return rawQuestions
+    .map((entry) => {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+        return null
+      }
+      const question = entry as Record<string, unknown>
+      const id = typeof question.id === 'string' ? question.id : ''
+      if (!id) {
+        return null
+      }
+      return {
+        id,
+        header: typeof question.header === 'string' ? question.header : '',
+        question: typeof question.question === 'string' ? question.question : '',
+      }
+    })
+    .filter((entry): entry is { id: string; header: string; question: string } => Boolean(entry))
+    .filter((entry) => baseFields.value.some((field) => field.id === entry.id))
+})
+const isSequentialUserInput = computed(
+  () => isUserInputRequest.value && requestQuestions.value.length > 1,
+)
+const currentQuestion = computed(() => {
+  if (!isSequentialUserInput.value) {
+    return null
+  }
+  return requestQuestions.value[currentQuestionIndex.value] ?? null
+})
+const visibleFields = computed(() => {
+  if (!currentQuestion.value) {
+    return baseFields.value
+  }
+  const field = baseFields.value.find((entry) => entry.id === currentQuestion.value?.id)
+  return field ? [field] : baseFields.value
+})
+const isLastQuestion = computed(
+  () =>
+    !isSequentialUserInput.value ||
+    currentQuestionIndex.value >= requestQuestions.value.length - 1,
+)
+const primaryActionLabel = computed(() => {
+  if (isPlanImplementation.value) {
+    return 'Implement plan'
+  }
+  if (isSequentialUserInput.value && !isLastQuestion.value) {
+    return 'Next'
+  }
+  return 'Submit'
+})
+const progressLabel = computed(() => {
+  if (!isSequentialUserInput.value) {
+    return ''
+  }
+  return `Question ${currentQuestionIndex.value + 1} of ${requestQuestions.value.length}`
+})
 const headlineText = computed(() => {
   if (isPlanImplementation.value) {
     return props.request.title || 'Implement this plan?'
@@ -65,7 +131,23 @@ watch(
   () => props.request,
   (request) => {
     approvalActivity.value = createApprovalActivity(request)
+    currentQuestionIndex.value = 0
+    planFeedback.value = ''
   },
+)
+
+watch(
+  requestQuestions,
+  (questions) => {
+    if (!questions.length) {
+      currentQuestionIndex.value = 0
+      return
+    }
+    if (currentQuestionIndex.value >= questions.length) {
+      currentQuestionIndex.value = questions.length - 1
+    }
+  },
+  { immediate: true },
 )
 
 function companionOtherField(fieldId: string) {
@@ -94,6 +176,45 @@ function shouldShowFieldPrompt(field: ApprovalFormFieldState) {
   return normalizeText(prompt) !== normalizeText(headlineText.value)
 }
 
+function fieldDisplayName(field: ApprovalFormFieldState) {
+  const question = currentQuestion.value
+  if (question?.header.trim()) {
+    return question.header.trim()
+  }
+  if (field.label.trim()) {
+    return field.label.trim()
+  }
+  return field.id
+}
+
+function fieldHasAnswer(field: ApprovalFormFieldState | null) {
+  if (!field) {
+    return false
+  }
+  const value = approvalFieldValue(field)
+  if (Array.isArray(value)) {
+    return value.length > 0
+  }
+  return value.trim().length > 0
+}
+
+function validateCurrentQuestion() {
+  if (!isSequentialUserInput.value || !approval.value) {
+    return true
+  }
+  const field = visibleFields.value[0] ?? null
+  if (!field) {
+    return true
+  }
+  const otherField = companionOtherField(field.id)
+  if (!field.required || fieldHasAnswer(field) || fieldHasAnswer(otherField)) {
+    clearApprovalValidation(approvalActivity.value)
+    return true
+  }
+  approval.value.validationError = `${fieldDisplayName(field)} is required.`
+  return false
+}
+
 function onInput(field: ApprovalFormFieldState, event: Event) {
   const target = event.target
   if (!(target instanceof HTMLInputElement)) {
@@ -119,6 +240,17 @@ function onMultiSelect(field: ApprovalFormFieldState, event: Event) {
   }
   updateApprovalMultiSelect(field, target)
   clearApprovalValidation(approvalActivity.value)
+}
+
+function onPrimaryAction() {
+  if (isSequentialUserInput.value && !isLastQuestion.value) {
+    if (!validateCurrentQuestion()) {
+      return
+    }
+    currentQuestionIndex.value += 1
+    return
+  }
+  submit('accept')
 }
 
 function submit(decision: ApprovalDecision) {
@@ -149,6 +281,13 @@ function submit(decision: ApprovalDecision) {
           {{ headlineText }}
         </p>
         <p
+          v-if="progressLabel"
+          data-testid="composer-user-input-progress"
+          class="m-0 text-[0.76rem] font-semibold uppercase tracking-[0.14em] text-[color:var(--app-accent-deep)]"
+        >
+          {{ progressLabel }}
+        </p>
+        <p
           v-if="request.detail && request.detail !== headlineText"
           class="m-0 text-[0.82rem] leading-[1.45] text-[color:var(--app-text-soft)]"
         >
@@ -176,7 +315,7 @@ function submit(decision: ApprovalDecision) {
 
       <template v-else>
         <div
-          v-for="field in baseFields"
+          v-for="field in visibleFields"
           :key="`${request.request_id}-${field.id}`"
           class="grid gap-2"
         >
@@ -303,6 +442,15 @@ function submit(decision: ApprovalDecision) {
           class="flex items-center gap-2"
         >
           <Button
+            v-if="isSequentialUserInput && currentQuestionIndex > 0"
+            label="Back"
+            severity="secondary"
+            text
+            data-testid="composer-user-input-back"
+            :disabled="disabled"
+            @click="currentQuestionIndex -= 1"
+          />
+          <Button
             label="Dismiss"
             severity="secondary"
             text
@@ -311,10 +459,10 @@ function submit(decision: ApprovalDecision) {
             @click="submit('cancel')"
           />
           <Button
-            :label="isPlanImplementation ? 'Implement plan' : 'Submit'"
+            :label="primaryActionLabel"
             data-testid="composer-user-input-submit"
             :disabled="disabled"
-            @click="submit('accept')"
+            @click="onPrimaryAction"
           />
         </div>
       </div>

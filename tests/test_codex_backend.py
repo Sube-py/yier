@@ -12,6 +12,7 @@ from codex_app_server.generated.v2_all import (
     ImageViewThreadItem,
     LocalImageUserInput,
     MentionUserInput,
+    PlanThreadItem,
     SkillUserInput,
     TextUserInput,
     UserMessageThreadItem,
@@ -1168,6 +1169,7 @@ def test_codex_backend_build_ipc_turns_merges_snapshot_state() -> None:
     settings = WebSettings(codex=StoredCodexSettings(sandbox="workspace-write"))
     chat_service = SimpleNamespace(
         config_service=SimpleNamespace(load_web_settings=lambda: settings),
+        get_session_metadata=lambda session_id: {"codex_work_mode": "plan"},
     )
     backend = CodexAppServerBackend(chat_service)
     context = ChatSessionContext(
@@ -1229,6 +1231,7 @@ def test_codex_backend_build_ipc_turns_appends_active_snapshot_placeholder() -> 
     settings = WebSettings(codex=StoredCodexSettings(sandbox="workspace-write"))
     chat_service = SimpleNamespace(
         config_service=SimpleNamespace(load_web_settings=lambda: settings),
+        get_session_metadata=lambda session_id: {"codex_work_mode": "plan"},
     )
     backend = CodexAppServerBackend(chat_service)
     context = ChatSessionContext(
@@ -1280,6 +1283,7 @@ def test_codex_backend_build_ipc_turns_merges_active_snapshot_into_last_fallback
     settings = WebSettings(codex=StoredCodexSettings(sandbox="workspace-write"))
     chat_service = SimpleNamespace(
         config_service=SimpleNamespace(load_web_settings=lambda: settings),
+        get_session_metadata=lambda session_id: {"codex_work_mode": "plan"},
     )
     backend = CodexAppServerBackend(chat_service)
     context = ChatSessionContext(
@@ -1454,6 +1458,7 @@ def test_codex_backend_build_turn_state_params_uses_object_collaboration_mode() 
     settings = WebSettings(codex=StoredCodexSettings(sandbox="workspace-write"))
     chat_service = SimpleNamespace(
         config_service=SimpleNamespace(load_web_settings=lambda: settings),
+        get_session_metadata=lambda session_id: {"codex_work_mode": "plan"},
     )
     backend = CodexAppServerBackend(chat_service)
     context = ChatSessionContext(
@@ -1497,6 +1502,7 @@ def test_codex_backend_turn_params_include_collaboration_mode() -> None:
     )
     chat_service = SimpleNamespace(
         config_service=SimpleNamespace(load_web_settings=lambda: settings),
+        get_session_metadata=lambda session_id: {"codex_work_mode": "plan"},
     )
     backend = CodexAppServerBackend(chat_service)
     context = ChatSessionContext(
@@ -1519,6 +1525,7 @@ def test_codex_backend_turn_params_include_collaboration_mode() -> None:
     )
 
     params = backend._turn_params(context)
+    thread_params = backend._thread_params(context)
 
     assert params["collaboration_mode"] == {
         "mode": "plan",
@@ -1528,6 +1535,8 @@ def test_codex_backend_turn_params_include_collaboration_mode() -> None:
             "developer_instructions": None,
         },
     }
+    assert thread_params["sandbox"] == "read-only"
+    assert params["sandbox_policy"] == {"type": "readOnly"}
 
 
 def test_codex_backend_turn_params_fill_blank_model_from_defaults() -> None:
@@ -1602,6 +1611,54 @@ def test_codex_backend_build_turn_state_params_normalizes_legacy_build_mode() ->
             "developer_instructions": None,
         },
     }
+
+
+def test_codex_backend_queues_plan_implementation_request_for_plan_items() -> None:
+    emitted: list[tuple[str, dict[str, Any]]] = []
+    settings = WebSettings(codex=StoredCodexSettings(sandbox="workspace-write"))
+    chat_service = SimpleNamespace(
+        config_service=SimpleNamespace(load_web_settings=lambda: settings),
+        get_session_metadata=lambda session_id: {"codex_work_mode": "plan"},
+    )
+    backend = CodexAppServerBackend(chat_service)
+    context = ChatSessionContext(
+        session_id="session-1",
+        source="chat",
+        backend_id="codex",
+        project_path=Path("/tmp/project"),
+        channel_meta=None,
+        backend_state={"thread_id": "thread-1", "collaboration_mode": {"mode": "plan"}},
+    )
+    runtime = CodexSessionRuntime(session_id="session-1", thread_id="thread-1")
+    backend._emit_from_thread = lambda runtime, event, data, wait=False: emitted.append(  # type: ignore[method-assign]
+        (event, data)
+    )
+
+    backend._handle_item_completed(
+        runtime,
+        context,
+        PlanThreadItem(
+            id="plan-item-1",
+            text="1. Inspect code\n2. Apply patch",
+            type="plan",
+        ),
+        turn_id="turn-1",
+    )
+
+    assert "turn-1:plan-request" in runtime.pending_requests
+    pending = runtime.pending_requests["turn-1:plan-request"]
+    assert pending.method == "item/plan/requestImplementation"
+    assert pending.record["kind"] == "plan_implementation"
+    assert pending.record["payload"]["planContent"] == "1. Inspect code\n2. Apply patch"
+    assert emitted == [
+        (
+            "approval_requested",
+            {
+                "session_id": "session-1",
+                **pending.record,
+            },
+        )
+    ]
 
 
 def test_codex_backend_thread_runtime_status_payload_normalizes_root_active_flags() -> None:

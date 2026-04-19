@@ -119,6 +119,7 @@ function readCachedWorkspaceSurface(): WorkspaceSurface {
 type CodexAdvancedMode = 'ralph-loop'
 type CodexAdvancedModeFabEdge = 'left' | 'right'
 type LoadedPendingRequest = SessionTranscriptResponse['pending_requests'][number]
+type PendingRequestId = string | number
 
 function normalizeCodexAdvancedMode(value: string | null | undefined): CodexAdvancedMode {
   return value === 'ralph-loop' ? value : 'ralph-loop'
@@ -179,6 +180,17 @@ function createClientId() {
   }
 
   return `id-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+function normalizePendingRequestId(value: PendingRequestId | null | undefined) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return String(value)
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    return trimmed ? trimmed : ''
+  }
+  return ''
 }
 
 const SHELL_TOOL_NAMES = new Set([
@@ -469,10 +481,14 @@ function createWorkspaceApp() {
   )
   const composerPendingRequest = computed(() => loadedPendingRequests.value[0] ?? null)
   const composerUserInputRequest = computed(() =>
-    loadedPendingRequests.value.find((request) => request.kind === 'user_input') ?? null,
+    composerPendingRequest.value?.kind === 'user_input'
+      ? composerPendingRequest.value
+      : null,
   )
   const composerImplementPlanRequest = computed(() =>
-    loadedPendingRequests.value.find((request) => request.kind === 'plan_implementation') ?? null,
+    composerPendingRequest.value?.kind === 'plan_implementation'
+      ? composerPendingRequest.value
+      : null,
   )
   const hasCodexGoalLoop = computed(
     () => isCodexWorkspace.value && activeCodexGoalLoop.value !== null,
@@ -1672,11 +1688,15 @@ function createWorkspaceApp() {
       activities.value
         .filter((activity) => activity.kind === 'approval')
         .map((activity) => activity.approval?.requestId)
-        .filter((requestId): requestId is string => typeof requestId === 'string' && requestId.length > 0),
+        .map((requestId) => normalizePendingRequestId(requestId))
+        .filter((requestId) => requestId.length > 0),
     )
 
     for (const request of loadedPendingRequests.value) {
-      if (shouldRenderPendingRequestInComposer(request) || existingApprovalIds.has(request.request_id)) {
+      if (
+        shouldRenderPendingRequestInComposer(request)
+        || existingApprovalIds.has(normalizePendingRequestId(request.request_id))
+      ) {
         continue
       }
 
@@ -2734,9 +2754,10 @@ function createWorkspaceApp() {
 
       if (event.event === 'approval_requested') {
         if (!isReplayingSessionActivityEvents) {
+          const normalizedRequestId = normalizePendingRequestId(event.data.request_id)
           loadedPendingRequests.value = [
             ...loadedPendingRequests.value.filter(
-              (request) => request.request_id !== event.data.request_id,
+              (request) => normalizePendingRequestId(request.request_id) !== normalizedRequestId,
             ),
             event.data,
           ]
@@ -2751,8 +2772,9 @@ function createWorkspaceApp() {
 
       if (event.event === 'approval_resolved') {
         if (!isReplayingSessionActivityEvents) {
+          const normalizedRequestId = normalizePendingRequestId(event.data.request_id)
           loadedPendingRequests.value = loadedPendingRequests.value.filter(
-            (request) => request.request_id !== event.data.request_id,
+            (request) => normalizePendingRequestId(request.request_id) !== normalizedRequestId,
           )
         }
         if (activeSessionRuntime.value) {
@@ -3238,13 +3260,17 @@ function createWorkspaceApp() {
   }
 
   async function submitPendingRequestDecision(
-    requestId: string,
+    requestId: PendingRequestId,
     decision: ApprovalDecision,
     contentText: string,
   ) {
     errorMessage.value = ''
     const implementPlanRequest = composerImplementPlanRequest.value
-    if (implementPlanRequest?.request_id === requestId) {
+    const normalizedRequestId = normalizePendingRequestId(requestId)
+    if (
+      implementPlanRequest
+      && normalizePendingRequestId(implementPlanRequest.request_id) === normalizedRequestId
+    ) {
       let content: Record<string, unknown> | null = null
       if (contentText.trim()) {
         try {
@@ -3256,7 +3282,7 @@ function createWorkspaceApp() {
       }
 
       loadedPendingRequests.value = loadedPendingRequests.value.filter(
-        (request) => request.request_id !== requestId,
+        (request) => normalizePendingRequestId(request.request_id) !== normalizedRequestId,
       )
       if (activeSessionRuntime.value) {
         activeSessionRuntime.value.pending_request_count = Math.max(
@@ -3311,7 +3337,7 @@ function createWorkspaceApp() {
         } satisfies ApprovalResponseRequest,
       )
       loadedPendingRequests.value = loadedPendingRequests.value.filter(
-        (request) => request.request_id !== requestId,
+        (request) => normalizePendingRequestId(request.request_id) !== normalizedRequestId,
       )
       if (activeSessionRuntime.value) {
         activeSessionRuntime.value.pending_request_count = Math.max(

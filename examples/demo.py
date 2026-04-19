@@ -107,7 +107,7 @@ async def main() -> None:
                 ),
             ),
             sandbox_policy=SandboxPolicy(
-                root=ReadOnlySandboxPolicy(
+                ReadOnlySandboxPolicy(
                     access=ReadOnlyAccess(
                         RestrictedReadOnlyAccess(
                             include_platform_defaults=True,

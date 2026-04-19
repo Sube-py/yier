@@ -1214,6 +1214,12 @@ class ChatService:
         )
         return session_id
 
+    async def archive_codex_native_session(self, thread_id: str) -> bool:
+        normalized_thread_id = thread_id.strip()
+        if not normalized_thread_id:
+            return False
+        return await self.codex_workspace.archive_thread(normalized_thread_id)
+
     def update_codex_session_mode(
         self, session_id: str, codex_work_mode: CodexWorkMode
     ) -> bool:

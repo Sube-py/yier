@@ -46,6 +46,7 @@ class FakeChatService:
             "primevue-docs": MCPRuntimeEntry(status="connected", tool_count=3),
         }
         self.paired_editor_updates: list[dict[str, Any]] = []
+        self.archived_codex_thread_ids: list[str] = []
         self.sessions = {
             "session-a": [
                 Message(role="user", content="hello"),
@@ -309,6 +310,13 @@ class FakeChatService:
 
     async def open_codex_native_session(self, thread_id: str) -> str | None:
         return thread_id if thread_id else None
+
+    async def archive_codex_native_session(self, thread_id: str) -> bool:
+        normalized_thread_id = thread_id.strip()
+        if not normalized_thread_id:
+            return False
+        self.archived_codex_thread_ids.append(normalized_thread_id)
+        return True
 
     async def get_codex_session_activity_page_from_sdk(
         self,
@@ -1460,6 +1468,15 @@ def test_api_endpoints_cover_config_session_and_stream(tmp_path: Path) -> None:
         )
         assert open_codex_response.status_code == 201
         assert open_codex_response.json()["session_id"] == "thread-a"
+
+        archive_codex_response = client.post(
+            "/api/codex/threads/archive", json={"thread_id": "thread-a"}
+        )
+        assert archive_codex_response.status_code == 201
+        assert archive_codex_response.json() == {
+            "thread_id": "thread-a",
+            "archived": True,
+        }
 
         codex_mode_response = client.put(
             "/api/codex/sessions/codex-session/mode",

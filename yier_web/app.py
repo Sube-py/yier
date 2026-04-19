@@ -28,6 +28,8 @@ from yier_web.directory_picker import LocalDirectoryPickerService
 from yier_web.event_stream import EventStreamBroker, EventStreamItem
 from yier_web.frontend import FrontendService
 from yier_web.schemas import (
+    ArchiveCodexSessionRequest,
+    ArchiveCodexSessionResponse,
     ApprovalResponseRequest,
     AttachmentUploadResponse,
     AuthLoginRequest,
@@ -462,6 +464,21 @@ async def open_codex_session(
             status_code=HTTP_404_NOT_FOUND, detail="Codex session not found."
         )
     return OpenCodexSessionResponse(session_id=session_id)
+
+
+@post("/codex/threads/archive")
+async def archive_codex_session(
+    data: ArchiveCodexSessionRequest,
+    state: State,
+) -> ArchiveCodexSessionResponse:
+    archived = await get_services(state).chat_service.archive_codex_native_session(
+        data.thread_id
+    )
+    if not archived:
+        raise HTTPException(
+            status_code=HTTP_404_NOT_FOUND, detail="Codex session not found."
+        )
+    return ArchiveCodexSessionResponse(thread_id=data.thread_id)
 
 
 @get("/codex/sessions/{session_id:str}")
@@ -1019,6 +1036,7 @@ api_router = Router(
         get_codex_workspace,
         create_codex_session,
         open_codex_session,
+        archive_codex_session,
         get_codex_session,
         get_codex_session_activity_events,
         update_codex_paired_editor_state,

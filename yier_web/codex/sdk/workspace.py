@@ -140,6 +140,25 @@ class CodexWorkspaceService:
             await self._invalidate_shared_codex(codex)
             return None
 
+    async def archive_thread(self, thread_id: str) -> bool:
+        normalized_thread_id = thread_id.strip()
+        if not normalized_thread_id:
+            return False
+
+        config = self._sdk_config()
+        if config is None:
+            return False
+
+        codex = await self._shared_codex(config)
+        if codex is None:
+            return False
+        try:
+            await codex.thread_archive(normalized_thread_id)
+            return True
+        except Exception:
+            await self._invalidate_shared_codex(codex)
+            return False
+
     async def list_active_sessions(self) -> list[CodexNativeSessionSummary]:
         sdk_sessions = await self._list_active_sessions_from_sdk()
         if sdk_sessions is not None:

@@ -7,7 +7,11 @@ from pathlib import Path
 import socket
 
 from codex_app_server import ThreadSortKey, ThreadSourceKind
-from codex_app_server.generated.v2_all import ThreadListResponse, ThreadReadResponse
+from codex_app_server.generated.v2_all import (
+    ThreadArchiveResponse,
+    ThreadListResponse,
+    ThreadReadResponse,
+)
 
 import yier_web.codex.sdk.workspace as workspace_module
 from yier_web.codex.sdk.workspace import CodexWorkspaceService
@@ -52,6 +56,12 @@ def _patch_async_codex(
             if self.error is not None:
                 raise self.error
             return self.responses.pop(0)
+
+        async def thread_archive(self, thread_id: str) -> ThreadArchiveResponse:
+            self.calls.append({"thread_id": thread_id, "action": "archive"})
+            if self.error is not None:
+                raise self.error
+            return ThreadArchiveResponse()
 
     class _FakeAsyncThread:
         def __init__(self, codex: _FakeAsyncCodex, thread_id: str) -> None:
@@ -366,6 +376,28 @@ def test_codex_workspace_reads_thread_from_sdk(
         {
             "thread_id": "thread-alpha-1",
             "include_turns": True,
+        }
+    ]
+
+
+def test_codex_workspace_archives_thread_from_sdk(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+) -> None:
+    home_dir = tmp_path / "home"
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+
+    fake_codex = _patch_async_codex(monkeypatch)
+
+    archived = asyncio.run(CodexWorkspaceService(home_dir).archive_thread("thread-alpha-1"))
+
+    assert archived is True
+    assert fake_codex.last_instance is not None
+    assert fake_codex.last_instance.calls == [
+        {
+            "thread_id": "thread-alpha-1",
+            "action": "archive",
         }
     ]
 

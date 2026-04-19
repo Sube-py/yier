@@ -542,6 +542,20 @@ class OpenCodexSessionResponse(BaseModel):
     session_id: str
 
 
+class ArchiveCodexSessionRequest(BaseModel):
+    thread_id: str
+
+    @field_validator("thread_id")
+    @classmethod
+    def strip_thread_id(cls, value: str) -> str:
+        return value.strip()
+
+
+class ArchiveCodexSessionResponse(BaseModel):
+    thread_id: str
+    archived: bool = True
+
+
 class CodexPairedEditorStateRequest(BaseModel):
     session_id: str = ""
     content: str = ""

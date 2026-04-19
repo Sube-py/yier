@@ -1525,8 +1525,6 @@ def test_codex_backend_turn_params_include_collaboration_mode() -> None:
     )
 
     params = backend._turn_params(context)
-    thread_params = backend._thread_params(context)
-
     assert params["collaboration_mode"] == {
         "mode": "plan",
         "settings": {
@@ -1535,7 +1533,6 @@ def test_codex_backend_turn_params_include_collaboration_mode() -> None:
             "developer_instructions": None,
         },
     }
-    assert thread_params["sandbox"] == "read-only"
     assert params["sandbox_policy"] == {"type": "readOnly"}
 
 

@@ -76,7 +76,12 @@ from codex_app_server.models import Notification
 
 from yier_agents import Message
 
-from yier_web.agent_backends.base import ChatBackend, ChatSessionContext, StreamEmitter
+from yier_web.agent_backends.base import (
+    ChatBackend,
+    ChatSessionContext,
+    PendingRequestId,
+    StreamEmitter,
+)
 from yier_web.attachments import AttachmentStorageError
 from yier_web.codex.collaboration_mode import (
     codex_work_mode_from_collaboration_mode,
@@ -387,14 +392,17 @@ class CodexAppServerBackend(ChatBackend):
     async def respond_to_pending_request(
         self,
         context: ChatSessionContext,
-        request_id: str,
+        request_id: PendingRequestId,
         decision: str,
         content: dict[str, Any] | None = None,
     ) -> bool:
         runtime = self._runtimes.get(context.session_id)
         if runtime is None:
             return False
-        pending = runtime.pending_requests.get(request_id)
+        normalized_request_id = self.normalize_pending_request_id(request_id)
+        if normalized_request_id is None:
+            return False
+        pending = runtime.pending_requests.get(normalized_request_id)
         if pending is None:
             return False
         pending.decision = decision
@@ -420,7 +428,7 @@ class CodexAppServerBackend(ChatBackend):
     async def respond_to_approval(
         self,
         context: ChatSessionContext,
-        request_id: str,
+        request_id: PendingRequestId,
         decision: str,
         content: dict[str, Any] | None = None,
     ) -> bool:
@@ -516,13 +524,16 @@ class CodexAppServerBackend(ChatBackend):
     async def respond_to_raw_request(
         self,
         context: ChatSessionContext,
-        request_id: str,
+        request_id: PendingRequestId,
         response_payload: dict[str, Any],
     ) -> bool:
         runtime = self._runtimes.get(context.session_id)
         if runtime is None:
             return False
-        pending = runtime.pending_requests.get(request_id)
+        normalized_request_id = self.normalize_pending_request_id(request_id)
+        if normalized_request_id is None:
+            return False
+        pending = runtime.pending_requests.get(normalized_request_id)
         if pending is None:
             return False
         pending.response = dict(response_payload)
@@ -1965,7 +1976,7 @@ class CodexAppServerBackend(ChatBackend):
         self,
         runtime: CodexSessionRuntime,
         context: ChatSessionContext,
-        request_id: str,
+        request_id: PendingRequestId,
         method: str,
         params: dict[str, Any],
     ) -> dict[str, Any]:
@@ -1973,7 +1984,10 @@ class CodexAppServerBackend(ChatBackend):
         if auto_response is not None:
             return auto_response
 
-        record = self._build_pending_approval(request_id, method, params)
+        normalized_request_id = self.normalize_pending_request_id(request_id)
+        if normalized_request_id is None:
+            return {}
+        record = self._build_pending_approval(normalized_request_id, method, params)
         pending = PendingApprovalState(
             request_id=request_id,
             method=method,
@@ -1983,7 +1997,7 @@ class CodexAppServerBackend(ChatBackend):
                 **record,
             },
         )
-        runtime.pending_requests[request_id] = pending
+        runtime.pending_requests[normalized_request_id] = pending
         self._emit_from_thread(
             runtime,
             "approval_requested",

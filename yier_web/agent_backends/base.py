@@ -6,6 +6,7 @@ from typing import Any, Awaitable, Callable, Protocol
 
 
 StreamEmitter = Callable[[str, dict[str, Any]], Awaitable[None]]
+PendingRequestId = str | int
 
 
 @dataclass(slots=True)
@@ -46,7 +47,7 @@ class ChatBackend(Protocol):
     async def respond_to_pending_request(
         self,
         context: ChatSessionContext,
-        request_id: str,
+        request_id: PendingRequestId,
         decision: str,
         content: dict[str, Any] | None = None,
     ) -> bool: ...
@@ -54,7 +55,7 @@ class ChatBackend(Protocol):
     async def respond_to_approval(
         self,
         context: ChatSessionContext,
-        request_id: str,
+        request_id: PendingRequestId,
         decision: str,
         content: dict[str, Any] | None = None,
     ) -> bool: ...

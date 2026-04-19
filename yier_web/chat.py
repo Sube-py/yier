@@ -1254,11 +1254,6 @@ class ChatService:
                 collaboration_mode,
                 broadcast=True,
             )
-            backend = self.backends.get("codex")
-            if isinstance(backend, CodexAppServerBackend):
-                loop = self._running_loop()
-                if loop is not None:
-                    loop.create_task(backend.close_session(session_id))
 
         return True
 
@@ -1972,7 +1967,8 @@ class ChatService:
         seen_request_ids = {
             item.get("request_id")
             for item in pending_items
-            if isinstance(item, dict) and isinstance(item.get("request_id"), str)
+            if isinstance(item, dict)
+            and isinstance(item.get("request_id"), (str, int))
         }
         if isinstance(backend, CodexAppServerBackend):
             metadata = self.get_session_metadata(
@@ -2004,12 +2000,12 @@ class ChatService:
                         continue
                     request_id_value = record.get("request_id")
                     if (
-                        isinstance(request_id_value, str)
+                        isinstance(request_id_value, (str, int))
                         and request_id_value in seen_request_ids
                     ):
                         continue
                     pending_items.append(record)
-                    if isinstance(request_id_value, str):
+                    if isinstance(request_id_value, (str, int)):
                         seen_request_ids.add(request_id_value)
         return [PendingRequest.model_validate(item) for item in pending_items]
 
@@ -2022,7 +2018,7 @@ class ChatService:
     async def respond_to_pending_request(
         self,
         session_id: str,
-        request_id: str,
+        request_id: str | int,
         decision: str,
         content: dict[str, Any] | None = None,
     ) -> bool:
@@ -2061,7 +2057,7 @@ class ChatService:
     async def respond_to_approval(
         self,
         session_id: str,
-        request_id: str,
+        request_id: str | int,
         decision: str,
         content: dict[str, Any] | None = None,
     ) -> bool:
@@ -2091,7 +2087,7 @@ class ChatService:
         session_id: str,
         *,
         preferred_kind: str | None = None,
-    ) -> str | None:
+    ) -> str | int | None:
         pending_requests = self.get_pending_requests(session_id)
         if preferred_kind:
             for request in pending_requests:
@@ -2106,7 +2102,7 @@ class ChatService:
         session_id: str,
         *,
         preferred_kind: str | None = None,
-    ) -> str | None:
+    ) -> str | int | None:
         return self.resolve_pending_request_id(
             session_id,
             preferred_kind=preferred_kind,
@@ -2115,7 +2111,7 @@ class ChatService:
     def _pending_ipc_request(
         self,
         session_id: str,
-        request_id: str,
+        request_id: str | int,
     ) -> dict[str, Any] | None:
         metadata = self.get_session_metadata(
             session_id,

@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from yier_web.agent_backends.base import ChatBackend, ChatSessionContext, StreamEmitter
+from yier_web.agent_backends.base import (
+    ChatBackend,
+    ChatSessionContext,
+    PendingRequestId,
+    StreamEmitter,
+)
 
 if TYPE_CHECKING:
     from yier_web.chat import ChatService
@@ -79,7 +84,7 @@ class YierAgentBackend(ChatBackend):
     async def respond_to_pending_request(
         self,
         context: ChatSessionContext,
-        request_id: str,
+        request_id: PendingRequestId,
         decision: str,
         content: dict[str, object] | None = None,
     ) -> bool:
@@ -88,7 +93,7 @@ class YierAgentBackend(ChatBackend):
     async def respond_to_approval(
         self,
         context: ChatSessionContext,
-        request_id: str,
+        request_id: PendingRequestId,
         decision: str,
         content: dict[str, object] | None = None,
     ) -> bool:

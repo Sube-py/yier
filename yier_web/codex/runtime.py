@@ -12,7 +12,7 @@ from yier_web.agent_backends.base import StreamEmitter
 
 @dataclass(slots=True)
 class PendingApprovalState:
-    request_id: str
+    request_id: str | int
     method: str
     payload: dict[str, Any]
     record: dict[str, Any]

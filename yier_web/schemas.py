@@ -221,7 +221,7 @@ class ApprovalOption(BaseModel):
 
 
 class PendingApproval(BaseModel):
-    request_id: str
+    request_id: str | int
     method: str
     kind: str
     title: str
@@ -501,7 +501,7 @@ class ChannelAccountActionResponse(BaseModel):
 
 
 class ApprovalResponseRequest(BaseModel):
-    request_id: int
+    request_id: str | int
     decision: ApprovalDecision
     content: dict[str, Any] | None = None
 

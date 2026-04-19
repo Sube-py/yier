@@ -349,6 +349,15 @@ export interface OpenCodexSessionResponse {
   session_id: string
 }
 
+export interface ArchiveCodexSessionRequest {
+  thread_id: string
+}
+
+export interface ArchiveCodexSessionResponse {
+  thread_id: string
+  archived: boolean
+}
+
 export interface CodexPairedEditorStateRequest {
   session_id: string
   content: string

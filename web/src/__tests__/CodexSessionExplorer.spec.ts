@@ -63,6 +63,7 @@ function mountExplorer(
     activeSessionId: string
     activeSessionStatus: string
     activeProjectPath: string
+    archivingThreadId: string
   }> = {},
 ) {
   return mount(CodexSessionExplorer, {
@@ -71,6 +72,7 @@ function mountExplorer(
       activeSessionId: 'thread-alpha-2',
       activeSessionStatus: 'active',
       activeProjectPath: '/tmp/alpha-service',
+      archivingThreadId: '',
       ...overrides,
     },
     global: {
@@ -114,7 +116,7 @@ describe('CodexSessionExplorer', () => {
     await projectAction.trigger('click')
     expect(wrapper.emitted('startSession')).toEqual([['/tmp/alpha-service']])
 
-    const sessionItems = wrapper.findAll('.codex-session-item')
+    const sessionItems = wrapper.findAll('.codex-session-item > button')
     await sessionItems[1]!.trigger('click')
     expect(wrapper.emitted('openSession')).toEqual([['thread-alpha-1']])
 
@@ -124,5 +126,26 @@ describe('CodexSessionExplorer', () => {
 
     await firstProjectToggle.trigger('click')
     expect(wrapper.findAll('.codex-session-item')).toHaveLength(2)
+  })
+
+  it('emits archiveSession when the archive action is clicked', async () => {
+    const wrapper = mountExplorer()
+
+    const archiveButtons = wrapper.findAll('.codex-session-archive-action')
+    expect(archiveButtons).toHaveLength(2)
+
+    await archiveButtons[1]!.trigger('click')
+
+    expect(wrapper.emitted('archiveSession')).toEqual([['thread-alpha-1']])
+    expect(wrapper.emitted('openSession')).toBeUndefined()
+  })
+
+  it('hides archive actions for every non-busy row while a thread is archiving', async () => {
+    const wrapper = mountExplorer({
+      archivingThreadId: 'thread-alpha-2',
+    })
+
+    expect(wrapper.findAll('.codex-session-archive-action')).toHaveLength(0)
+    expect(wrapper.text()).toContain('Archiving')
   })
 })

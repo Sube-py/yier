@@ -1854,7 +1854,7 @@ describe('App', () => {
 
     expect(wrapper.text()).toContain('first transcript body')
 
-    const nativeButtons = wrapper.findAll('.codex-session-item')
+    const nativeButtons = wrapper.findAll('.codex-session-item > button')
     expect(nativeButtons).toHaveLength(2)
 
     await nativeButtons[0]!.trigger('click')
@@ -1877,6 +1877,275 @@ describe('App', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('second transcript body')
+  })
+
+  it('creates a fresh codex session when the cached active codex session returns 404 on boot', async () => {
+    localStorage.setItem('yier.active-session-id', 'codex-thread-stale')
+    localStorage.setItem('yier.workspace-surface', 'codex')
+
+    let transcriptRequestCount = 0
+    let createRequestCount = 0
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = input.toString()
+      if (path.endsWith('/api/health')) {
+        return jsonResponse({
+          frontend: { ready: true, mode: 'static' },
+          llm: { ready: true },
+          mcp: { ready: true, runtime: {} },
+          backends: {
+            yier: { ready: true },
+            codex: { ready: true },
+          },
+          allowed_roots: ['/tmp/project'],
+        })
+      }
+      if (path.endsWith('/api/config')) {
+        return jsonResponse({
+          llm: { provider: '', base_url: 'https://example.test', model: 'demo', has_api_key: true },
+          allowed_roots: ['/tmp/project'],
+          mcp_runtime: {},
+          session_defaults: {
+            default_backend_id: 'yier',
+            default_project_path: '/tmp/project',
+            channel_backend_id: 'yier',
+            channel_project_path: '/tmp/project',
+            channel_auto_approve_codex_requests: true,
+            workspace_surface: 'codex',
+          },
+          codex: {
+            launcher_command: 'codex app-server --listen stdio://',
+            model: 'gpt-5.4',
+            sandbox: 'workspace-write',
+            approval_policy: 'on-request',
+            approvals_reviewer: 'user',
+            personality: 'friendly',
+            reasoning_effort: 'medium',
+            service_tier: '',
+          },
+        })
+      }
+      if (path.endsWith('/api/config/mcp')) {
+        return jsonResponse({ mcp_servers: {}, runtime: {} })
+      }
+      if (path.endsWith('/api/codex/workspace')) {
+        return jsonResponse({
+          projects: [
+            {
+              project: 'project',
+              project_path: '/tmp/project',
+              session_count: 1,
+              sessions: [
+                {
+                  thread_id: 'codex-thread-stale',
+                  title: 'Stale native session',
+                  preview: 'stale preview',
+                  updated_at: 100,
+                  started_at: 90,
+                  cwd: '/tmp/project',
+                  project: 'project',
+                  project_path: '/tmp/project',
+                  source: 'active',
+                },
+              ],
+            },
+          ],
+          paired_editors: [],
+        })
+      }
+      if (isSessionTranscriptRequest(path, 'codex-thread-stale', init)) {
+        transcriptRequestCount += 1
+        return jsonResponse({ detail: 'Codex session not found.' }, 404)
+      }
+      if (isCodexSessionCreateRequest(path, init)) {
+        createRequestCount += 1
+        expect(JSON.parse(String(init?.body))).toEqual({
+          project_path: '/tmp/project',
+        })
+        return jsonResponse({ session_id: 'codex-thread-created' }, 201)
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const wrapper = await mountApp()
+    await flushPromises()
+
+    expect(transcriptRequestCount).toBe(1)
+    expect(createRequestCount).toBe(1)
+    expect(localStorage.getItem('yier.active-session-id')).toBe('codex-thread-created')
+    expect(wrapper.text()).toContain('Started a fresh session.')
+  })
+
+  it('archives the active codex thread and starts a fresh one instead of opening another thread', async () => {
+    localStorage.setItem('yier.active-session-id', 'codex-thread-a')
+    localStorage.setItem('yier.workspace-surface', 'codex')
+
+    let archiveRequestCount = 0
+    let openRequestCount = 0
+    let createPayload: Record<string, unknown> | null = null
+    let workspaceRequestCount = 0
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = input.toString()
+      if (path.endsWith('/api/health')) {
+        return jsonResponse({
+          frontend: { ready: true, mode: 'static' },
+          llm: { ready: true },
+          mcp: { ready: true, runtime: {} },
+          backends: {
+            yier: { ready: true },
+            codex: { ready: true },
+          },
+          allowed_roots: ['/tmp/project'],
+        })
+      }
+      if (path.endsWith('/api/config')) {
+        return jsonResponse({
+          llm: { provider: '', base_url: 'https://example.test', model: 'demo', has_api_key: true },
+          allowed_roots: ['/tmp/project'],
+          mcp_runtime: {},
+          session_defaults: {
+            default_backend_id: 'yier',
+            default_project_path: '/tmp/project',
+            channel_backend_id: 'yier',
+            channel_project_path: '/tmp/project',
+            channel_auto_approve_codex_requests: true,
+            workspace_surface: 'codex',
+          },
+          codex: {
+            launcher_command: 'codex app-server --listen stdio://',
+            model: 'gpt-5.4',
+            sandbox: 'workspace-write',
+            approval_policy: 'on-request',
+            approvals_reviewer: 'user',
+            personality: 'friendly',
+            reasoning_effort: 'medium',
+            service_tier: '',
+          },
+        })
+      }
+      if (path.endsWith('/api/config/mcp')) {
+        return jsonResponse({ mcp_servers: {}, runtime: {} })
+      }
+      if (path.endsWith('/api/codex/workspace')) {
+        workspaceRequestCount += 1
+        if (workspaceRequestCount === 1) {
+          return jsonResponse({
+            projects: [
+              {
+                project: 'project',
+                project_path: '/tmp/project',
+                session_count: 2,
+                sessions: [
+                  {
+                    thread_id: 'codex-thread-a',
+                    title: 'Active native session',
+                    preview: 'active preview',
+                    updated_at: 200,
+                    started_at: 180,
+                    cwd: '/tmp/project',
+                    project: 'project',
+                    project_path: '/tmp/project',
+                    source: 'active',
+                  },
+                  {
+                    thread_id: 'codex-thread-b',
+                    title: 'Other native session',
+                    preview: 'other preview',
+                    updated_at: 100,
+                    started_at: 90,
+                    cwd: '/tmp/project',
+                    project: 'project',
+                    project_path: '/tmp/project',
+                    source: 'active',
+                  },
+                ],
+              },
+            ],
+            paired_editors: [],
+          })
+        }
+        return jsonResponse({
+          projects: [
+            {
+              project: 'project',
+              project_path: '/tmp/project',
+              session_count: 1,
+              sessions: [
+                {
+                  thread_id: 'codex-thread-b',
+                  title: 'Other native session',
+                  preview: 'other preview',
+                  updated_at: 100,
+                  started_at: 90,
+                  cwd: '/tmp/project',
+                  project: 'project',
+                  project_path: '/tmp/project',
+                  source: 'active',
+                },
+              ],
+            },
+          ],
+          paired_editors: [],
+        })
+      }
+      if (isSessionTranscriptRequest(path, 'codex-thread-a', init)) {
+        return jsonResponse({
+          session_id: 'codex-thread-a',
+          source: 'chat',
+          backend_id: 'codex',
+          project_path: '/tmp/project',
+          codex_work_mode: 'build',
+          backend_runtime: {
+            backend_id: 'codex',
+            label: 'Codex App Server',
+            ready: true,
+            status: 'idle',
+            thread_id: 'codex-thread-a',
+            active_flags: [],
+            detail: null,
+            pending_approval_count: 0,
+          },
+          pending_approvals: [],
+          messages: [{ role: 'assistant', content: 'active transcript body' }],
+          activity_events: [],
+        })
+      }
+      if (path.endsWith('/api/codex/threads/archive') && init?.method === 'POST') {
+        archiveRequestCount += 1
+        expect(JSON.parse(String(init.body))).toEqual({ thread_id: 'codex-thread-a' })
+        return jsonResponse({ thread_id: 'codex-thread-a', archived: true }, 201)
+      }
+      if (path.endsWith('/api/codex/sessions/open') && init?.method === 'POST') {
+        openRequestCount += 1
+        return jsonResponse({ session_id: 'codex-thread-b' }, 201)
+      }
+      if (isCodexSessionCreateRequest(path, init)) {
+        createPayload = JSON.parse(String(init?.body))
+        return jsonResponse({ session_id: 'codex-thread-created' }, 201)
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const wrapper = await mountApp()
+    await flushPromises()
+    expect(wrapper.text()).toContain('active transcript body')
+
+    const archiveButton = wrapper.findAll('.codex-session-archive-action')[0]
+    expect(archiveButton).toBeTruthy()
+
+    await archiveButton!.trigger('click')
+    await flushPromises()
+
+    expect(archiveRequestCount).toBe(1)
+    expect(openRequestCount).toBe(0)
+    expect(createPayload).toEqual({
+      project_path: '/tmp/project',
+    })
+    expect(localStorage.getItem('yier.active-session-id')).toBe('codex-thread-created')
+    expect(wrapper.text()).toContain('Thread archived.')
   })
 
   it('turns the composer action into interrupt, queues keyboard follow-ups, and auto-sends them in order', async () => {

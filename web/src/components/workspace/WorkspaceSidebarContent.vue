@@ -2,6 +2,7 @@
 import Button from 'primevue/button'
 import ScrollPanel from 'primevue/scrollpanel'
 import Select from 'primevue/select'
+import Skeleton from 'primevue/skeleton'
 import Tag from 'primevue/tag'
 
 import CodexSessionExplorer from '../CodexSessionExplorer.vue'
@@ -23,7 +24,7 @@ const workspace = useWorkspaceAppContext()
 <template>
   <WorkspaceBrandPanel
     v-if="!workspace.isCodexCompactLayout"
-    :variant="workspace.isCodexWorkspace ? 'codex' : 'yier'"
+    :variant="workspace.activeWorkspaceSurface === 'codex' ? 'codex' : 'yier'"
   />
 
   <div
@@ -61,6 +62,45 @@ const workspace = useWorkspaceAppContext()
       @click="workspace.handleCodexSessionStart(workspace.activeProjectPath)"
     />
   </div>
+  <div
+    v-else-if="workspace.isBooting"
+    class="rail-actions grid gap-3"
+  >
+    <div
+      v-if="workspace.activeWorkspaceSurface === 'codex'"
+      class="rounded-[1.2rem] border border-transparent bg-white/52 px-[0.82rem] py-[0.72rem]"
+    >
+      <div class="flex items-center justify-center gap-2.5">
+        <Skeleton
+          width="0.95rem"
+          height="0.95rem"
+          borderRadius="999px"
+        />
+        <Skeleton
+          width="5.8rem"
+          height="1.05rem"
+          borderRadius="999px"
+        />
+      </div>
+    </div>
+    <div
+      v-else
+      class="rounded-[1.2rem] border border-transparent bg-white/40 px-[0.82rem] py-[0.72rem]"
+    >
+      <div class="flex items-center justify-center gap-2.5">
+        <Skeleton
+          width="0.95rem"
+          height="0.95rem"
+          borderRadius="999px"
+        />
+        <Skeleton
+          width="4.9rem"
+          height="1.05rem"
+          borderRadius="999px"
+        />
+      </div>
+    </div>
+  </div>
 
   <CodexSessionExplorer
     v-if="
@@ -71,12 +111,131 @@ const workspace = useWorkspaceAppContext()
     :projects="workspace.activeCodexProjects"
     :active-session-id="workspace.activeSessionId"
     :opening-session-id="workspace.openingSessionId"
+    :archiving-thread-id="workspace.archivingCodexThreadId"
     :active-session-status="workspace.activeSessionRuntime?.status ?? null"
     :active-project-path="workspace.activeProjectPath"
     :surface="surface === 'drawer' ? 'sheet' : 'sidebar'"
     @open-session="workspace.openCodexNativeSession"
+    @archive-session="workspace.archiveCodexNativeSession"
     @start-session="workspace.handleCodexSessionStart"
   />
+  <div
+    v-else-if="workspace.isBooting"
+    class="flex min-h-0 flex-1 flex-col gap-[0.85rem] overflow-hidden rounded-[1.3rem] border border-[color:var(--app-border)] bg-[color:var(--app-panel)] p-4 shadow-[var(--app-shadow)] backdrop-blur-[14px]"
+  >
+    <template v-if="workspace.activeWorkspaceSurface === 'codex'">
+      <div class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-2xl bg-white/32 px-[0.8rem] py-[0.1rem] pr-[0.1rem]">
+        <Skeleton
+          width="4.6rem"
+          height="0.82rem"
+          borderRadius="999px"
+        />
+        <Skeleton
+          width="1.8rem"
+          height="1.8rem"
+          shape="circle"
+        />
+      </div>
+
+      <div class="grid min-h-0 flex-1 gap-[0.55rem] overflow-x-hidden pr-[0.35rem]">
+        <section
+          v-for="projectIndex in 3"
+          :key="projectIndex"
+          class="grid gap-[0.2rem]"
+        >
+          <div class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-2xl p-[0.1rem]">
+            <div class="flex items-start gap-[0.65rem] rounded-[0.9rem] px-[0.7rem] py-[0.62rem]">
+              <Skeleton
+                width="0.82rem"
+                height="0.82rem"
+                borderRadius="999px"
+                class="mt-[0.18rem]"
+              />
+              <Skeleton
+                :width="projectIndex === 1 ? '7.2rem' : projectIndex === 2 ? '6rem' : '5.4rem'"
+                height="1rem"
+                borderRadius="999px"
+              />
+            </div>
+            <Skeleton
+              width="1.8rem"
+              height="1.8rem"
+              shape="circle"
+            />
+          </div>
+
+          <div class="ml-[1.55rem] grid gap-[0.24rem]">
+            <div
+              v-for="threadIndex in (projectIndex === 1 ? 2 : 1)"
+              :key="`${projectIndex}-${threadIndex}`"
+              class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-[0.8rem] rounded-[0.95rem] px-[0.5rem] py-[0.5rem] pr-[0.72rem]"
+            >
+              <div class="min-w-0 rounded-[0.7rem]">
+                <Skeleton
+                  :width="threadIndex === 1 ? '68%' : '56%'"
+                  height="0.82rem"
+                  borderRadius="999px"
+                />
+                <Skeleton
+                  width="2.4rem"
+                  height="0.72rem"
+                  class="mt-[0.46rem]"
+                  borderRadius="999px"
+                />
+              </div>
+              <Skeleton
+                width="2.1rem"
+                height="0.78rem"
+                borderRadius="999px"
+              />
+            </div>
+          </div>
+        </section>
+      </div>
+    </template>
+
+    <template v-else>
+      <div class="flex items-center justify-between gap-4">
+        <Skeleton
+          width="6.8rem"
+          height="0.95rem"
+          borderRadius="999px"
+        />
+        <Skeleton
+          width="2.1rem"
+          height="1.15rem"
+          borderRadius="999px"
+        />
+      </div>
+
+      <div class="grid min-h-0 flex-1 gap-[0.65rem] pr-[0.35rem]">
+        <div
+          v-for="index in 5"
+          :key="index"
+          class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-2xl border border-[rgba(34,66,72,0.08)] bg-[rgba(255,250,242,0.72)] p-1"
+        >
+          <div class="rounded-[0.8rem] px-[0.65rem] py-[0.55rem]">
+            <Skeleton
+              width="72%"
+              height="0.95rem"
+              borderRadius="999px"
+            />
+            <Skeleton
+              width="56%"
+              height="0.78rem"
+              class="mt-[0.42rem]"
+              borderRadius="999px"
+            />
+          </div>
+          <Skeleton
+            width="1.6rem"
+            height="1.6rem"
+            shape="circle"
+          />
+        </div>
+      </div>
+    </template>
+  </div>
   <div
     v-else-if="!workspace.isBooting"
     class="flex min-h-0 flex-1 flex-col gap-[0.85rem] overflow-hidden rounded-[1.3rem] border border-[color:var(--app-border)] bg-[color:var(--app-panel)] p-4 shadow-[var(--app-shadow)] backdrop-blur-[14px]"
@@ -185,11 +344,11 @@ const workspace = useWorkspaceAppContext()
       size="small"
       aria-label="Switch workspace"
     />
-    <div
+    <Skeleton
       v-else
-      class="flex min-h-[2.65rem] items-center rounded-2xl bg-[rgba(248,243,234,0.7)] px-[0.95rem] py-[0.78rem] text-[0.93rem] text-[color:var(--app-text-soft)]"
-    >
-      Loading workspace…
-    </div>
+      width="100%"
+      height="2.65rem"
+      borderRadius="1rem"
+    />
   </div>
 </template>

@@ -13,6 +13,7 @@ const props = withDefaults(
     projects: CodexProjectGroup[]
     activeSessionId: string
     openingSessionId?: string
+    archivingThreadId?: string
     activeSessionStatus?: string | null
     activeProjectPath?: string
     surface?: 'sidebar' | 'sheet'
@@ -20,6 +21,7 @@ const props = withDefaults(
   }>(),
   {
     openingSessionId: '',
+    archivingThreadId: '',
     activeSessionStatus: null,
     activeProjectPath: '',
     surface: 'sidebar',
@@ -29,6 +31,7 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   openSession: [threadId: string]
+  archiveSession: [threadId: string]
   startSession: [projectPath: string]
   close: []
 }>()
@@ -177,6 +180,14 @@ function openSession(threadId: string) {
   if (isSheet.value) {
     requestClose()
   }
+}
+
+function archiveSession(threadId: string) {
+  emit('archiveSession', threadId)
+}
+
+function isBusy() {
+  return Boolean(props.openingSessionId || props.archivingThreadId)
 }
 
 function goalLoopStatusLabel(status?: string | null) {
@@ -332,52 +343,90 @@ const selectNewProject = async () => {
             v-if="isProjectExpanded(project.project_path)"
             class="ml-[1.55rem] grid gap-[0.24rem]"
           >
-            <button
+            <div
               v-for="session in project.sessions"
               :key="session.thread_id"
-              type="button"
-              class="codex-session-item block w-full overflow-hidden rounded-[0.95rem] px-[0.5rem] py-[0.5rem] pr-[0.72rem] text-left transition duration-150 hover:bg-white/48 focus-visible:bg-white/48"
+              class="codex-session-item group grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-[0.8rem] overflow-hidden rounded-[0.95rem] px-[0.5rem] py-[0.5rem] pr-[0.72rem] text-left transition duration-150 hover:bg-white/48 focus-within:bg-white/48"
               :class="{
                 'bg-[rgba(232,244,241,0.72)] shadow-[inset_3px_0_0_rgba(21,94,99,0.52)]':
                   session.thread_id === activeSessionId,
-                'cursor-progress opacity-75': session.thread_id === openingSessionId,
+                'cursor-progress opacity-75':
+                  session.thread_id === openingSessionId ||
+                  session.thread_id === archivingThreadId,
               }"
-              :title="session.cwd || session.title"
-              :disabled="Boolean(openingSessionId)"
-              :aria-busy="session.thread_id === openingSessionId"
-              @click="openSession(session.thread_id)"
             >
-              <div class="block min-w-0 max-w-full overflow-hidden">
-                <div class="grid w-full min-w-0 max-w-full grid-cols-[minmax(0,1fr)_auto] items-baseline gap-[0.8rem] overflow-hidden">
-                  <div class="min-w-0">
-                    <p
-                      class="codex-session-title block min-w-0 max-w-full overflow-hidden text-ellipsis whitespace-nowrap text-[0.8rem] leading-[1.4]"
-                      :title="session.title"
-                    >
-                      {{ session.title }}
-                    </p>
-                    <div
-                      v-if="goalLoopStatusLabel(session.codex_goal_loop?.status)"
-                      class="mt-1"
-                    >
-                      <span
-                        class="inline-flex items-center rounded-full border px-2 py-[0.16rem] text-[0.63rem] font-bold uppercase tracking-[0.08em]"
-                        :class="goalLoopStatusClass(session.codex_goal_loop?.status)"
-                      >
-                        {{ goalLoopStatusLabel(session.codex_goal_loop?.status) }}
-                      </span>
-                    </div>
-                  </div>
-                  <p class="shrink-0 whitespace-nowrap text-right text-[0.72rem] leading-[1.35] text-[color:var(--app-text-soft)]">
-                    <span v-if="session.thread_id === openingSessionId" class="inline-flex items-center gap-1 font-semibold text-[color:var(--app-accent-deep)]">
-                      <i class="pi pi-spin pi-spinner text-[0.7rem]" />
-                      <span>Loading</span>
-                    </span>
-                    <span v-else>{{ formatTimestamp(session.updated_at) }}</span>
+              <button
+                type="button"
+                class="block min-w-0 max-w-full overflow-hidden rounded-[0.7rem] text-left transition duration-150 hover:bg-white/24 focus-visible:bg-white/24"
+                :title="session.cwd || session.title"
+                :disabled="Boolean(openingSessionId || archivingThreadId)"
+                :aria-busy="
+                  session.thread_id === openingSessionId || session.thread_id === archivingThreadId
+                "
+                @click="openSession(session.thread_id)"
+              >
+                <div class="min-w-0">
+                  <p
+                    class="codex-session-title block min-w-0 max-w-full overflow-hidden text-ellipsis whitespace-nowrap text-[0.8rem] leading-[1.4]"
+                    :title="session.title"
+                  >
+                    {{ session.title }}
                   </p>
+                  <div
+                    v-if="goalLoopStatusLabel(session.codex_goal_loop?.status)"
+                    class="mt-1"
+                  >
+                    <span
+                      class="inline-flex items-center rounded-full border px-2 py-[0.16rem] text-[0.63rem] font-bold uppercase tracking-[0.08em]"
+                      :class="goalLoopStatusClass(session.codex_goal_loop?.status)"
+                    >
+                      {{ goalLoopStatusLabel(session.codex_goal_loop?.status) }}
+                    </span>
+                  </div>
                 </div>
+              </button>
+              <div class="relative h-[1.8rem] min-w-[4.5rem] shrink-0 self-center text-right text-[0.72rem] leading-[1.35] text-[color:var(--app-text-soft)]">
+                <span
+                  v-if="session.thread_id === openingSessionId"
+                  class="absolute inset-y-0 right-0 inline-flex items-center gap-1 font-semibold text-[color:var(--app-accent-deep)]"
+                >
+                  <i class="pi pi-spin pi-spinner text-[0.7rem]" />
+                  <span>Loading</span>
+                </span>
+                <span
+                  v-else-if="session.thread_id === archivingThreadId"
+                  class="absolute inset-y-0 right-0 inline-flex items-center gap-1 font-semibold text-[color:var(--app-accent-deep)]"
+                >
+                  <i class="pi pi-spin pi-spinner text-[0.7rem]" />
+                  <span>Archiving</span>
+                </span>
+                <template v-else>
+                  <span
+                    class="absolute inset-y-0 right-0 inline-flex items-center transition duration-150"
+                    :class="
+                      isBusy()
+                        ? 'opacity-100'
+                        : 'group-hover:opacity-0 group-focus-within:opacity-0'
+                    "
+                  >
+                    {{ formatTimestamp(session.updated_at) }}
+                  </span>
+                  <Button
+                    v-if="!isBusy()"
+                    icon="pi pi-box"
+                    text
+                    rounded
+                    severity="secondary"
+                    size="small"
+                    class="codex-session-archive-action absolute right-0 top-1/2 -translate-y-1/2 opacity-0 transition duration-150 group-hover:opacity-100 group-focus-within:opacity-100"
+                    aria-label="Archive thread"
+                    title="Archive thread"
+                    :disabled="Boolean(openingSessionId || archivingThreadId)"
+                    @click.stop="archiveSession(session.thread_id)"
+                  />
+                </template>
               </div>
-            </button>
+            </div>
           </div>
         </section>
       </div>

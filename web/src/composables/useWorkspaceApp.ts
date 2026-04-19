@@ -29,6 +29,7 @@ import type {
   ApprovalFormFieldState,
   ApprovalFormMode,
   ApprovalResponseRequest,
+  ArchiveCodexSessionResponse,
   AttachmentUploadResponse,
   BackendId,
   BackendRuntime,
@@ -245,6 +246,7 @@ function createWorkspaceApp() {
   const activeSessionRuntime = ref<BackendRuntime | null>(null)
   const activeSessionId = ref(localStorage.getItem(SESSION_STORAGE_KEY) ?? '')
   const openingSessionId = ref('')
+  const archivingCodexThreadId = ref('')
   const chatMessages = ref<UiChatMessage[]>([])
   const activities = ref<ChatActivity[]>([])
   const codexTurnTimings = ref<CodexTurnTiming[]>([])
@@ -345,6 +347,7 @@ function createWorkspaceApp() {
   let currentStreamSequenceHint: number | null = null
   let isReplayingSessionActivityEvents = false
   let isFlushingQueuedComposerFollowups = false
+  const unavailableSessionIds = new Set<string>()
   const backgroundActivityIdsByToolCallId = new Map<string, string>()
   const loadedTranscriptMessagesRaw = ref<StoredMessage[]>([])
   const loadedActivityEventsRaw = ref<SessionTranscriptResponse['activity_events']>([])
@@ -737,7 +740,9 @@ function createWorkspaceApp() {
     errorMessage.value = ''
     try {
       await refreshDashboard()
-      await ensureSession()
+      await ensureSession({
+        preferFreshOnMissingActiveSession: activeWorkspaceSurface.value === 'codex',
+      })
     } catch (error) {
       errorMessage.value = toErrorMessage(error)
     } finally {
@@ -801,18 +806,38 @@ function createWorkspaceApp() {
     mcpDraft.value = toEditableMcpServers(mcpPayload)
   }
 
-  async function ensureSession() {
+  async function ensureSession(
+    options: {
+      preferFreshOnMissingActiveSession?: boolean
+    } = {},
+  ) {
+    const preferFreshOnMissingActiveSession =
+      options.preferFreshOnMissingActiveSession ?? false
+
     if (activeSessionId.value) {
+      const currentSessionId = activeSessionId.value
       try {
-        await loadSessionTranscript(activeSessionId.value)
+        await loadSessionTranscript(currentSessionId)
         return
-      } catch {
+      } catch (error) {
         activeSessionId.value = ''
+        if (
+          preferFreshOnMissingActiveSession &&
+          isMissingSessionError(error)
+        ) {
+          const fallbackProjectPath =
+            activeProjectPath.value || newSessionDraft.projectPath
+          await createSession('codex', fallbackProjectPath, false)
+          return
+        }
       }
     }
 
-    if (workspaceSessionHistory.value.length) {
-      activeSessionId.value = workspaceSessionHistory.value[0]?.session_id ?? ''
+    const availableSessionHistory = workspaceSessionHistory.value.filter(
+      (session) => !unavailableSessionIds.has(session.session_id),
+    )
+    if (availableSessionHistory.length) {
+      activeSessionId.value = availableSessionHistory[0]?.session_id ?? ''
       if (activeSessionId.value) {
         await ensureSession()
         return
@@ -1816,9 +1841,18 @@ function createWorkspaceApp() {
 
   async function loadSessionTranscript(sessionId: string) {
     const requestId = ++latestSessionLoadRequestId
-    const transcript = await apiGet<SessionTranscriptResponse>(
-      buildSessionTranscriptPath(sessionId),
-    )
+    let transcript: SessionTranscriptResponse
+    try {
+      transcript = await apiGet<SessionTranscriptResponse>(
+        buildSessionTranscriptPath(sessionId),
+      )
+    } catch (error) {
+      if (isMissingSessionError(error)) {
+        markSessionUnavailable(sessionId)
+      }
+      throw error
+    }
+    unavailableSessionIds.delete(sessionId)
     if (requestId !== latestSessionLoadRequestId || sessionId !== activeSessionId.value) {
       return
     }
@@ -1859,7 +1893,9 @@ function createWorkspaceApp() {
   async function switchToSession(sessionId: string) {
     activeSessionId.value = sessionId
     resetActiveSessionView()
-    await ensureSession()
+    await ensureSession({
+      preferFreshOnMissingActiveSession: activeWorkspaceSurface.value === 'codex',
+    })
     if (!isChatRoute.value) {
       await router.push({ name: 'chat' })
     }
@@ -1920,6 +1956,47 @@ function createWorkspaceApp() {
     } finally {
       if (openingSessionId.value === threadId) {
         openingSessionId.value = ''
+      }
+    }
+  }
+
+  async function archiveCodexNativeSession(threadId: string) {
+    const normalizedThreadId = threadId.trim()
+    if (!normalizedThreadId || openingSessionId.value || archivingCodexThreadId.value) {
+      return false
+    }
+
+    errorMessage.value = ''
+    successMessage.value = ''
+    archivingCodexThreadId.value = normalizedThreadId
+    try {
+      const archivedSession = codexSessionHistory.value.find(
+        (session) => session.session_id === normalizedThreadId,
+      )
+      const fallbackProjectPath =
+        archivedSession?.project_path || activeProjectPath.value || newSessionDraft.projectPath
+      const response = await apiPost<ArchiveCodexSessionResponse>('/api/codex/threads/archive', {
+        thread_id: normalizedThreadId,
+      })
+      if (!response.archived) {
+        throw new Error('Failed to archive Codex thread.')
+      }
+
+      const wasActiveSession = activeSessionId.value === normalizedThreadId
+      await refreshSessionHistory()
+
+      if (wasActiveSession) {
+        await createSession('codex', fallbackProjectPath, true)
+      }
+
+      successMessage.value = 'Thread archived.'
+      return true
+    } catch (error) {
+      errorMessage.value = toErrorMessage(error)
+      return false
+    } finally {
+      if (archivingCodexThreadId.value === normalizedThreadId) {
+        archivingCodexThreadId.value = ''
       }
     }
   }
@@ -2154,7 +2231,11 @@ function createWorkspaceApp() {
   }
 
   function scheduleCodexSessionSync(sessionId: string) {
-    if (!sessionId || sessionId !== activeSessionId.value) {
+    if (
+      !sessionId ||
+      sessionId !== activeSessionId.value ||
+      unavailableSessionIds.has(sessionId)
+    ) {
       return
     }
     if (codexSessionSyncTimer !== null) {
@@ -3402,11 +3483,13 @@ function createWorkspaceApp() {
         codex_goal_loop: normalizeCodexGoalLoopState(session.codex_goal_loop),
       })),
     )
-    return sessions.sort(
+    return sessions
+      .filter((session) => !unavailableSessionIds.has(session.session_id))
+      .sort(
       (left, right) =>
         right.updated_at - left.updated_at ||
         right.title.localeCompare(left.title),
-    )
+      )
   }
 
   function findSessionSummary(sessionId: string): SessionSummary | null {
@@ -4930,6 +5013,41 @@ function createWorkspaceApp() {
     return 'Something went wrong.'
   }
 
+  function isMissingSessionError(error: unknown) {
+    return error instanceof ApiError && error.status === 404
+  }
+
+  function markSessionUnavailable(sessionId: string) {
+    const normalizedSessionId = sessionId.trim()
+    if (!normalizedSessionId) {
+      return
+    }
+    unavailableSessionIds.add(normalizedSessionId)
+    sessionHistory.value = sessionHistory.value.filter(
+      (session) => session.session_id !== normalizedSessionId,
+    )
+    if (codexWorkspace.value) {
+      codexWorkspace.value = {
+        ...codexWorkspace.value,
+        projects: codexWorkspace.value.projects
+          .map((project) => ({
+            ...project,
+            sessions: project.sessions.filter(
+              (session) => session.thread_id !== normalizedSessionId,
+            ),
+          }))
+          .filter((project) => project.sessions.length > 0)
+          .map((project) => ({
+            ...project,
+            session_count: project.sessions.length,
+          })),
+      }
+    }
+    if (activeSessionId.value === normalizedSessionId) {
+      activeSessionId.value = ''
+    }
+  }
+
   return proxyRefs({
     isBooting,
     isSending,
@@ -4947,6 +5065,7 @@ function createWorkspaceApp() {
     activeSessionRuntime,
     activeSessionId,
     openingSessionId,
+    archivingCodexThreadId,
     chatMessages,
     activities,
     codexTurnTimings,
@@ -5039,6 +5158,7 @@ function createWorkspaceApp() {
     handleNewChatClick,
     handleCodexSessionStart,
     openCodexNativeSession,
+    archiveCodexNativeSession,
     openSessionFromHistory,
     deleteSessionFromHistory,
     displayNameForPath,

@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from yier_web.codex.backend import CodexAppServerBackend
 from yier_web.codex.collaboration_mode import normalize_protocol_collaboration_mode
+from yier_web.codex.ipc.immer import apply_patches as _immer_apply_patches
 
 if TYPE_CHECKING:
     from yier_web.chat import ChatService
@@ -147,11 +148,11 @@ class CodexConversationStateService:
             patches = change.get("patches")
             if isinstance(patches, list):
                 cached_state = metadata["backend_state"].get("ipc_conversation_state")
-                base_state = (
-                    deepcopy(cached_state) if isinstance(cached_state, dict) else {}
-                )
-                if self._apply_patches(base_state, patches):
-                    next_conversation_state = base_state
+                if isinstance(cached_state, dict):
+                    try:
+                        next_conversation_state = _immer_apply_patches(cached_state, patches)
+                    except (KeyError, IndexError, TypeError, ValueError):
+                        next_conversation_state = None
 
         if next_conversation_state is None:
             return
@@ -196,104 +197,6 @@ class CodexConversationStateService:
                 }
             )
         return messages
-
-    def _apply_patches(
-        self,
-        root: dict[str, Any],
-        patches: list[dict[str, Any]],
-    ) -> bool:
-        try:
-            for patch in patches:
-                if not isinstance(patch, dict):
-                    continue
-                operation = patch.get("op")
-                path = patch.get("path")
-                if (
-                    not isinstance(operation, str)
-                    or not isinstance(path, list)
-                    or not path
-                ):
-                    continue
-                if operation in {"add", "replace"}:
-                    self._set_path(root, path, deepcopy(patch.get("value")))
-                elif operation == "remove":
-                    self._remove_path(root, path)
-        except (KeyError, IndexError, TypeError, ValueError):
-            return False
-        return True
-
-    def _set_path(
-        self,
-        root: dict[str, Any],
-        path: list[Any],
-        value: Any,
-    ) -> None:
-        current: Any = root
-        for index, segment in enumerate(path[:-1]):
-            next_segment = path[index + 1]
-            if isinstance(current, list):
-                if not isinstance(segment, int):
-                    raise TypeError("List path segment must be an integer.")
-                while len(current) <= segment:
-                    current.append({} if not isinstance(next_segment, int) else [])
-                child = current[segment]
-                if not isinstance(child, (dict, list)):
-                    child = {} if not isinstance(next_segment, int) else []
-                    current[segment] = child
-                current = child
-                continue
-
-            if not isinstance(current, dict):
-                raise TypeError("Patch parent must be a dict or list.")
-            child = current.get(segment)
-            if not isinstance(child, (dict, list)):
-                child = {} if not isinstance(next_segment, int) else []
-                current[segment] = child
-            current = child
-
-        last_segment = path[-1]
-        if isinstance(current, list):
-            if not isinstance(last_segment, int):
-                raise TypeError("List path segment must be an integer.")
-            if last_segment < len(current):
-                current[last_segment] = value
-            elif last_segment == len(current):
-                current.append(value)
-            else:
-                while len(current) < last_segment:
-                    current.append(None)
-                current.append(value)
-            return
-
-        if not isinstance(current, dict):
-            raise TypeError("Patch parent must be a dict or list.")
-        current[last_segment] = value
-
-    def _remove_path(
-        self,
-        root: dict[str, Any],
-        path: list[Any],
-    ) -> None:
-        current: Any = root
-        for segment in path[:-1]:
-            if isinstance(current, list):
-                if not isinstance(segment, int):
-                    raise TypeError("List path segment must be an integer.")
-                current = current[segment]
-                continue
-            if not isinstance(current, dict):
-                raise TypeError("Patch parent must be a dict or list.")
-            current = current[segment]
-
-        last_segment = path[-1]
-        if isinstance(current, list):
-            if not isinstance(last_segment, int):
-                raise TypeError("List path segment must be an integer.")
-            del current[last_segment]
-            return
-        if not isinstance(current, dict):
-            raise TypeError("Patch parent must be a dict or list.")
-        current.pop(last_segment, None)
 
     async def _native_conversation_state(
         self, session_id: str

@@ -33,10 +33,9 @@ from yier_web.codex.ipc.debug import (
     ipc_debug_log,
 )
 from yier_web.codex.ipc.patches import (
-    StreamTracking,
     build_stream_patches_payload,
     log_stream_patches,
-    patches_for_stream_event,
+    patches_for_state_update,
 )
 from yier_web.codex.ipc.params import (
     approval_request_id,
@@ -94,7 +93,7 @@ class CodexThreadFollowerBridge:
             client_type=client_type,
             socket_path=socket_path,
         )
-        self._stream_tracking: dict[str, StreamTracking] = {}
+        self._last_broadcast_state: dict[str, dict[str, Any]] = {}
         self._register_broadcast_handlers()
         self._register_request_handlers()
 
@@ -116,12 +115,6 @@ class CodexThreadFollowerBridge:
         if event == "run_started":
             await self._emit_run_started_sequence(session_id)
             return
-        if event == "assistant_delta":
-            await self._emit_assistant_delta_sequence(session_id, data)
-            return
-        if event == "assistant_message":
-            await self._emit_assistant_message_sequence(session_id)
-            return
         if event == "done":
             await self._emit_done_sequence(session_id)
             return
@@ -134,15 +127,13 @@ class CodexThreadFollowerBridge:
             "approval_resolved",
             "stream_error",
         }:
-            self._stream_tracking.pop(session_id, None)
+            self._last_broadcast_state.pop(session_id, None)
             await self.broadcast_stream_state(session_id, trigger_event=event)
             return
 
         # --- incremental patches for real-time streaming progress ---
         if event in {"assistant_delta", "assistant_message", "token_usage_updated", "plan"}:
-            patches = await self._compute_patches(session_id, event, data)
-            if patches:
-                await self._send_stream_patches(session_id, event, patches)
+            await self._emit_patches_if_changed(session_id, event)
             return
 
         # --- queued followups ---
@@ -199,115 +190,31 @@ class CodexThreadFollowerBridge:
             self.chat_service.build_codex_ipc_conversation_state(session_id)
         )
 
-    async def _send_patch_payload(
-        self,
-        session_id: str,
-        trigger_event: str,
-        patches: list[dict[str, Any]],
-    ) -> None:
-        if not patches:
-            return
-        await self._send_stream_patches(session_id, trigger_event, patches)
-
-    def _latest_turn_payload(
-        self,
-        conversation_state: dict[str, Any],
-    ) -> tuple[int, dict[str, Any], list[dict[str, Any]]]:
+    async def _emit_run_started_sequence(self, session_id: str) -> None:
+        """Build current state, diff against cached state, send patches + snapshot."""
+        conversation_state = await self._conversation_state(session_id)
         turns = conversation_state.get("turns")
         if not isinstance(turns, list) or not turns:
-            return -1, {}, []
-        latest_turn_index = len(turns) - 1
-        latest_turn = turns[latest_turn_index]
-        if not isinstance(latest_turn, dict):
-            return -1, {}, []
-        items = latest_turn.get("items")
-        return (
-            latest_turn_index,
-            latest_turn,
-            items if isinstance(items, list) else [],
-        )
-
-    async def _emit_run_started_sequence(self, session_id: str) -> None:
-        conversation_state = await self._conversation_state(session_id)
-        tracking = self._get_tracking(session_id)
-        turn_index, latest_turn, items = self._latest_turn_payload(conversation_state)
-        if turn_index < 0:
+            self._last_broadcast_state.pop(session_id, None)
             await self.broadcast_stream_state(
                 session_id,
                 trigger_event="run_started",
                 conversation_state=conversation_state,
             )
+            self._last_broadcast_state[session_id] = deepcopy(conversation_state)
             return
 
-        tracking.latest_turn_index = turn_index
-        tracking.latest_turn_id = str(
-            latest_turn.get("turnId") or latest_turn.get("id") or ""
-        )
-        tracking.agent_item_index = -1
-        tracking.final_assistant_started_sent = False
-        tracking.user_message_sent = False
-        tracking.completion_sent = False
+        # Send incremental patches vs last known state
+        old_state = self._last_broadcast_state.get(session_id, {})
+        patches = patches_for_state_update(old_state, conversation_state)
+        if patches:
+            await self._send_stream_patches(session_id, "run_started", patches)
 
-        git_info = conversation_state.get("gitInfo")
-        if git_info is not None:
-            await self._send_patch_payload(
-                session_id,
-                "run_started",
-                [{"op": "replace", "path": ["gitInfo"], "value": git_info}],
-            )
-
-        placeholder_turn = {
-            "params": latest_turn.get("params"),
-            "turnId": None,
-            "status": latest_turn.get("status"),
-            "turnStartedAtMs": latest_turn.get("turnStartedAtMs"),
-            "finalAssistantStartedAtMs": latest_turn.get("finalAssistantStartedAtMs"),
-            "error": latest_turn.get("error"),
-            "diff": latest_turn.get("diff"),
-            "items": [],
-        }
-        start_patches = [
-            {"op": "add", "path": ["turns", turn_index], "value": placeholder_turn},
-            {
-                "op": "replace",
-                "path": ["latestCollaborationMode"],
-                "value": conversation_state.get("latestCollaborationMode"),
-            },
-            {
-                "op": "replace",
-                "path": ["updatedAt"],
-                "value": conversation_state.get("updatedAt"),
-            },
-        ]
-        await self._send_patch_payload(session_id, "run_started", start_patches)
-
-        if tracking.latest_turn_id:
-            await self._send_patch_payload(
-                session_id,
-                "run_started",
-                [
-                    {
-                        "op": "replace",
-                        "path": ["turns", turn_index, "turnId"],
-                        "value": tracking.latest_turn_id,
-                    }
-                ],
-            )
-
-        await self._send_patch_payload(
-            session_id,
-            "run_started",
-            [
-                {
-                    "op": "replace",
-                    "path": ["requests"],
-                    "value": conversation_state.get("requests", []),
-                }
-            ],
-        )
-
+        # Send snapshot (with items cleared on the latest turn for the snapshot,
+        # matching Codex behavior: snapshot has items=[] so follower gets structure first)
         snapshot_state = deepcopy(conversation_state)
         snapshot_turns = snapshot_state.get("turns")
+        turn_index = len(turns) - 1
         if isinstance(snapshot_turns, list) and turn_index < len(snapshot_turns):
             snapshot_turn = snapshot_turns[turn_index]
             if isinstance(snapshot_turn, dict):
@@ -319,164 +226,66 @@ class CodexThreadFollowerBridge:
             conversation_state=snapshot_state,
         )
 
-        user_item_patches = [
-            {
-                "op": "add",
-                "path": ["turns", turn_index, "items", item_index],
-                "value": item,
-            }
-            for item_index, item in enumerate(items)
-            if isinstance(item, dict) and item.get("type") == "userMessage"
-        ]
-        tracking.user_message_sent = bool(user_item_patches)
-        await self._send_patch_payload(
-            session_id,
-            "run_started",
-            user_item_patches,
-        )
-
-    async def _emit_assistant_delta_sequence(
-        self,
-        session_id: str,
-        data: dict[str, Any],
-    ) -> None:
-        conversation_state = await self._conversation_state(session_id)
-        tracking = self._get_tracking(session_id)
-        turn_index, latest_turn, items = self._latest_turn_payload(conversation_state)
-        if turn_index < 0:
-            return
-        tracking.latest_turn_index = turn_index
-
-        agent_index = next(
-            (
-                index
-                for index in range(len(items) - 1, -1, -1)
-                if isinstance(items[index], dict)
-                and items[index].get("type") == "agentMessage"
-            ),
-            len(items),
-        )
-        agent_item = items[agent_index] if agent_index < len(items) else {}
-        if tracking.agent_item_index < 0:
-            tracking.agent_item_index = agent_index
-            initial_patches = [
-                {
-                    "op": "add",
-                    "path": ["turns", turn_index, "items", agent_index],
-                    "value": {
-                        "type": "agentMessage",
-                        "id": (
-                            agent_item.get("id")
-                            if isinstance(agent_item, dict)
-                            else data.get("item_id")
-                        ),
-                        "text": "",
-                        "phase": (
-                            agent_item.get("phase")
-                            if isinstance(agent_item, dict)
-                            else "final_answer"
-                        )
-                        or "final_answer",
-                        "memoryCitation": (
-                            agent_item.get("memoryCitation")
-                            if isinstance(agent_item, dict)
-                            else None
-                        ),
-                    },
-                }
-            ]
-            final_started_at = latest_turn.get("finalAssistantStartedAtMs")
-            if final_started_at is not None and not tracking.final_assistant_started_sent:
-                initial_patches.append(
-                    {
-                        "op": "replace",
-                        "path": ["turns", turn_index, "finalAssistantStartedAtMs"],
-                        "value": final_started_at,
-                    }
-                )
-                tracking.final_assistant_started_sent = True
-            await self._send_patch_payload(
-                session_id,
-                "assistant_delta",
-                initial_patches,
-            )
-
-        text_value = (
-            agent_item.get("text") if isinstance(agent_item, dict) else None
-        ) or data.get("delta") or ""
-        await self._send_patch_payload(
-            session_id,
-            "assistant_delta",
-            [
-                {
-                    "op": "replace",
-                    "path": ["turns", turn_index, "items", tracking.agent_item_index, "text"],
-                    "value": text_value,
-                }
-            ],
-        )
-
-    async def _emit_assistant_message_sequence(self, session_id: str) -> None:
-        conversation_state = await self._conversation_state(session_id)
-        tracking = self._get_tracking(session_id)
-        patches = patches_for_stream_event(
-            tracking,
-            conversation_state,
-            "assistant_message",
-            {"session_id": session_id},
-        )
-        await self._send_patch_payload(session_id, "assistant_message", patches)
+        # Cache the full state (with items) for subsequent diffs
+        self._last_broadcast_state[session_id] = deepcopy(conversation_state)
 
     async def _emit_done_sequence(self, session_id: str) -> None:
+        """Build completed state, diff, send patches + final snapshot."""
         conversation_state = await self._conversation_state(session_id)
-        tracking = self._get_tracking(session_id)
-        turn_index, _, _ = self._latest_turn_payload(conversation_state)
-        if turn_index < 0:
-            self._stream_tracking.pop(session_id, None)
+        turns = conversation_state.get("turns")
+        if not isinstance(turns, list) or not turns:
+            self._last_broadcast_state.pop(session_id, None)
             return
 
-        tracking.latest_turn_index = turn_index
-        if not tracking.completion_sent:
-            await self._send_patch_payload(
-                session_id,
-                "done",
-                [
-                    {
-                        "op": "replace",
-                        "path": ["turns", turn_index, "status"],
-                        "value": "completed",
-                    }
-                ],
-            )
-            await self._send_patch_payload(
-                session_id,
-                "done",
-                [{"op": "replace", "path": ["hasUnreadTurn"], "value": True}],
-            )
-            snapshot_state = deepcopy(conversation_state)
-            turns = snapshot_state.get("turns")
-            if isinstance(turns, list) and turn_index < len(turns):
-                turn = turns[turn_index]
-                if isinstance(turn, dict):
-                    turn["status"] = "completed"
-            snapshot_state["hasUnreadTurn"] = True
-            snapshot_state["threadRuntimeStatus"] = {
-                "type": "idle",
-                "activeFlags": [],
-            }
-            await self.broadcast_stream_state(
-                session_id,
-                trigger_event="turn_completed",
-                conversation_state=snapshot_state,
-            )
-            tracking.completion_sent = True
+        # Mark turn as completed in the state for diff
+        turn_index = len(turns) - 1
+        turn = turns[turn_index]
+        if isinstance(turn, dict):
+            turn["status"] = "completed"
+        conversation_state["hasUnreadTurn"] = True
+        conversation_state["threadRuntimeStatus"] = {
+            "type": "idle",
+            "activeFlags": [],
+        }
 
-        await self._send_patch_payload(
+        # Send incremental patches
+        old_state = self._last_broadcast_state.get(session_id, {})
+        patches = patches_for_state_update(old_state, conversation_state)
+        if patches:
+            await self._send_stream_patches(session_id, "done", patches)
+
+        # Send final snapshot
+        await self.broadcast_stream_state(
             session_id,
-            "done",
-            [{"op": "replace", "path": ["hasUnreadTurn"], "value": False}],
+            trigger_event="turn_completed",
+            conversation_state=conversation_state,
         )
-        self._stream_tracking.pop(session_id, None)
+
+        # Mark as read
+        conversation_state["hasUnreadTurn"] = False
+        read_patches = patches_for_state_update(
+            self._last_broadcast_state.get(session_id, {}),
+            conversation_state,
+        )
+        # Update cache before sending read patch
+        self._last_broadcast_state[session_id] = deepcopy(conversation_state)
+        if read_patches:
+            await self._send_stream_patches(session_id, "done", read_patches)
+
+    async def _emit_patches_if_changed(
+        self,
+        session_id: str,
+        trigger_event: str,
+    ) -> None:
+        """Build current state, diff against cached state, send patches if changed."""
+        if not self.client.is_connected or not self._is_codex_session(session_id):
+            return
+        new_state = await self._conversation_state(session_id)
+        old_state = self._last_broadcast_state.get(session_id, {})
+        patches = patches_for_state_update(old_state, new_state)
+        if patches:
+            await self._send_stream_patches(session_id, trigger_event, patches)
+        self._last_broadcast_state[session_id] = deepcopy(new_state)
 
     async def broadcast_queued_followups(self, session_id: str) -> None:
         """Send queued followup messages via IPC broadcast."""
@@ -501,27 +310,6 @@ class CodexThreadFollowerBridge:
             )
 
     # ── outbound: incremental patches ──
-
-    def _get_tracking(self, session_id: str) -> StreamTracking:
-        tracking = self._stream_tracking.get(session_id)
-        if tracking is None:
-            tracking = StreamTracking()
-            self._stream_tracking[session_id] = tracking
-        return tracking
-
-    async def _compute_patches(
-        self,
-        session_id: str,
-        event: str,
-        data: dict[str, Any],
-    ) -> list[dict[str, Any]]:
-        if not self.client.is_connected or not self._is_codex_session(session_id):
-            return []
-        conversation_state = await _maybe_await(
-            self.chat_service.build_codex_ipc_conversation_state(session_id)
-        )
-        tracking = self._get_tracking(session_id)
-        return patches_for_stream_event(tracking, conversation_state, event, data)
 
     async def _send_stream_patches(
         self,

@@ -1,212 +1,54 @@
 """Immer-format patch generation for streaming updates.
 
-Produces incremental JSON patches from conversation state snapshots,
-so Codex VSCode can render real-time typing progress without full
-state syncs.
+Produces incremental JSON patches by diffing conversation state snapshots,
+matching the behavior of immer's ``produceWithPatches`` used by Codex VSCode.
 
-Only depends on ``constants`` and ``debug`` — no ChatService dependency.
+Instead of manually tracking indices (the old ``StreamTracking`` approach),
+this module uses ``immer.produce_with_patches`` to compute patches from
+actual state mutations — the same approach the real Codex extension uses.
+
+Only depends on ``immer``, ``constants`` and ``debug``.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any
 
 from yier_web.codex.ipc.constants import ipc_method_version
 from yier_web.codex.ipc.debug import ipc_debug_full_enabled, ipc_debug_log
+from yier_web.codex.ipc.immer import produce_with_patches
 
 
-@dataclass(slots=True)
-class StreamTracking:
-    """Per-session state for generating incremental streaming patches.
-
-    Tracks only what's needed to turn ``build_conversation_state()``
-    output into correct Immer-format patches without a full state machine.
-    """
-
-    agent_item_index: int = -1
-    final_assistant_started_sent: bool = False
-    plan_item_index: int = -1
-    latest_turn_index: int = -1
-    latest_turn_id: str = ""
-    user_message_sent: bool = False
-    completion_sent: bool = False
-
-
-def patches_for_stream_event(
-    tracking: StreamTracking,
-    conversation_state: dict[str, Any],
-    event: str,
-    data: dict[str, Any],
+def patches_for_state_update(
+    old_state: dict[str, Any],
+    new_state: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    """Compute Immer-format patches for a streaming event.
+    """Compute immer-format patches between two conversation states.
 
-    Mutates *tracking* in place (callers should hold a per-session instance).
+    Uses ``produce_with_patches`` internally: the new_state is treated as
+    the result of a recipe applied to old_state, and the diff is computed.
+
+    Returns a list of ``{op, path, value}`` patches (may be empty if
+    the states are identical).
     """
-    if event == "token_usage_updated":
-        value = conversation_state.get("latestTokenUsageInfo")
-        if value is not None:
-            return [{"op": "replace", "path": ["latestTokenUsageInfo"], "value": value}]
-        return []
-
-    turns = conversation_state.get("turns")
-    if not isinstance(turns, list) or not turns:
-        return []
-    latest_turn_index = len(turns) - 1
-    latest_turn = turns[-1]
-    if not isinstance(latest_turn, dict):
-        return []
-    items = latest_turn.get("items") or []
-
-    if event == "assistant_delta":
-        return assistant_delta_patches(
-            tracking, latest_turn_index, latest_turn, items, data
-        )
-    if event == "assistant_message":
-        return assistant_message_patches(tracking, latest_turn_index, items)
-    if event == "plan":
-        return plan_delta_patches(
-            tracking, latest_turn_index, latest_turn, items, data
-        )
-    return []
-
-
-def assistant_delta_patches(
-    tracking: StreamTracking,
-    turn_index: int,
-    turn: dict[str, Any],
-    items: list[dict[str, Any]],
-    data: dict[str, Any],
-) -> list[dict[str, Any]]:
-    """Patches for a single assistant text delta."""
-    patches: list[dict[str, Any]] = []
-
-    # first delta for this turn -> add agent item placeholder
-    if tracking.agent_item_index < 0:
-        for i in range(len(items) - 1, -1, -1):
-            if isinstance(items[i], dict) and items[i].get("type") == "agentMessage":
-                tracking.agent_item_index = i
-                break
-        if tracking.agent_item_index < 0:
-            tracking.agent_item_index = len(items)
-
-        item_id = data.get("item_id")
-        if not isinstance(item_id, str) or not item_id:
-            item_id = f"{data.get('session_id', '')}:turn:{turn_index}:assistant"
-        patches.append(
-            {
-                "op": "add",
-                "path": ["turns", turn_index, "items", tracking.agent_item_index],
-                "value": {
-                    "type": "agentMessage",
-                    "id": item_id,
-                    "text": "",
-                    "phase": "final_answer",
-                    "memoryCitation": None,
-                },
-            }
-        )
-
-    idx = tracking.agent_item_index
-    agent_item = items[idx] if idx < len(items) else {}
-    patches.append(
-        {
-            "op": "replace",
-            "path": ["turns", turn_index, "items", idx, "text"],
-            "value": agent_item.get("text", "") if isinstance(agent_item, dict) else "",
-        }
+    # produce_with_patches expects a recipe, but we already have the new state.
+    # We use it purely for the diff: apply the mutations that transform old → new.
+    _, patches = produce_with_patches(
+        old_state,
+        _make_recipe_from_new_state(new_state),
     )
-
-    # send finalAssistantStartedAtMs once
-    final_started_at = turn.get("finalAssistantStartedAtMs")
-    if final_started_at is not None and not tracking.final_assistant_started_sent:
-        patches.append(
-            {
-                "op": "replace",
-                "path": ["turns", turn_index, "finalAssistantStartedAtMs"],
-                "value": final_started_at,
-            }
-        )
-        tracking.final_assistant_started_sent = True
-
     return patches
 
 
-def assistant_message_patches(
-    tracking: StreamTracking,
-    turn_index: int,
-    items: list[dict[str, Any]],
+def patches_for_recipe(
+    old_state: dict[str, Any],
+    recipe: Any,  # Callable[[dict], None]
 ) -> list[dict[str, Any]]:
-    """Patches for a completed assistant message."""
-    should_add = tracking.agent_item_index < 0
-    if tracking.agent_item_index < 0:
-        for i in range(len(items) - 1, -1, -1):
-            if isinstance(items[i], dict) and items[i].get("type") == "agentMessage":
-                tracking.agent_item_index = i
-                break
-        if tracking.agent_item_index < 0:
-            tracking.agent_item_index = len(items)
+    """Execute a recipe on old_state and return the generated patches.
 
-    idx = tracking.agent_item_index
-    op = "add" if should_add else ("replace" if idx < len(items) else "add")
-    agent_item = items[idx] if idx < len(items) else {}
-    return [
-        {
-            "op": op,
-            "path": ["turns", turn_index, "items", idx],
-            "value": agent_item if isinstance(agent_item, dict) else {},
-        }
-    ]
-
-
-def plan_delta_patches(
-    tracking: StreamTracking,
-    turn_index: int,
-    turn: dict[str, Any],
-    items: list[dict[str, Any]],
-    data: dict[str, Any],
-) -> list[dict[str, Any]]:
-    """Patches for a plan content delta."""
-    content = data.get("content", "")
-    if not isinstance(content, str) or not content.strip():
-        return []
-
-    # Find or create the proposed-plan item index.
-    if tracking.plan_item_index < 0:
-        for i in range(len(items) - 1, -1, -1):
-            if isinstance(items[i], dict) and items[i].get("type") == "proposed-plan":
-                tracking.plan_item_index = i
-                break
-        if tracking.plan_item_index < 0:
-            tracking.plan_item_index = len(items)
-
-    idx = tracking.plan_item_index
-    patches: list[dict[str, Any]] = []
-
-    if idx >= len(items):
-        # Add new proposed-plan item.
-        patches.append(
-            {
-                "op": "add",
-                "path": ["turns", turn_index, "items", idx],
-                "value": {
-                    "type": "proposed-plan",
-                    "id": f"{data.get('session_id', '')}:plan",
-                    "content": content,
-                    "completed": False,
-                },
-            }
-        )
-    else:
-        # Replace content of existing proposed-plan item.
-        patches.append(
-            {
-                "op": "replace",
-                "path": ["turns", turn_index, "items", idx, "content"],
-                "value": content,
-            }
-        )
-
+    Convenience wrapper around ``produce_with_patches``.
+    """
+    _, patches = produce_with_patches(old_state, recipe)
     return patches
 
 
@@ -238,3 +80,11 @@ def log_stream_patches(
         patch_count=len(payload.get("change", {}).get("patches", [])),
         payload=payload if ipc_debug_full_enabled() else None,
     )
+
+
+def _make_recipe_from_new_state(new_state: dict[str, Any]):
+    """Create a recipe that overwrites the draft with new_state."""
+    def recipe(draft: dict[str, Any]) -> None:
+        draft.clear()
+        draft.update(new_state)
+    return recipe

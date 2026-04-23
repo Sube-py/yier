@@ -18,11 +18,8 @@ Bridges ``ChatService`` stream events to the Codex IPC system:
 
 from __future__ import annotations
 
-import contextlib
-from copy import deepcopy
 import inspect
 import logging
-from time import time
 from typing import TYPE_CHECKING, Any, Callable
 
 from yier_web.codex.ipc.client import CodexIpcClient
@@ -32,11 +29,7 @@ from yier_web.codex.ipc.debug import (
     ipc_debug_full_enabled,
     ipc_debug_log,
 )
-from yier_web.codex.ipc.patches import (
-    build_stream_patches_payload,
-    log_stream_patches,
-    patches_for_state_update,
-)
+from yier_web.codex.ipc.owner_follower import OwnerFollowerSession
 from yier_web.codex.ipc.params import (
     approval_request_id,
     command_or_file_approval_response_payload,
@@ -93,7 +86,7 @@ class CodexThreadFollowerBridge:
             client_type=client_type,
             socket_path=socket_path,
         )
-        self._last_broadcast_state: dict[str, dict[str, Any]] = {}
+        self._sessions: dict[str, OwnerFollowerSession] = {}
         self._register_broadcast_handlers()
         self._register_request_handlers()
 
@@ -105,18 +98,38 @@ class CodexThreadFollowerBridge:
 
     # ── stream event → IPC broadcast ──
 
+    def _session(self, session_id: str) -> OwnerFollowerSession:
+        session = self._sessions.get(session_id)
+        if session is None:
+            session = OwnerFollowerSession(conversation_id=session_id)
+            self._sessions[session_id] = session
+        return session
+
+    def owner_client_id(self, session_id: str) -> str | None:
+        session = self._sessions.get(session_id)
+        return session.owner_client_id if session is not None else None
+
+    def is_follower(self, session_id: str) -> bool:
+        session = self._sessions.get(session_id)
+        return bool(session is not None and session.is_follower)
+
+    def mark_owner(self, session_id: str, state: dict[str, Any] | None = None) -> None:
+        self._session(session_id).ensure_owner(state)
+
     async def notify_stream_event(self, event: str, data: dict[str, Any]) -> None:
         session_id = data.get("session_id")
         if not isinstance(session_id, str) or not session_id:
             return
         if not self._is_codex_session(session_id):
             return
+        if self.is_follower(session_id):
+            return
 
         if event == "run_started":
-            await self._emit_run_started_sequence(session_id)
+            await self.broadcast_stream_state(session_id, trigger_event=event)
             return
         if event == "done":
-            await self._emit_done_sequence(session_id)
+            await self.broadcast_stream_state(session_id, trigger_event=event)
             return
 
         # --- lifecycle snapshots (full ConversationState) ---
@@ -127,7 +140,6 @@ class CodexThreadFollowerBridge:
             "approval_resolved",
             "stream_error",
         }:
-            self._last_broadcast_state.pop(session_id, None)
             await self.broadcast_stream_state(session_id, trigger_event=event)
             return
 
@@ -160,19 +172,13 @@ class CodexThreadFollowerBridge:
             conversation_state = await _maybe_await(
                 self.chat_service.build_codex_ipc_conversation_state(session_id)
             )
-        payload = {
-            "conversationId": session_id,
-            "change": {
-                "type": "snapshot",
-                "conversationState": {
-                    **conversation_state,
-                    "_yier_trigger_event": trigger_event or "",
-                    "_yier_updated_at": time(),
-                },
-            },
-            "version": ipc_method_version("thread-stream-state-changed"),
-            "type": "thread-stream-state-changed",
-        }
+        session = self._session(session_id)
+        if session.is_follower:
+            return
+        payload = session.snapshot_payload(
+            conversation_state,
+            trigger_event=trigger_event,
+        )
         ipc_debug_log(
             "broadcast stream state",
             session_id=session_id,
@@ -182,95 +188,12 @@ class CodexThreadFollowerBridge:
             ),
             payload=payload if ipc_debug_full_enabled() else None,
         )
-        with contextlib.suppress(Exception):
-            await self.client.send_broadcast("thread-stream-state-changed", payload)
+        await self.client.send_broadcast("thread-stream-state-changed", payload)
 
     async def _conversation_state(self, session_id: str) -> dict[str, Any]:
         return await _maybe_await(
             self.chat_service.build_codex_ipc_conversation_state(session_id)
         )
-
-    async def _emit_run_started_sequence(self, session_id: str) -> None:
-        """Build current state, diff against cached state, send patches + snapshot."""
-        conversation_state = await self._conversation_state(session_id)
-        turns = conversation_state.get("turns")
-        if not isinstance(turns, list) or not turns:
-            self._last_broadcast_state.pop(session_id, None)
-            await self.broadcast_stream_state(
-                session_id,
-                trigger_event="run_started",
-                conversation_state=conversation_state,
-            )
-            self._last_broadcast_state[session_id] = deepcopy(conversation_state)
-            return
-
-        # Send incremental patches vs last known state
-        old_state = self._last_broadcast_state.get(session_id, {})
-        patches = patches_for_state_update(old_state, conversation_state)
-        if patches:
-            await self._send_stream_patches(session_id, "run_started", patches)
-
-        # Send snapshot (with items cleared on the latest turn for the snapshot,
-        # matching Codex behavior: snapshot has items=[] so follower gets structure first)
-        snapshot_state = deepcopy(conversation_state)
-        snapshot_turns = snapshot_state.get("turns")
-        turn_index = len(turns) - 1
-        if isinstance(snapshot_turns, list) and turn_index < len(snapshot_turns):
-            snapshot_turn = snapshot_turns[turn_index]
-            if isinstance(snapshot_turn, dict):
-                snapshot_turn["items"] = []
-
-        await self.broadcast_stream_state(
-            session_id,
-            trigger_event="run_started",
-            conversation_state=snapshot_state,
-        )
-
-        # Cache the full state (with items) for subsequent diffs
-        self._last_broadcast_state[session_id] = deepcopy(conversation_state)
-
-    async def _emit_done_sequence(self, session_id: str) -> None:
-        """Build completed state, diff, send patches + final snapshot."""
-        conversation_state = await self._conversation_state(session_id)
-        turns = conversation_state.get("turns")
-        if not isinstance(turns, list) or not turns:
-            self._last_broadcast_state.pop(session_id, None)
-            return
-
-        # Mark turn as completed in the state for diff
-        turn_index = len(turns) - 1
-        turn = turns[turn_index]
-        if isinstance(turn, dict):
-            turn["status"] = "completed"
-        conversation_state["hasUnreadTurn"] = True
-        conversation_state["threadRuntimeStatus"] = {
-            "type": "idle",
-            "activeFlags": [],
-        }
-
-        # Send incremental patches
-        old_state = self._last_broadcast_state.get(session_id, {})
-        patches = patches_for_state_update(old_state, conversation_state)
-        if patches:
-            await self._send_stream_patches(session_id, "done", patches)
-
-        # Send final snapshot
-        await self.broadcast_stream_state(
-            session_id,
-            trigger_event="turn_completed",
-            conversation_state=conversation_state,
-        )
-
-        # Mark as read
-        conversation_state["hasUnreadTurn"] = False
-        read_patches = patches_for_state_update(
-            self._last_broadcast_state.get(session_id, {}),
-            conversation_state,
-        )
-        # Update cache before sending read patch
-        self._last_broadcast_state[session_id] = deepcopy(conversation_state)
-        if read_patches:
-            await self._send_stream_patches(session_id, "done", read_patches)
 
     async def _emit_patches_if_changed(
         self,
@@ -280,12 +203,20 @@ class CodexThreadFollowerBridge:
         """Build current state, diff against cached state, send patches if changed."""
         if not self.client.is_connected or not self._is_codex_session(session_id):
             return
+        session = self._session(session_id)
+        if session.is_follower:
+            return
         new_state = await self._conversation_state(session_id)
-        old_state = self._last_broadcast_state.get(session_id, {})
-        patches = patches_for_state_update(old_state, new_state)
-        if patches:
-            await self._send_stream_patches(session_id, trigger_event, patches)
-        self._last_broadcast_state[session_id] = deepcopy(new_state)
+        if session.state is None:
+            await self.broadcast_stream_state(
+                session_id,
+                trigger_event=trigger_event,
+                conversation_state=new_state,
+            )
+            return
+        payload = session.patch_payload(new_state, trigger_event=trigger_event)
+        if payload is not None:
+            await self.client.send_broadcast("thread-stream-state-changed", payload)
 
     async def broadcast_queued_followups(self, session_id: str) -> None:
         """Send queued followup messages via IPC broadcast."""
@@ -298,29 +229,15 @@ class CodexThreadFollowerBridge:
             message_count=len(messages),
             payload=messages if ipc_debug_full_enabled() else None,
         )
-        with contextlib.suppress(Exception):
-            await self.client.send_broadcast(
-                "thread-queued-followups-changed",
-                {
-                    "conversationId": session_id,
-                    "messages": messages,
-                    "version": ipc_method_version("thread-queued-followups-changed"),
-                    "type": "thread-queued-followups-changed",
-                },
-            )
-
-    # ── outbound: incremental patches ──
-
-    async def _send_stream_patches(
-        self,
-        session_id: str,
-        trigger_event: str,
-        patches: list[dict[str, Any]],
-    ) -> None:
-        payload = build_stream_patches_payload(session_id, patches)
-        log_stream_patches(session_id, trigger_event, payload)
-        with contextlib.suppress(Exception):
-            await self.client.send_broadcast("thread-stream-state-changed", payload)
+        await self.client.send_broadcast(
+            "thread-queued-followups-changed",
+            {
+                "conversationId": session_id,
+                "messages": messages,
+                "version": ipc_method_version("thread-queued-followups-changed"),
+                "type": "thread-queued-followups-changed",
+            },
+        )
 
     # ── inbound: broadcast handlers ──
 
@@ -360,6 +277,8 @@ class CodexThreadFollowerBridge:
             return
 
         source_client_id = message.get("sourceClientId")
+        if source_client_id == self.client.client_id:
+            return
         if isinstance(source_client_id, str) and source_client_id:
             self.chat_service.update_session_backend_state(
                 session_id,
@@ -367,7 +286,13 @@ class CodexThreadFollowerBridge:
             )
         change = p.get("change")
         change_type = change.get("type") if isinstance(change, dict) else None
-        if isinstance(change, dict) and hasattr(
+        applied_state = None
+        if isinstance(source_client_id, str) and isinstance(change, dict):
+            applied_state = self._session(session_id).apply_remote_stream_change(
+                source_client_id=source_client_id,
+                change=change,
+            )
+        if applied_state is not None and hasattr(
             self.chat_service, "apply_codex_ipc_stream_change"
         ):
             self.chat_service.apply_codex_ipc_stream_change(session_id, change)
@@ -447,19 +372,36 @@ class CodexThreadFollowerBridge:
         message: dict[str, Any],
     ) -> None:
         p = params(message)
+        client_id = p.get("clientId")
+        status = p.get("status")
+        if isinstance(client_id, str) and status == "disconnected":
+            for session_id, session in self._sessions.items():
+                if session.handle_owner_disconnected(client_id):
+                    self.chat_service.update_session_backend_state(
+                        session_id,
+                        {"ipc_source_client_id": None},
+                    )
+                    await self.chat_service.event_broker.publish(
+                        "codex_session_updated",
+                        {
+                            "session_id": session_id,
+                            "source_client_id": client_id,
+                            "change_type": "owner_disconnected",
+                        },
+                    )
         ipc_debug_log(
             "handle client status broadcast",
-            client_id=p.get("clientId"),
+            client_id=client_id,
             client_type=p.get("clientType"),
-            status=p.get("status"),
+            status=status,
             source_client_id=message.get("sourceClientId"),
         )
         await self.chat_service.event_broker.publish(
             "codex_ipc_client_status_changed",
             {
-                "client_id": p.get("clientId"),
+                "client_id": client_id,
                 "client_type": p.get("clientType"),
-                "status": p.get("status"),
+                "status": status,
                 "source_client_id": message.get("sourceClientId"),
             },
         )
@@ -563,13 +505,23 @@ class CodexThreadFollowerBridge:
 
     async def _can_handle_thread_request(self, p: dict[str, Any]) -> bool:
         cid = conversation_id(p)
-        return await self.chat_service.can_handle_codex_conversation(cid)
+        if not await self.chat_service.can_handle_codex_conversation(cid):
+            return False
+        session = self._sessions.get(cid)
+        if session is None:
+            return True
+        return not session.is_follower
 
     async def _handle_start_turn(self, request: dict[str, Any]) -> dict[str, Any]:
         p = params(request)
         session_id = await self.chat_service.ensure_codex_conversation_session(
             conversation_id(p)
         )
+        if not self._session(session_id).is_owner:
+            self.mark_owner(
+                session_id,
+                await self._conversation_state(session_id),
+            )
         tsp = turn_start_params(p)
         input_payload = start_turn_input_payload(tsp)
         if input_payload in (None, "", []):
@@ -591,6 +543,8 @@ class CodexThreadFollowerBridge:
                 session_id,
                 collab_mode,
             )
+        state = await self._conversation_state(session_id)
+        self.mark_owner(session_id, state)
         start_response = await self.chat_service.start_codex_turn_in_background(
             session_id,
             input_payload,
@@ -654,9 +608,11 @@ class CodexThreadFollowerBridge:
     ) -> dict[str, Any]:
         if not self.client.is_connected:
             raise RuntimeError("IPC not connected.")
-        metadata = self.chat_service.get_session_metadata(session_id)
-        backend_state = metadata.get("backend_state", {})
-        target_client_id = backend_state.get("ipc_source_client_id")
+        target_client_id = self.owner_client_id(session_id)
+        if not isinstance(target_client_id, str) or not target_client_id:
+            metadata = self.chat_service.get_session_metadata(session_id)
+            backend_state = metadata.get("backend_state", {})
+            target_client_id = backend_state.get("ipc_source_client_id")
         if not isinstance(target_client_id, str) or not target_client_id:
             raise RuntimeError("No IPC owner client found.")
         ipc_debug_log(
@@ -670,6 +626,64 @@ class CodexThreadFollowerBridge:
             target_client_id=target_client_id,
         )
         return response
+
+    async def forward_start_turn(
+        self,
+        *,
+        session_id: str,
+        input_payload: list[dict[str, Any]] | dict[str, Any] | str,
+    ) -> dict[str, Any] | None:
+        target_client_id = self.owner_client_id(session_id)
+        if not self.client.is_connected or not target_client_id:
+            return None
+        response = await self.client.send_request(
+            "thread-follower-start-turn",
+            {
+                "conversationId": session_id,
+                "turnStartParams": {"input": input_payload},
+            },
+            target_client_id=target_client_id,
+        )
+        if response.get("resultType") != "success":
+            error = str(response.get("error", ""))
+            if error in {"client-disconnected", "no-client-found"}:
+                self._session(session_id).clear_role()
+                self.chat_service.update_session_backend_state(
+                    session_id,
+                    {"ipc_source_client_id": None},
+                )
+                return None
+            raise RuntimeError(f"thread-follower-start-turn failed: {error}")
+        result = response.get("result")
+        return result if isinstance(result, dict) else response
+
+    async def forward_steer_turn(
+        self,
+        *,
+        session_id: str,
+        turn_id: str | None,
+        input_payload: list[dict[str, Any]] | dict[str, Any] | str,
+    ) -> dict[str, Any] | None:
+        target_client_id = self.owner_client_id(session_id)
+        if not self.client.is_connected or not target_client_id:
+            return None
+        params_payload: dict[str, Any] = {
+            "conversationId": session_id,
+            "input": input_payload,
+        }
+        if turn_id:
+            params_payload["turnId"] = turn_id
+        response = await self.client.send_request(
+            "thread-follower-steer-turn",
+            params_payload,
+            target_client_id=target_client_id,
+        )
+        if response.get("resultType") != "success":
+            raise RuntimeError(
+                f"thread-follower-steer-turn failed: {response.get('error', '')}"
+            )
+        result = response.get("result")
+        return result if isinstance(result, dict) else response
 
     async def _handle_set_model_and_reasoning(
         self, request: dict[str, Any]
@@ -807,11 +821,13 @@ class CodexThreadFollowerBridge:
 
         metadata = self.chat_service.get_session_metadata(session_id)
         backend_state = metadata.get("backend_state", {})
-        target_client_id = (
-            backend_state.get("ipc_source_client_id")
-            if isinstance(backend_state, dict)
-            else None
-        )
+        target_client_id = self.owner_client_id(session_id)
+        if not isinstance(target_client_id, str) or not target_client_id.strip():
+            target_client_id = (
+                backend_state.get("ipc_source_client_id")
+                if isinstance(backend_state, dict)
+                else None
+            )
         if not isinstance(target_client_id, str) or not target_client_id.strip():
             return False
 

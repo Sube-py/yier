@@ -23,7 +23,7 @@ IPC_DEBUG_TEXT_LIMIT = 500
 
 IPC_METHOD_VERSIONS: dict[str, int] = {
     # broadcast methods
-    "thread-stream-state-changed": 5,
+    "thread-stream-state-changed": 6,
     "thread-read-state-changed": 1,
     "thread-archived": 2,
     "thread-unarchived": 1,
@@ -32,6 +32,7 @@ IPC_METHOD_VERSIONS: dict[str, int] = {
     "client-status-changed": 0,
     # request methods (thread-follower series)
     "thread-follower-start-turn": 1,
+    "thread-follower-compact-thread": 1,
     "thread-follower-steer-turn": 1,
     "thread-follower-interrupt-turn": 1,
     "thread-follower-set-model-and-reasoning": 1,
@@ -39,6 +40,7 @@ IPC_METHOD_VERSIONS: dict[str, int] = {
     "thread-follower-edit-last-user-turn": 1,
     "thread-follower-command-approval-decision": 1,
     "thread-follower-file-approval-decision": 1,
+    "thread-follower-permissions-request-approval-response": 1,
     "thread-follower-submit-user-input": 1,
     "thread-follower-submit-mcp-server-elicitation-response": 1,
     "thread-follower-set-queued-follow-ups-state": 1,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from copy import deepcopy
+from dataclasses import dataclass
 import inspect
 import logging
 import os
@@ -125,6 +126,53 @@ async def _maybe_await(value: Any) -> Any:
     if inspect.isawaitable(value):
         return await value
     return value
+
+
+@dataclass(slots=True)
+class _LegacySdkTurnHandle:
+    client: Any
+    thread_id: str
+    id: str
+
+    async def steer(self, input: Any) -> Any:
+        response = self.client.turn_steer(self.thread_id, self.id, input)
+        return await _maybe_await(response)
+
+    async def interrupt(self) -> Any:
+        response = self.client.turn_interrupt(self.thread_id, self.id)
+        return await _maybe_await(response)
+
+    async def stream(self) -> Any:
+        if not hasattr(self.client, "turn_stream"):
+            return
+        stream = self.client.turn_stream(self.thread_id, self.id)
+        async for item in stream:
+            yield item
+
+
+class _LegacySdkThreadAdapter:
+    def __init__(
+        self,
+        backend: "CodexAppServerBackend",
+        client: Any,
+        thread_id: str,
+    ) -> None:
+        self._backend = backend
+        self._client = client
+        self.id = thread_id
+
+    async def read(self, *, include_turns: bool = False) -> Any:
+        response = self._client.thread_read(self.id, include_turns=include_turns)
+        return await _maybe_await(response)
+
+    async def turn(self, input: Any, **kwargs: Any) -> _LegacySdkTurnHandle:
+        raw_input = input.text if isinstance(input, TextInput) else input
+        response = self._client.turn_start(self.id, raw_input, params=kwargs)
+        response = await _maybe_await(response)
+        turn_id = self._backend._response_turn_id(response)
+        if not turn_id:
+            raise RuntimeError("Codex turn_start response did not include a turn id.")
+        return _LegacySdkTurnHandle(self._client, self.id, turn_id)
 
 
 type CodexThreadItemRoot = (
@@ -774,16 +822,6 @@ class CodexAppServerBackend(ChatBackend):
         context: ChatSessionContext,
         turn_input: list[dict[str, Any]] | dict[str, Any] | str,
         turn_params: dict[str, Any],
-    ) -> tuple[Any | None, TurnStartResponse | BaseModel | dict[str, Any], str | None]:
-        if isinstance(runtime.client, AsyncAppServerClient):
-            return await self._start_public_sdk_turn(runtime, turn_input, turn_params)
-        return await self._start_low_level_turn(runtime, turn_input, turn_params)
-
-    async def _start_public_sdk_turn(
-        self,
-        runtime: CodexSessionRuntime,
-        turn_input: list[dict[str, Any]] | dict[str, Any] | str,
-        turn_params: dict[str, Any],
     ) -> tuple[Any, dict[str, Any], str]:
         assert runtime.client is not None
         assert runtime.thread_id is not None
@@ -804,25 +842,6 @@ class CodexAppServerBackend(ChatBackend):
             },
             turn_id,
         )
-
-    async def _start_low_level_turn(
-        self,
-        runtime: CodexSessionRuntime,
-        turn_input: list[dict[str, Any]] | dict[str, Any] | str,
-        turn_params: dict[str, Any],
-    ) -> tuple[None, TurnStartResponse | BaseModel | dict[str, Any], str | None]:
-        assert runtime.client is not None
-        assert runtime.thread_id is not None
-        # Unit tests use lightweight fake clients that implement only the
-        # low-level shape; production runtimes use the public SDK branch.
-        response = await _maybe_await(
-            runtime.client.turn_start(
-                runtime.thread_id,
-                turn_input,
-                params=turn_params,
-            )
-        )
-        return (None, response, self._response_turn_id(response))
 
     async def _start_turn(
         self,
@@ -858,12 +877,16 @@ class CodexAppServerBackend(ChatBackend):
         )
         if turn_handle is not None:
             runtime.turn_handles[turn_id] = turn_handle
-        runtime.turn_snapshots[turn_id] = TurnSnapshotState(
-            params=self._build_turn_state_params(
+        try:
+            turn_state_params = self._build_turn_state_params(
                 context,
                 turn_input,
                 turn_params=turn_params,
-            ),
+            )
+        except TypeError:
+            turn_state_params = self._build_turn_state_params(context, turn_input)
+        runtime.turn_snapshots[turn_id] = TurnSnapshotState(
+            params=turn_state_params,
             turn_started_at_ms=int(time() * 1000),
             final_assistant_started_at_ms=None,
         )
@@ -2821,6 +2844,8 @@ class CodexAppServerBackend(ChatBackend):
     ) -> ApprovalAwareAsyncThread:
         if hasattr(client, "thread"):
             return client.thread(thread_id)
+        if hasattr(client, "turn_start"):
+            return _LegacySdkThreadAdapter(self, client, thread_id)
         return CodexThread(client, thread_id)
 
     def _turn_handle(
@@ -2967,7 +2992,12 @@ class CodexAppServerBackend(ChatBackend):
                 await asyncio.wrap_future(task)
 
     def _codex_work_mode(self, context: ChatSessionContext) -> str:
-        metadata = self.chat_service.get_session_metadata(context.session_id)
+        getter = getattr(self.chat_service, "get_session_metadata", None)
+        if getter is None:
+            return codex_work_mode_from_collaboration_mode(
+                context.backend_state.get("collaboration_mode")
+            )
+        metadata = getter(context.session_id)
         work_mode = metadata.get("codex_work_mode")
         if work_mode in {"plan", "build"}:
             return work_mode

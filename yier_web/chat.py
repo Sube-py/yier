@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 from dataclasses import dataclass
+import inspect
 import json
 import logging
 import os
@@ -101,6 +102,12 @@ GOAL_LOOP_MAX_CONSECUTIVE_FAILURES = 2
 GOAL_LOOP_STATUS_MARKER = "YIER_GOAL_LOOP_STATUS:"
 GOAL_LOOP_REASON_MARKER = "YIER_GOAL_LOOP_REASON:"
 GOAL_LOOP_NEXT_PROMPT_MARKER = "YIER_GOAL_LOOP_NEXT_PROMPT:"
+
+
+async def _maybe_await(value: Any) -> Any:
+    if inspect.isawaitable(value):
+        return await value
+    return value
 
 
 @dataclass(slots=True)
@@ -1250,10 +1257,8 @@ class ChatService:
             collaboration_mode = protocol_collaboration_mode_for_work_mode(
                 codex_work_mode,
                 current_value=backend_state.get("collaboration_mode"),
-                default_model=self._effective_codex_backend_model(backend_state),
-                default_reasoning_effort=self._effective_codex_backend_effort(
-                    backend_state
-                ),
+                default_model=backend_state.get("model", ""),
+                default_reasoning_effort=backend_state.get("reasoning_effort"),
             )
             self.sync_codex_collaboration_mode(
                 session_id,
@@ -1277,10 +1282,8 @@ class ChatService:
         backend_state = metadata["backend_state"]
         normalized_mode = normalize_protocol_collaboration_mode(
             collaboration_mode,
-            default_model=self._effective_codex_backend_model(backend_state),
-            default_reasoning_effort=self._effective_codex_backend_effort(
-                backend_state
-            ),
+            default_model=backend_state.get("model", ""),
+            default_reasoning_effort=backend_state.get("reasoning_effort"),
         )
         codex_work_mode = codex_work_mode_from_collaboration_mode(normalized_mode)
         self.ensure_session_metadata(
@@ -1703,7 +1706,9 @@ class ChatService:
         if cached_ipc_view is not None:
             return cached_ipc_view
 
-        view = await backend.load_thread_view(context, activity_limit=activity_limit)
+        view = await _maybe_await(
+            backend.load_thread_view(context, activity_limit=activity_limit)
+        )
         self.ensure_session_metadata(
             session_id,
             source=context.source,
@@ -1930,6 +1935,23 @@ class ChatService:
             backend_input = (
                 user_message if context.backend_id == "codex" else transcript_text
             )
+            if context.backend_id == "codex":
+                forwarded_response = await self.codex_ipc_bridge.forward_start_turn(
+                    session_id=session_id,
+                    input_payload=backend_input,
+                )
+                if forwarded_response is not None:
+                    turn = forwarded_response.get("turn")
+                    turn_id = turn.get("id") if isinstance(turn, dict) else None
+                    await emit(
+                        "run_started",
+                        {
+                            "session_id": session_id,
+                            "turn_id": turn_id,
+                            "forwarded_to_ipc_owner": True,
+                        },
+                    )
+                    return
             finish_reason = await backend.stream_chat(context, backend_input, emit)
         except Exception as exc:
             finish_reason = "error"
@@ -2301,6 +2323,13 @@ class ChatService:
         if session_lock.locked():
             raise RuntimeError("Codex turn is already running for this session.")
 
+        forwarded_response = await self.codex_ipc_bridge.forward_start_turn(
+            session_id=session_id,
+            input_payload=prompt,
+        )
+        if forwarded_response is not None:
+            return forwarded_response
+
         user_message = self._codex_input_payload_text(prompt)
         if user_message:
             self._append_transcript_message(
@@ -2312,6 +2341,10 @@ class ChatService:
                 ),
             )
 
+        self.codex_ipc_bridge.mark_owner(
+            session_id,
+            await self.build_codex_ipc_conversation_state(session_id),
+        )
         _codex_ipc_debug_log(
             "start_codex_turn_in_background before backend.start_turn",
             session_id=session_id,
@@ -2418,6 +2451,13 @@ class ChatService:
         backend = self.backends.get(context.backend_id)
         if not isinstance(backend, CodexAppServerBackend):
             raise RuntimeError("Codex backend is not available.")
+        forwarded_response = await self.codex_ipc_bridge.forward_steer_turn(
+            session_id=session_id,
+            turn_id=turn_id,
+            input_payload=input_payload,
+        )
+        if forwarded_response is not None:
+            return forwarded_response
         return await backend.steer_turn(context, turn_id, input_payload)
 
     async def interrupt_codex_turn(
@@ -2430,7 +2470,10 @@ class ChatService:
         backend = self.backends.get(context.backend_id)
         if not isinstance(backend, CodexAppServerBackend):
             raise RuntimeError("Codex backend is not available.")
-        source_client_id = context.backend_state.get("ipc_source_client_id")
+        source_client_id = (
+            self.codex_ipc_bridge.owner_client_id(session_id)
+            or context.backend_state.get("ipc_source_client_id")
+        )
         if isinstance(source_client_id, str) and source_client_id:
             return await self.codex_ipc_bridge.interrupt_owner_turn(
                 session_id=session_id,

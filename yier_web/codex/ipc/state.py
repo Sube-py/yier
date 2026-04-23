@@ -148,6 +148,11 @@ class CodexConversationStateService:
             patches = change.get("patches")
             if isinstance(patches, list):
                 cached_state = metadata["backend_state"].get("ipc_conversation_state")
+                if not isinstance(cached_state, dict):
+                    try:
+                        cached_state = self._sync_build_conversation_state(session_id)
+                    except RuntimeError:
+                        cached_state = None
                 if isinstance(cached_state, dict):
                     try:
                         next_conversation_state = _immer_apply_patches(cached_state, patches)
@@ -173,6 +178,63 @@ class CodexConversationStateService:
                 next_conversation_state.get("resumeState") or "resumed"
             )
         self.chat_service.update_session_backend_state(session_id, backend_updates)
+
+    def _sync_build_conversation_state(self, session_id: str) -> dict[str, Any]:
+        chat_service = self.chat_service
+        metadata = chat_service.get_session_metadata(session_id)
+        context = chat_service.get_session_context(session_id)
+        backend = chat_service.backends.get(context.backend_id)
+        runtime = chat_service.get_backend_runtime(session_id)
+        backend_state = metadata["backend_state"]
+        current_timestamp_ms = int(time() * 1000)
+        turns = self._build_fallback_turns(session_id, runtime.status)
+        if isinstance(backend, CodexAppServerBackend):
+            turns = backend.build_ipc_turns(context, turns)
+        pending_requests = self._requests(session_id)
+        turns, pending_requests = self._inject_plan_state(
+            turns,
+            pending_requests,
+            session_id,
+        )
+        latest_model = backend_state.get("model") or ""
+        latest_reasoning_effort = backend_state.get("reasoning_effort")
+        return {
+            "id": session_id,
+            "hostId": "local",
+            "turns": turns,
+            "pendingSteers": [],
+            "requests": pending_requests,
+            "createdAt": current_timestamp_ms,
+            "updatedAt": current_timestamp_ms,
+            "title": metadata.get("title"),
+            "source": metadata.get("source", "chat"),
+            "latestModel": latest_model,
+            "latestReasoningEffort": latest_reasoning_effort,
+            "previousTurnModel": None,
+            "latestCollaborationMode": self._collaboration_mode(
+                backend_state.get("collaboration_mode"),
+                latest_model=latest_model,
+                latest_reasoning_effort=latest_reasoning_effort,
+            ),
+            "hasUnreadTurn": bool(backend_state.get("has_unread_turn")),
+            "rolloutPath": backend_state.get("rollout_path") or "",
+            "gitInfo": backend_state.get("git_info"),
+            "resumeState": backend_state.get("resume_state") or "resumed",
+            "latestTokenUsageInfo": backend_state.get("latest_token_usage_info"),
+            "workspaceKind": backend_state.get("workspace_kind") or "project",
+            "cwd": metadata.get("project_path"),
+            "threadId": runtime.thread_id or session_id,
+            "threadRuntimeStatus": self._thread_runtime_status(
+                {
+                    "type": runtime.status,
+                    "activeFlags": list(runtime.active_flags),
+                },
+                fallback_type=runtime.status,
+                fallback_active_flags=list(runtime.active_flags),
+                pending_requests=pending_requests,
+                turns=turns,
+            ),
+        }
 
     def build_queued_followups(self, session_id: str) -> list[dict[str, Any]]:
         metadata = self.chat_service.get_session_metadata(session_id)

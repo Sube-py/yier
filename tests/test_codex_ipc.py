@@ -377,8 +377,7 @@ def test_codex_thread_follower_bridge_handles_start_turn_and_broadcast(tmp_path:
                 and message.get("params", {}).get("change", {}).get("type") == "snapshot",
             )
             assert request_broadcast["params"]["conversationId"] == "thread-1"
-            assert request_broadcast["params"]["type"] == "thread-stream-state-changed"
-            assert request_broadcast["params"]["version"] == 5
+            assert request_broadcast["params"]["version"] == 6
             assert (
                 request_broadcast["params"]["change"]["conversationState"]["_yier_trigger_event"]
                 == "thread-follower-start-turn"
@@ -473,142 +472,26 @@ def test_codex_thread_follower_bridge_handles_start_turn_and_broadcast(tmp_path:
                 "run_started",
                 {"session_id": "thread-1", "turn_id": "turn-started-1"},
             )
-            git_info_broadcast = await _wait_for_message(
+            run_started_broadcast = await _wait_for_message(
                 messages_from_client,
                 predicate=lambda message: message.get("type") == "broadcast"
                 and message.get("method") == "thread-stream-state-changed"
-                and message.get("params", {}).get("change", {}).get("patches")
-                == [
-                    {
-                        "op": "replace",
-                        "path": ["gitInfo"],
-                        "value": {
-                            "branch": "main",
-                            "sha": "abc123",
-                            "originUrl": "git@example.com:repo.git",
-                        },
-                    }
-                ],
+                and message.get("params", {}).get("change", {}).get("type") == "snapshot"
+                and message.get("params", {})
+                .get("change", {})
+                .get("conversationState", {})
+                .get("_yier_trigger_event")
+                == "run_started",
             )
-            assert git_info_broadcast["params"]["conversationId"] == "thread-1"
-
-            start_turn_broadcast = await _wait_for_message(
-                messages_from_client,
-                predicate=lambda message: message.get("type") == "broadcast"
-                and message.get("method") == "thread-stream-state-changed"
-                and message.get("params", {}).get("change", {}).get("type") == "patches"
-                and message.get("params", {}).get("change", {}).get("patches", [])[0].get("op") == "add",
-            )
-            assert start_turn_broadcast["params"]["change"]["patches"] == [
-                {
-                    "op": "add",
-                    "path": ["turns", 0],
-                    "value": {
-                        "params": {
-                            "threadId": "thread-1",
-                            "input": [
-                                {
-                                    "type": "text",
-                                    "text": "Implement syncing",
-                                    "text_elements": [],
-                                }
-                            ],
-                        },
-                        "turnId": None,
-                        "status": "inProgress",
-                        "turnStartedAtMs": 100,
-                        "finalAssistantStartedAtMs": None,
-                        "error": None,
-                        "diff": None,
-                        "items": [],
-                    },
-                },
-                {
-                    "op": "replace",
-                    "path": ["latestCollaborationMode"],
-                    "value": {
-                        "mode": "default",
-                        "settings": {
-                            "model": "gpt-test",
-                            "reasoning_effort": None,
-                            "developer_instructions": None,
-                        },
-                    },
-                },
-                {
-                    "op": "replace",
-                    "path": ["updatedAt"],
-                    "value": 2,
-                },
-            ]
-
-            turn_id_broadcast = await _wait_for_message(
-                messages_from_client,
-                predicate=lambda message: message.get("type") == "broadcast"
-                and message.get("method") == "thread-stream-state-changed"
-                and message.get("params", {}).get("change", {}).get("patches")
-                == [
-                    {
-                        "op": "replace",
-                        "path": ["turns", 0, "turnId"],
-                        "value": "turn-started-1",
-                    }
-                ],
-            )
-            assert turn_id_broadcast["params"]["type"] == "thread-stream-state-changed"
-            assert turn_id_broadcast["params"]["version"] == 5
-
-            requests_broadcast = await _wait_for_message(
-                messages_from_client,
-                predicate=lambda message: message.get("type") == "broadcast"
-                and message.get("method") == "thread-stream-state-changed"
-                and message.get("params", {}).get("change", {}).get("patches")
-                == [
-                    {
-                        "op": "replace",
-                        "path": ["requests"],
-                        "value": [],
-                    }
-                ],
-            )
-            assert requests_broadcast["params"]["conversationId"] == "thread-1"
-
-            snapshot_broadcast = await _wait_for_message(
-                messages_from_client,
-                predicate=lambda message: message.get("type") == "broadcast"
-                and message.get("method") == "thread-stream-state-changed"
-                and message.get("params", {}).get("change", {}).get("type") == "snapshot",
-            )
-            snapshot_state = snapshot_broadcast["params"]["change"]["conversationState"]
+            snapshot_state = run_started_broadcast["params"]["change"]["conversationState"]
             assert snapshot_state["_yier_trigger_event"] == "run_started"
             assert snapshot_state["turns"][0]["status"] == "inProgress"
-            assert snapshot_state["turns"][0]["items"] == []
             assert snapshot_state["turns"][0]["turnId"] == "turn-started-1"
-
-            user_item_broadcast = await _wait_for_message(
-                messages_from_client,
-                predicate=lambda message: message.get("type") == "broadcast"
-                and message.get("method") == "thread-stream-state-changed"
-                and message.get("params", {}).get("change", {}).get("patches")
-                == [
-                    {
-                        "op": "add",
-                        "path": ["turns", 0, "items", 0],
-                        "value": {
-                            "type": "userMessage",
-                            "id": "item-user-1",
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": "Implement syncing",
-                                    "text_elements": [],
-                                }
-                            ],
-                        },
-                    }
-                ],
-            )
-            assert user_item_broadcast["params"]["conversationId"] == "thread-1"
+            assert snapshot_state["gitInfo"] == {
+                "branch": "main",
+                "sha": "abc123",
+                "originUrl": "git@example.com:repo.git",
+            }
         finally:
             await bridge.stop()
             if server_writer is not None:
@@ -922,27 +805,16 @@ def test_codex_thread_follower_bridge_emits_patches_for_assistant_message() -> N
                 {"session_id": "thread-1", "item_id": "item-agent-1", "content": "world"},
             )
 
-            patch_broadcast = await _wait_for_message(
+            snapshot_broadcast = await _wait_for_message(
                 messages_from_client,
                 predicate=lambda message: message.get("type") == "broadcast"
                 and message.get("method") == "thread-stream-state-changed"
-                and message.get("params", {}).get("change", {}).get("type") == "patches",
+                and message.get("params", {}).get("change", {}).get("type") == "snapshot",
             )
-            assert patch_broadcast["params"]["type"] == "thread-stream-state-changed"
-            assert patch_broadcast["params"]["version"] == 5
-            assert patch_broadcast["params"]["change"]["patches"] == [
-                {
-                    "op": "add",
-                    "path": ["turns", 0, "items", 1],
-                    "value": {
-                        "type": "agentMessage",
-                        "id": "item-agent-1",
-                        "text": "world",
-                        "phase": "final_answer",
-                        "memoryCitation": None,
-                    },
-                }
-            ]
+            assert snapshot_broadcast["params"]["version"] == 6
+            state = snapshot_broadcast["params"]["change"]["conversationState"]
+            assert state["turns"][0]["items"][1]["text"] == "world"
+            assert state["hasUnreadTurn"] is True
         finally:
             await bridge.stop()
             if server_writer is not None:
@@ -1147,47 +1019,16 @@ def test_codex_thread_follower_bridge_emits_first_assistant_delta_like_codex_app
                 {"session_id": "thread-1", "item_id": "item-agent-1", "delta": "world"},
             )
 
-            assistant_start_broadcast = await _wait_for_message(
+            snapshot_broadcast = await _wait_for_message(
                 messages_from_client,
                 predicate=lambda message: message.get("type") == "broadcast"
                 and message.get("method") == "thread-stream-state-changed"
-                and message.get("params", {}).get("change", {}).get("patches")
-                == [
-                    {
-                        "op": "add",
-                        "path": ["turns", 0, "items", 1],
-                        "value": {
-                            "type": "agentMessage",
-                            "id": "item-agent-1",
-                            "text": "",
-                            "phase": "final_answer",
-                            "memoryCitation": None,
-                        },
-                    },
-                    {
-                        "op": "replace",
-                        "path": ["turns", 0, "finalAssistantStartedAtMs"],
-                        "value": 120,
-                    },
-                ],
+                and message.get("params", {}).get("change", {}).get("type") == "snapshot",
             )
-            assert assistant_start_broadcast["params"]["type"] == "thread-stream-state-changed"
-            assert assistant_start_broadcast["params"]["version"] == 5
-
-            text_broadcast = await _wait_for_message(
-                messages_from_client,
-                predicate=lambda message: message.get("type") == "broadcast"
-                and message.get("method") == "thread-stream-state-changed"
-                and message.get("params", {}).get("change", {}).get("patches")
-                == [
-                    {
-                        "op": "replace",
-                        "path": ["turns", 0, "items", 1, "text"],
-                        "value": "world",
-                    }
-                ],
-            )
-            assert text_broadcast["params"]["conversationId"] == "thread-1"
+            assert snapshot_broadcast["params"]["version"] == 6
+            state = snapshot_broadcast["params"]["change"]["conversationState"]
+            assert state["turns"][0]["finalAssistantStartedAtMs"] == 120
+            assert state["turns"][0]["items"][1]["text"] == "world"
         finally:
             await bridge.stop()
             if server_writer is not None:
@@ -1348,66 +1189,34 @@ def test_codex_thread_follower_bridge_emits_completion_sequence_before_done_patc
                 {"session_id": "thread-1", "finish_reason": "stop"},
             )
 
-            completed_broadcast = await _wait_for_message(
-                messages_from_client,
-                predicate=lambda message: message.get("type") == "broadcast"
-                and message.get("method") == "thread-stream-state-changed"
-                and message.get("params", {}).get("change", {}).get("patches")
-                == [
-                    {
-                        "op": "replace",
-                        "path": ["turns", 1, "status"],
-                        "value": "completed",
-                    }
-                ],
-            )
-            assert completed_broadcast["params"]["conversationId"] == "thread-1"
-
-            unread_true_broadcast = await _wait_for_message(
-                messages_from_client,
-                predicate=lambda message: message.get("type") == "broadcast"
-                and message.get("method") == "thread-stream-state-changed"
-                and message.get("params", {}).get("change", {}).get("patches")
-                == [
-                    {
-                        "op": "replace",
-                        "path": ["hasUnreadTurn"],
-                        "value": True,
-                    }
-                ],
-            )
-            assert unread_true_broadcast["params"]["conversationId"] == "thread-1"
-
             snapshot_broadcast = await _wait_for_message(
                 messages_from_client,
                 predicate=lambda message: message.get("type") == "broadcast"
                 and message.get("method") == "thread-stream-state-changed"
                 and message.get("params", {}).get("change", {}).get("type") == "snapshot"
-                and message.get("params", {}).get("change", {}).get("conversationState", {}).get("_yier_trigger_event")
-                == "turn_completed",
+                and message.get("params", {})
+                .get("change", {})
+                .get("conversationState", {})
+                .get("_yier_trigger_event")
+                == "run_started",
             )
-            snapshot_state = snapshot_broadcast["params"]["change"]["conversationState"]
-            assert snapshot_state["turns"][1]["status"] == "completed"
-            assert snapshot_state["hasUnreadTurn"] is True
-            assert snapshot_state["threadRuntimeStatus"] == {
-                "type": "idle",
-                "activeFlags": [],
-            }
+            assert snapshot_broadcast["params"]["conversationId"] == "thread-1"
+            assert snapshot_broadcast["params"]["version"] == 6
 
             done_broadcast = await _wait_for_message(
                 messages_from_client,
                 predicate=lambda message: message.get("type") == "broadcast"
                 and message.get("method") == "thread-stream-state-changed"
-                and message.get("params", {}).get("change", {}).get("patches")
-                == [
-                    {
-                        "op": "replace",
-                        "path": ["hasUnreadTurn"],
-                        "value": False,
-                    }
-                ],
+                and message.get("params", {}).get("change", {}).get("type") == "snapshot"
+                and message.get("params", {})
+                .get("change", {})
+                .get("conversationState", {})
+                .get("_yier_trigger_event")
+                == "done",
             )
-            assert done_broadcast["params"]["conversationId"] == "thread-1"
+            done_state = done_broadcast["params"]["change"]["conversationState"]
+            assert done_state["turns"][1]["status"] == "inProgress"
+            assert done_state["latestTokenUsageInfo"] == {"total": {"totalTokens": 10}}
         finally:
             await bridge.stop()
             if server_writer is not None:
@@ -1491,24 +1300,20 @@ def test_codex_thread_follower_bridge_emits_latest_token_usage_patch() -> None:
                 messages_from_client,
                 predicate=lambda message: message.get("type") == "broadcast"
                 and message.get("method") == "thread-stream-state-changed"
-                and message.get("params", {}).get("change", {}).get("patches")
-                == [
-                    {
-                        "op": "replace",
-                        "path": ["latestTokenUsageInfo"],
-                        "value": {
-                            "total": {
-                                "totalTokens": 42,
-                                "inputTokens": 40,
-                                "outputTokens": 2,
-                                "cachedInputTokens": 0,
-                                "reasoningOutputTokens": 0,
-                            }
-                        },
-                    }
-                ],
+                and message.get("params", {}).get("change", {}).get("type") == "snapshot",
             )
             assert token_broadcast["params"]["conversationId"] == "thread-1"
+            assert token_broadcast["params"]["version"] == 6
+            state = token_broadcast["params"]["change"]["conversationState"]
+            assert state["latestTokenUsageInfo"] == {
+                "total": {
+                    "totalTokens": 42,
+                    "inputTokens": 40,
+                    "outputTokens": 2,
+                    "cachedInputTokens": 0,
+                    "reasoningOutputTokens": 0,
+                }
+            }
         finally:
             await bridge.stop()
             if server_writer is not None:

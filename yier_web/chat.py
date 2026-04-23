@@ -75,8 +75,6 @@ from yier_web.session_ui_store import SessionUIStore
 from yier_web.schemas import (
     BackendRuntimePayload,
     ChannelMetaPayload,
-    CodexGoalLoopState,
-    CodexGoalLoopStatus,
     CodexWorkspaceResponse,
     CodexWorkMode,
     MessageAttachmentPayload,
@@ -96,12 +94,6 @@ from yier_web.tool_events import reset_tool_event_emitter, set_tool_event_emitte
 
 StreamEmitter = Callable[[str, dict[str, Any]], Awaitable[None]]
 logger = logging.getLogger(__name__)
-
-GOAL_LOOP_MAX_ITERATIONS = 8
-GOAL_LOOP_MAX_CONSECUTIVE_FAILURES = 2
-GOAL_LOOP_STATUS_MARKER = "YIER_GOAL_LOOP_STATUS:"
-GOAL_LOOP_REASON_MARKER = "YIER_GOAL_LOOP_REASON:"
-GOAL_LOOP_NEXT_PROMPT_MARKER = "YIER_GOAL_LOOP_NEXT_PROMPT:"
 
 
 async def _maybe_await(value: Any) -> Any:
@@ -136,50 +128,6 @@ def _codex_ipc_debug_log(message: str, **fields: Any) -> None:
         logger.warning(f"[chat-codex-ipc] {message} | {rendered}")
         return
     logger.warning(f"[chat-codex-ipc] {message}")
-
-
-def _default_goal_loop_state_payload() -> dict[str, Any]:
-    return CodexGoalLoopState(
-        max_iterations=GOAL_LOOP_MAX_ITERATIONS,
-        max_consecutive_failures=GOAL_LOOP_MAX_CONSECUTIVE_FAILURES,
-    ).model_dump(mode="json")
-
-
-def _clean_goal_loop_marker_value(value: str) -> str:
-    return value.strip().strip("`").strip()
-
-
-def _extract_goal_loop_markers(text: str) -> dict[str, str]:
-    markers: dict[str, str] = {}
-    current_key: str | None = None
-    current_lines: list[str] = []
-    marker_map = {
-        GOAL_LOOP_STATUS_MARKER: "status",
-        GOAL_LOOP_REASON_MARKER: "reason",
-        GOAL_LOOP_NEXT_PROMPT_MARKER: "next_prompt",
-    }
-
-    for raw_line in text.splitlines():
-        stripped_line = raw_line.strip()
-        matched_prefix = next(
-            (prefix for prefix in marker_map if stripped_line.startswith(prefix)),
-            None,
-        )
-        if matched_prefix is not None:
-            if current_key is not None:
-                markers[current_key] = _clean_goal_loop_marker_value(
-                    "\n".join(current_lines)
-                )
-            current_key = marker_map[matched_prefix]
-            current_lines = [stripped_line[len(matched_prefix) :].lstrip()]
-            continue
-        if current_key is not None:
-            current_lines.append(raw_line)
-
-    if current_key is not None:
-        markers[current_key] = _clean_goal_loop_marker_value("\n".join(current_lines))
-
-    return markers
 
 
 class ChatService:
@@ -470,13 +418,6 @@ class ChatService:
             "approval_resolved",
             "turn_aborted",
             "stream_error",
-            "goal_loop_started",
-            "goal_loop_iteration_started",
-            "goal_loop_iteration_finished",
-            "goal_loop_paused",
-            "goal_loop_blocked",
-            "goal_loop_completed",
-            "goal_loop_budget_exhausted",
         }:
             return data
 
@@ -546,7 +487,6 @@ class ChatService:
         project_path: str | None = None,
         backend_state: dict[str, Any] | None = None,
         codex_work_mode: CodexWorkMode | None = None,
-        codex_goal_loop: dict[str, Any] | CodexGoalLoopState | None = None,
         title: str | None = None,
         preview: str | None = None,
         updated_at: float | None = None,
@@ -601,16 +541,6 @@ class ChatService:
                 if codex_work_mode in {"plan", "build"}
                 else existing.get("codex_work_mode")
             ),
-            "codex_goal_loop": (
-                self._normalize_codex_goal_loop_payload(
-                    codex_goal_loop,
-                    backend_id=backend_id
-                    or existing["backend_id"]
-                    or default_backend_id,
-                )
-                if codex_goal_loop is not None
-                else existing.get("codex_goal_loop")
-            ),
             "title": title if isinstance(title, str) else existing.get("title"),
             "preview": preview if isinstance(preview, str) else existing.get("preview"),
             "updated_at": updated_at
@@ -622,10 +552,6 @@ class ChatService:
             "build",
         }:
             payload["codex_work_mode"] = "build"
-        payload["codex_goal_loop"] = self._normalize_codex_goal_loop_payload(
-            payload.get("codex_goal_loop"),
-            backend_id=payload["backend_id"],
-        )
         self.session_metadata_store.save(session_id, payload)
         if isinstance(next_conversation_state, dict):
             self.session_conversation_state_store.save(
@@ -789,61 +715,6 @@ class ChatService:
             preview=metadata["preview"],
             updated_at=metadata["updated_at"],
         )
-
-    def _normalize_codex_goal_loop_payload(
-        self,
-        value: dict[str, Any] | CodexGoalLoopState | None,
-        *,
-        backend_id: str,
-    ) -> dict[str, Any] | None:
-        if backend_id != "codex":
-            return None
-
-        payload: dict[str, Any]
-        if isinstance(value, CodexGoalLoopState):
-            payload = value.model_dump(mode="json")
-        elif isinstance(value, dict):
-            payload = value
-        else:
-            payload = {}
-
-        return CodexGoalLoopState.model_validate(
-            {
-                **_default_goal_loop_state_payload(),
-                **payload,
-            }
-        ).model_dump(mode="json")
-
-    def get_codex_goal_loop_state(self, session_id: str) -> CodexGoalLoopState | None:
-        metadata = self.get_session_metadata(session_id)
-        payload = metadata.get("codex_goal_loop")
-        if not isinstance(payload, dict):
-            return None
-        return CodexGoalLoopState.model_validate(payload)
-
-    def _save_codex_goal_loop_state(
-        self,
-        session_id: str,
-        state: CodexGoalLoopState,
-    ) -> CodexGoalLoopState | None:
-        metadata = self.get_session_metadata(session_id)
-        if metadata["backend_id"] != "codex" or metadata["source"] == "channel":
-            return None
-
-        self.ensure_session_metadata(
-            session_id,
-            source=metadata["source"],
-            channel_meta=metadata["channel_meta"],
-            backend_id=metadata["backend_id"],
-            project_path=metadata["project_path"],
-            backend_state=metadata["backend_state"],
-            codex_work_mode=metadata["codex_work_mode"],
-            codex_goal_loop=state,
-            title=metadata["title"],
-            preview=metadata["preview"],
-            updated_at=time(),
-        )
-        return state
 
     def _resolve_codex_tool_project_path(
         self,
@@ -1084,10 +955,6 @@ class ChatService:
                 if payload.get("codex_work_mode") in {"plan", "build"}
                 else ("build" if backend_id == "codex" else None)
             ),
-            "codex_goal_loop": self._normalize_codex_goal_loop_payload(
-                payload.get("codex_goal_loop"),
-                backend_id=backend_id,
-            ),
             "title": payload.get("title")
             if isinstance(payload.get("title"), str)
             else "",
@@ -1182,26 +1049,7 @@ class ChatService:
         )
 
     async def get_codex_workspace(self) -> CodexWorkspaceResponse:
-        workspace = await self.codex_workspace.load_workspace()
-        projects = []
-        for project in workspace.projects:
-            sessions = []
-            for session in project.sessions:
-                metadata = self.session_metadata_store.load(session.thread_id) or {}
-                goal_loop_payload = metadata.get("codex_goal_loop")
-                sessions.append(
-                    session.model_copy(
-                        update={
-                            "codex_goal_loop": (
-                                CodexGoalLoopState.model_validate(goal_loop_payload)
-                                if isinstance(goal_loop_payload, dict)
-                                else None
-                            )
-                        }
-                    )
-                )
-            projects.append(project.model_copy(update={"sessions": sessions}))
-        return workspace.model_copy(update={"projects": projects})
+        return await self.codex_workspace.load_workspace()
 
     async def open_codex_native_session(self, thread_id: str) -> str | None:
         native_session = await self.codex_workspace.get_active_session(thread_id)
@@ -1340,127 +1188,6 @@ class ChatService:
         except RuntimeError:
             return None
 
-    def update_codex_goal_loop(
-        self,
-        session_id: str,
-        *,
-        goal: str,
-        definition_of_done: str,
-    ) -> CodexGoalLoopState | None:
-        metadata = self.get_session_metadata(session_id)
-        if metadata["backend_id"] != "codex" or metadata["source"] == "channel":
-            return None
-
-        current_state = (
-            self.get_codex_goal_loop_state(session_id) or CodexGoalLoopState()
-        )
-        next_status: CodexGoalLoopStatus = current_state.status
-        if not goal and not definition_of_done:
-            next_status = (
-                "idle" if current_state.status != "running" else current_state.status
-            )
-
-        next_state = current_state.model_copy(
-            update={
-                "goal": goal,
-                "definition_of_done": definition_of_done,
-                "status": next_status,
-                "updated_at": time(),
-            }
-        )
-        saved = self._save_codex_goal_loop_state(session_id, next_state)
-        return saved
-
-    async def apply_codex_goal_loop_action(
-        self,
-        session_id: str,
-        *,
-        action: str,
-    ) -> CodexGoalLoopState | None:
-        metadata = self.get_session_metadata(session_id)
-        if metadata["backend_id"] != "codex" or metadata["source"] == "channel":
-            return None
-
-        state = self.get_codex_goal_loop_state(session_id) or CodexGoalLoopState()
-        if action == "clear":
-            next_state = CodexGoalLoopState(updated_at=time())
-            return self._save_codex_goal_loop_state(session_id, next_state)
-        if action == "complete":
-            next_state = state.model_copy(
-                update={
-                    "status": "completed",
-                    "completed_at": time(),
-                    "updated_at": time(),
-                    "last_reason": "Marked complete by user.",
-                    "last_background_session_id": None,
-                }
-            )
-            saved = self._save_codex_goal_loop_state(session_id, next_state)
-            if saved is not None:
-                await self._publish_goal_loop_event(
-                    "goal_loop_completed",
-                    {
-                        "session_id": session_id,
-                        "status": saved.status,
-                        "goal": saved.goal,
-                        "iteration_count": saved.iteration_count,
-                        "max_iterations": saved.max_iterations,
-                        "last_reason": saved.last_reason,
-                    },
-                )
-            return saved
-        if action == "pause":
-            next_state = state.model_copy(
-                update={
-                    "status": "paused",
-                    "updated_at": time(),
-                    "last_reason": "Paused by user.",
-                    "last_background_session_id": None,
-                }
-            )
-            saved = self._save_codex_goal_loop_state(session_id, next_state)
-            if saved is not None:
-                await self._publish_goal_loop_event(
-                    "goal_loop_paused",
-                    {
-                        "session_id": session_id,
-                        "status": saved.status,
-                        "goal": saved.goal,
-                        "iteration_count": saved.iteration_count,
-                        "max_iterations": saved.max_iterations,
-                        "last_reason": saved.last_reason,
-                    },
-                )
-            return saved
-        if action in {"start", "resume"}:
-            if not state.goal or not state.definition_of_done:
-                raise ValueError(
-                    "Goal and definition of done are required before starting."
-                )
-            next_state = state.model_copy(
-                update={
-                    "status": "running",
-                    "updated_at": time(),
-                    "started_at": state.started_at or time(),
-                    "completed_at": None,
-                    "last_reason": (
-                        "Goal loop started."
-                        if action == "start"
-                        else "Goal loop resumed."
-                    ),
-                }
-            )
-            saved = self._save_codex_goal_loop_state(session_id, next_state)
-            if saved is None:
-                return None
-            self.update_codex_session_mode(session_id, "build")
-            saved = await self._launch_goal_loop_iteration(
-                session_id,
-                reason="start" if action == "start" else "resume",
-            )
-            return saved
-        raise ValueError(f"Unsupported Codex goal loop action: {action}")
-
     def list_session_summaries(self, source: str | None = None) -> list[SessionSummary]:
         session_entries: dict[str, dict[str, Any]] = {}
 
@@ -1520,13 +1247,6 @@ class ChatService:
                         else None
                     ),
                     codex_work_mode=session_meta["codex_work_mode"],
-                    codex_goal_loop=(
-                        CodexGoalLoopState.model_validate(
-                            session_meta["codex_goal_loop"]
-                        )
-                        if isinstance(session_meta.get("codex_goal_loop"), dict)
-                        else None
-                    ),
                 )
             )
 
@@ -1874,32 +1594,6 @@ class ChatService:
 
         try:
             context = self.get_session_context(session_id)
-            goal_loop_state = self.get_codex_goal_loop_state(session_id)
-            if (
-                context.backend_id == "codex"
-                and goal_loop_state is not None
-                and goal_loop_state.status == "running"
-            ):
-                paused_state = goal_loop_state.model_copy(
-                    update={
-                        "status": "paused",
-                        "updated_at": time(),
-                        "last_reason": "Paused because the user sent a manual message.",
-                        "last_background_session_id": None,
-                    }
-                )
-                self._save_codex_goal_loop_state(session_id, paused_state)
-                await emit(
-                    "goal_loop_paused",
-                    {
-                        "session_id": session_id,
-                        "status": paused_state.status,
-                        "goal": paused_state.goal,
-                        "iteration_count": paused_state.iteration_count,
-                        "max_iterations": paused_state.max_iterations,
-                        "last_reason": paused_state.last_reason,
-                    },
-                )
             self.ensure_session_metadata(
                 session_id,
                 source=context.source,
@@ -2162,148 +1856,6 @@ class ChatService:
             if normalized_request_id == request_id:
                 return request
         return None
-
-    async def _publish_goal_loop_event(self, event: str, data: dict[str, Any]) -> None:
-        self._annotate_timeline_sequence(event, data)
-        self._persist_ui_event(event, data)
-        await self.event_broker.publish(event, data)
-        await self.codex_ipc_bridge.notify_stream_event(event, data)
-
-    def _goal_loop_owner_session_id(self, background_session_id: str) -> str | None:
-        owner_session_id = self._background_owner_sessions.get(background_session_id)
-        if isinstance(owner_session_id, str) and owner_session_id:
-            return owner_session_id
-        return None
-
-    def _build_goal_loop_control_prompt(
-        self,
-        session_id: str,
-        state: CodexGoalLoopState,
-        *,
-        next_prompt: str | None = None,
-    ) -> str:
-        metadata = self.get_session_metadata(session_id)
-        remaining_iterations = max(0, state.max_iterations - state.iteration_count)
-        thread_id = str(metadata["backend_state"].get("thread_id") or session_id)
-        next_prompt_block = (
-            f"Immediate next focus:\n{next_prompt}\n\n"
-            if isinstance(next_prompt, str) and next_prompt.strip()
-            else ""
-        )
-        return (
-            "You are continuing a persistent goal loop inside the current Codex thread.\n"
-            f"Goal:\n{state.goal}\n\n"
-            f"Definition of done:\n{state.definition_of_done}\n\n"
-            f"{next_prompt_block}"
-            f"Current iteration: {state.iteration_count + 1}\n"
-            f"Remaining iteration budget after this turn: {max(0, remaining_iterations - 1)}\n"
-            f"Thread id: {thread_id}\n\n"
-            "Work on the goal directly in this repository. Use tools and make progress. "
-            "Do not stop just because one step completed. Only mark completed when the "
-            "definition of done is truly satisfied. Mark blocked only when you need human "
-            "input, approval, or a hard blocker prevents safe continuation.\n\n"
-            "At the very end of your response, emit exactly these markers on their own lines:\n"
-            "YIER_GOAL_LOOP_STATUS: continue|completed|blocked\n"
-            "YIER_GOAL_LOOP_REASON: <brief explanation>\n"
-            "YIER_GOAL_LOOP_NEXT_PROMPT: <next concrete continuation prompt if status is continue>\n"
-        )
-
-    async def _launch_goal_loop_iteration(
-        self,
-        session_id: str,
-        *,
-        reason: str,
-        next_prompt: str | None = None,
-    ) -> CodexGoalLoopState:
-        state = self.get_codex_goal_loop_state(session_id)
-        if state is None:
-            raise RuntimeError("Codex goal loop is not available for this session.")
-        if not state.goal or not state.definition_of_done:
-            raise RuntimeError(
-                "Goal and definition of done are required before running."
-            )
-
-        metadata = self.get_session_metadata(session_id)
-        project_path = Path(metadata["project_path"]).resolve()
-        thread_id = str(metadata["backend_state"].get("thread_id") or session_id)
-        request_path = _write_codex_background_request(
-            self,
-            {
-                "action": "resume",
-                "caller_session_id": session_id,
-                "thread_id": thread_id,
-                "prompt": self._build_goal_loop_control_prompt(
-                    session_id,
-                    state,
-                    next_prompt=next_prompt,
-                ),
-                "project_path": str(project_path),
-            },
-        )
-        command = _build_codex_background_runner_command(
-            self, request_path=request_path
-        )
-        background_session = await self.background_manager.start(
-            command, str(project_path)
-        )
-        background_started_payload = {
-            "session_id": session_id,
-            "tool_call_id": f"goal-loop:{background_session.session_id}",
-            "tool_name": "resume_codex_background_session",
-            "background_session_id": background_session.session_id,
-            "command": background_session.command,
-            "cwd": str(background_session.cwd),
-            "state": background_session.state,
-        }
-        self._handle_internal_event(
-            "background_command_started", background_started_payload
-        )
-        self._persist_ui_event("background_command_started", background_started_payload)
-        await self.event_broker.publish(
-            "background_command_started", background_started_payload
-        )
-        next_state = state.model_copy(
-            update={
-                "status": "running",
-                "iteration_count": state.iteration_count + 1,
-                "last_background_session_id": background_session.session_id,
-                "last_reason": (
-                    "Running goal loop iteration."
-                    if reason == "continue"
-                    else state.last_reason
-                ),
-                "updated_at": time(),
-            }
-        )
-        saved = self._save_codex_goal_loop_state(session_id, next_state)
-        if saved is None:
-            raise RuntimeError("Failed to persist Codex goal loop state.")
-        await self._publish_goal_loop_event(
-            "goal_loop_iteration_started",
-            {
-                "session_id": session_id,
-                "status": saved.status,
-                "goal": saved.goal,
-                "iteration_count": saved.iteration_count,
-                "max_iterations": saved.max_iterations,
-                "last_reason": saved.last_reason,
-                "background_session_id": background_session.session_id,
-            },
-        )
-        if reason in {"start", "resume"}:
-            await self._publish_goal_loop_event(
-                "goal_loop_started",
-                {
-                    "session_id": session_id,
-                    "status": saved.status,
-                    "goal": saved.goal,
-                    "iteration_count": saved.iteration_count,
-                    "max_iterations": saved.max_iterations,
-                    "last_reason": saved.last_reason,
-                    "background_session_id": background_session.session_id,
-                },
-            )
-        return saved
 
     async def start_codex_turn_in_background(
         self,
@@ -2906,13 +2458,6 @@ class ChatService:
             "approval_resolved",
             "turn_aborted",
             "stream_error",
-            "goal_loop_started",
-            "goal_loop_iteration_started",
-            "goal_loop_iteration_finished",
-            "goal_loop_paused",
-            "goal_loop_blocked",
-            "goal_loop_completed",
-            "goal_loop_budget_exhausted",
         }:
             return
 
@@ -3018,12 +2563,6 @@ class ChatService:
                 }
                 self._persist_ui_event("background_command_output", payload)
                 await self.event_broker.publish("background_command_output", payload)
-                await self._process_goal_loop_background_output(
-                    owner_session_id=owner_session_id,
-                    background_session_id=session.session_id,
-                    content=new_content,
-                    completed=False,
-                )
 
             if session.is_running() or cursor["end_emitted"]:
                 continue
@@ -3040,297 +2579,8 @@ class ChatService:
             }
             self._persist_ui_event("background_command_end", payload)
             await self.event_broker.publish("background_command_end", payload)
-            await self._process_goal_loop_background_output(
-                owner_session_id=owner_session_id,
-                background_session_id=session.session_id,
-                content="",
-                completed=True,
-            )
 
         return completed_session_ids
-
-    def _parse_background_json_lines(
-        self,
-        background_session_id: str,
-        chunk: str,
-    ) -> list[dict[str, Any]]:
-        if not chunk:
-            return []
-        cursor = self._background_cursors.setdefault(
-            background_session_id,
-            {
-                "stdout_chars": 0,
-                "stderr_chars": 0,
-                "end_emitted": False,
-                "stdout_json_remainder": "",
-            },
-        )
-        remainder = str(cursor.get("stdout_json_remainder") or "")
-        buffer = f"{remainder}{chunk}"
-        lines = buffer.splitlines(keepends=False)
-        if buffer and not buffer.endswith("\n"):
-            cursor["stdout_json_remainder"] = lines.pop() if lines else buffer
-        else:
-            cursor["stdout_json_remainder"] = ""
-
-        events: list[dict[str, Any]] = []
-        for line in lines:
-            stripped = line.strip()
-            if not stripped:
-                continue
-            try:
-                payload = json.loads(stripped)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(payload, dict):
-                events.append(payload)
-        return events
-
-    def _parse_background_json_text(self, text: str) -> list[dict[str, Any]]:
-        events: list[dict[str, Any]] = []
-        for line in text.splitlines():
-            stripped = line.strip()
-            if not stripped:
-                continue
-            try:
-                payload = json.loads(stripped)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(payload, dict):
-                events.append(payload)
-        return events
-
-    def _background_result_payload(
-        self,
-        background_session_id: str,
-    ) -> dict[str, Any] | None:
-        try:
-            session = self.background_manager.require_session(background_session_id)
-        except (KeyError, ValueError):
-            return None
-        payloads = self._parse_background_json_text(session.stdout_buffer.render())
-        for payload in reversed(payloads):
-            if payload.get("event") == "codex_background_result":
-                result = payload.get("result")
-                if isinstance(result, dict):
-                    return result
-        return None
-
-    async def _process_goal_loop_background_output(
-        self,
-        *,
-        owner_session_id: str,
-        background_session_id: str,
-        content: str,
-        completed: bool,
-    ) -> None:
-        state = self.get_codex_goal_loop_state(owner_session_id)
-        if state is None or state.last_background_session_id != background_session_id:
-            return
-
-        if not completed:
-            for payload in self._parse_background_json_lines(
-                background_session_id, content
-            ):
-                if payload.get("event") != "codex_background_stream_event":
-                    continue
-                if payload.get("source_event") != "approval_requested":
-                    continue
-                next_state = state.model_copy(
-                    update={
-                        "status": "blocked",
-                        "last_reason": "Waiting on approval before the goal loop can continue.",
-                        "last_background_session_id": None,
-                        "updated_at": time(),
-                    }
-                )
-                saved = self._save_codex_goal_loop_state(owner_session_id, next_state)
-                if saved is None:
-                    return
-                await self.background_manager.stop(background_session_id)
-                await self._publish_goal_loop_event(
-                    "goal_loop_blocked",
-                    {
-                        "session_id": owner_session_id,
-                        "status": saved.status,
-                        "goal": saved.goal,
-                        "iteration_count": saved.iteration_count,
-                        "max_iterations": saved.max_iterations,
-                        "last_reason": saved.last_reason,
-                        "background_session_id": background_session_id,
-                    },
-                )
-                return
-            return
-
-        await self._finalize_goal_loop_iteration(
-            owner_session_id, background_session_id
-        )
-
-    async def _finalize_goal_loop_iteration(
-        self,
-        session_id: str,
-        background_session_id: str,
-    ) -> None:
-        state = self.get_codex_goal_loop_state(session_id)
-        if state is None or state.last_background_session_id != background_session_id:
-            return
-
-        result_payload = self._background_result_payload(background_session_id)
-        latest_assistant_message = ""
-        if isinstance(result_payload, dict):
-            latest_value = result_payload.get("latest_assistant_message")
-            if isinstance(latest_value, str):
-                latest_assistant_message = latest_value
-
-        markers = _extract_goal_loop_markers(latest_assistant_message)
-        marker_status = markers.get("status", "").lower()
-        marker_reason = markers.get("reason") or "Goal loop iteration finished."
-        marker_next_prompt = markers.get("next_prompt") or ""
-
-        await self._publish_goal_loop_event(
-            "goal_loop_iteration_finished",
-            {
-                "session_id": session_id,
-                "status": marker_status or state.status,
-                "goal": state.goal,
-                "iteration_count": state.iteration_count,
-                "max_iterations": state.max_iterations,
-                "last_reason": marker_reason,
-                "background_session_id": background_session_id,
-            },
-        )
-
-        if marker_status == "completed":
-            next_state = state.model_copy(
-                update={
-                    "status": "completed",
-                    "consecutive_failures": 0,
-                    "completed_at": time(),
-                    "updated_at": time(),
-                    "last_reason": marker_reason,
-                    "last_background_session_id": None,
-                }
-            )
-            saved = self._save_codex_goal_loop_state(session_id, next_state)
-            if saved is not None:
-                await self._publish_goal_loop_event(
-                    "goal_loop_completed",
-                    {
-                        "session_id": session_id,
-                        "status": saved.status,
-                        "goal": saved.goal,
-                        "iteration_count": saved.iteration_count,
-                        "max_iterations": saved.max_iterations,
-                        "last_reason": saved.last_reason,
-                        "background_session_id": background_session_id,
-                    },
-                )
-            return
-
-        if marker_status == "blocked":
-            next_state = state.model_copy(
-                update={
-                    "status": "blocked",
-                    "consecutive_failures": 0,
-                    "updated_at": time(),
-                    "last_reason": marker_reason,
-                    "last_background_session_id": None,
-                }
-            )
-            saved = self._save_codex_goal_loop_state(session_id, next_state)
-            if saved is not None:
-                await self._publish_goal_loop_event(
-                    "goal_loop_blocked",
-                    {
-                        "session_id": session_id,
-                        "status": saved.status,
-                        "goal": saved.goal,
-                        "iteration_count": saved.iteration_count,
-                        "max_iterations": saved.max_iterations,
-                        "last_reason": saved.last_reason,
-                        "background_session_id": background_session_id,
-                    },
-                )
-            return
-
-        if marker_status == "continue" and marker_next_prompt:
-            if state.iteration_count >= state.max_iterations:
-                next_state = state.model_copy(
-                    update={
-                        "status": "paused",
-                        "updated_at": time(),
-                        "last_reason": "Iteration budget exhausted. Review progress and resume if needed.",
-                        "last_background_session_id": None,
-                    }
-                )
-                saved = self._save_codex_goal_loop_state(session_id, next_state)
-                if saved is not None:
-                    await self._publish_goal_loop_event(
-                        "goal_loop_budget_exhausted",
-                        {
-                            "session_id": session_id,
-                            "status": saved.status,
-                            "goal": saved.goal,
-                            "iteration_count": saved.iteration_count,
-                            "max_iterations": saved.max_iterations,
-                            "last_reason": saved.last_reason,
-                            "background_session_id": background_session_id,
-                        },
-                    )
-                return
-
-            next_state = state.model_copy(
-                update={
-                    "status": "running",
-                    "consecutive_failures": 0,
-                    "updated_at": time(),
-                    "last_reason": marker_reason,
-                    "last_background_session_id": None,
-                }
-            )
-            saved = self._save_codex_goal_loop_state(session_id, next_state)
-            if saved is None:
-                return
-            await self._launch_goal_loop_iteration(
-                session_id,
-                reason="continue",
-                next_prompt=marker_next_prompt,
-            )
-            return
-
-        failure_count = state.consecutive_failures + 1
-        failure_reason = (
-            marker_reason
-            if marker_status
-            else "Goal loop markers were missing or invalid, so the loop was paused."
-        )
-        failure_status: CodexGoalLoopStatus = (
-            "failed" if failure_count >= state.max_consecutive_failures else "paused"
-        )
-        next_state = state.model_copy(
-            update={
-                "status": failure_status,
-                "consecutive_failures": failure_count,
-                "updated_at": time(),
-                "last_reason": failure_reason,
-                "last_background_session_id": None,
-            }
-        )
-        saved = self._save_codex_goal_loop_state(session_id, next_state)
-        if saved is not None:
-            await self._publish_goal_loop_event(
-                "goal_loop_paused",
-                {
-                    "session_id": session_id,
-                    "status": saved.status,
-                    "goal": saved.goal,
-                    "iteration_count": saved.iteration_count,
-                    "max_iterations": saved.max_iterations,
-                    "last_reason": saved.last_reason,
-                    "background_session_id": background_session_id,
-                },
-            )
 
     async def _process_ready_followups(
         self,

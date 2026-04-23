@@ -190,36 +190,6 @@ function isBusy() {
   return Boolean(props.openingSessionId || props.archivingThreadId)
 }
 
-function goalLoopStatusLabel(status?: string | null) {
-  if (!status || status === 'idle') {
-    return ''
-  }
-  const map: Record<string, string> = {
-    running: 'Loop',
-    paused: 'Paused',
-    blocked: 'Blocked',
-    completed: 'Done',
-    failed: 'Failed',
-  }
-  return map[status] ?? status
-}
-
-function goalLoopStatusClass(status?: string | null) {
-  if (status === 'running') {
-    return 'border-[rgba(21,94,99,0.16)] bg-[rgba(214,238,234,0.95)] text-[color:var(--app-accent-deep)]'
-  }
-  if (status === 'completed') {
-    return 'border-[rgba(75,139,88,0.16)] bg-[rgba(227,241,229,0.96)] text-[#3f6d47]'
-  }
-  if (status === 'blocked' || status === 'failed') {
-    return 'border-[rgba(184,93,72,0.16)] bg-[rgba(249,233,228,0.96)] text-[#9a4c3d]'
-  }
-  if (status === 'paused') {
-    return 'border-[rgba(143,112,52,0.16)] bg-[rgba(248,239,220,0.96)] text-[#7d6332]'
-  }
-  return 'border-[rgba(34,66,72,0.12)] bg-[rgba(255,252,247,0.96)] text-[color:var(--app-text-soft)]'
-}
-
 const selectNewProject = async () => {
   try {
     const payload = await apiPost<SelectDirectoryResponse>('/api/system/select-directory', {
@@ -372,17 +342,6 @@ const selectNewProject = async () => {
                   >
                     {{ session.title }}
                   </p>
-                  <div
-                    v-if="goalLoopStatusLabel(session.codex_goal_loop?.status)"
-                    class="mt-1"
-                  >
-                    <span
-                      class="inline-flex items-center rounded-full border px-2 py-[0.16rem] text-[0.63rem] font-bold uppercase tracking-[0.08em]"
-                      :class="goalLoopStatusClass(session.codex_goal_loop?.status)"
-                    >
-                      {{ goalLoopStatusLabel(session.codex_goal_loop?.status) }}
-                    </span>
-                  </div>
                 </div>
               </button>
               <div class="relative h-[1.8rem] min-w-[4.5rem] shrink-0 self-center text-right text-[0.72rem] leading-[1.35] text-[color:var(--app-text-soft)]">

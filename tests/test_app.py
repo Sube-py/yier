@@ -83,7 +83,6 @@ class FakeChatService:
                 "project_path": "/tmp/project",
                 "channel_meta": None,
                 "codex_work_mode": None,
-                "codex_goal_loop": None,
             }
         ]
 
@@ -140,7 +139,6 @@ class FakeChatService:
                 "channel_meta": None,
                 "backend_state": {"thread_id": "codex-session"},
                 "codex_work_mode": "build",
-                "codex_goal_loop": None,
                 "title": "codex hello",
                 "preview": "codex hello",
                 "updated_at": 456.0,
@@ -152,7 +150,6 @@ class FakeChatService:
             "channel_meta": None,
             "backend_state": {},
             "codex_work_mode": None,
-            "codex_goal_loop": None,
             "title": "hello",
             "preview": "hi there",
             "updated_at": 123.0,
@@ -331,49 +328,6 @@ class FakeChatService:
 
     def update_codex_session_mode(self, session_id: str, codex_work_mode: str) -> bool:
         return session_id in {"session-a", "codex-session"}
-
-    def update_codex_goal_loop(
-        self,
-        session_id: str,
-        *,
-        goal: str,
-        definition_of_done: str,
-    ) -> dict[str, Any] | None:
-        return {
-            "status": "idle",
-            "goal": goal,
-            "definition_of_done": definition_of_done,
-            "iteration_count": 0,
-            "max_iterations": 8,
-            "consecutive_failures": 0,
-            "max_consecutive_failures": 2,
-            "last_reason": "",
-            "last_background_session_id": None,
-            "started_at": None,
-            "updated_at": 123.0,
-            "completed_at": None,
-        }
-
-    async def apply_codex_goal_loop_action(
-        self,
-        session_id: str,
-        *,
-        action: str,
-    ) -> dict[str, Any] | None:
-        return {
-            "status": "running" if action in {"start", "resume"} else "paused",
-            "goal": "Ship it",
-            "definition_of_done": "All tests pass",
-            "iteration_count": 1,
-            "max_iterations": 8,
-            "consecutive_failures": 0,
-            "max_consecutive_failures": 2,
-            "last_reason": action,
-            "last_background_session_id": "bg-1",
-            "started_at": 123.0,
-            "updated_at": 124.0,
-            "completed_at": None,
-        }
 
     async def update_paired_editor_state(
         self,
@@ -1082,55 +1036,6 @@ def test_create_app_enables_exception_logging(monkeypatch: pytest.MonkeyPatch, t
     assert app.logging_config.loggers["httpcore.http11"]["level"] == "WARNING"
 
 
-def test_codex_goal_loop_action_returns_bad_request_for_missing_goal(tmp_path: Path) -> None:
-    project_root = tmp_path / "project"
-    (project_root / "web" / "dist").mkdir(parents=True)
-    (project_root / "web" / "dist" / "index.html").write_text(
-        "<html></html>", encoding="utf-8"
-    )
-
-    config_service = AppConfigService(
-        project_root=project_root, home_dir=tmp_path / "home"
-    )
-    chat_service = FakeChatService()
-    app = create_app(
-        project_root=project_root,
-        home_dir=tmp_path / "home",
-        services=AppServices(
-            config_service=config_service,
-            chat_service=chat_service,  # type: ignore[arg-type]
-            channel_workspace_service=FakeChannelWorkspaceService(),  # type: ignore[arg-type]
-            event_broker=EventStreamBroker(),
-            frontend_service=FrontendService(project_root=project_root),
-            directory_picker_service=FakeDirectoryPickerService(),
-            auth_service=AuthService(),
-        ),
-    )
-    client = TestClient(app)
-
-    async def raise_missing_goal(*args: Any, **kwargs: Any) -> None:
-        raise ValueError("Goal and definition of done are required before starting.")
-
-    monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(
-        chat_service,
-        "apply_codex_goal_loop_action",
-        raise_missing_goal,
-    )
-
-    try:
-        with client:
-            response = client.post(
-                "/api/chat/sessions/session-a/codex-goal-loop/actions",
-                json={"action": "start"},
-            )
-    finally:
-        monkeypatch.undo()
-
-    assert response.status_code == 400
-    assert response.json()["detail"] == "Goal and definition of done are required before starting."
-
-
 def test_config_service_creates_storage_under_home(tmp_path: Path) -> None:
     service = AppConfigService(
         project_root=tmp_path / "project", home_dir=tmp_path / "home"
@@ -1484,23 +1389,6 @@ def test_api_endpoints_cover_config_session_and_stream(tmp_path: Path) -> None:
         )
         assert codex_mode_response.status_code == 200
         assert codex_mode_response.json()["ok"] is True
-
-        goal_loop_update_response = client.put(
-            "/api/codex/sessions/codex-session/goal-loop",
-            json={
-                "goal": "Ship it",
-                "definition_of_done": "All tests pass",
-            },
-        )
-        assert goal_loop_update_response.status_code == 200
-        assert goal_loop_update_response.json()["codex_goal_loop"]["goal"] == "Ship it"
-
-        goal_loop_action_response = client.post(
-            "/api/codex/sessions/codex-session/goal-loop/actions",
-            json={"action": "start"},
-        )
-        assert goal_loop_action_response.status_code == 201
-        assert goal_loop_action_response.json()["codex_goal_loop"]["status"] == "running"
 
         approval_response = client.post(
             "/api/codex/sessions/codex-session/approvals/respond",

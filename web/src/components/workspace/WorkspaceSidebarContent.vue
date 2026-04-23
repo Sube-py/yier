@@ -272,16 +272,6 @@ const workspace = useWorkspaceAppContext()
           >
             <div class="min-w-0">
               <p class="m-0 truncate font-bold leading-[1.35]">{{ session.title }}</p>
-              <div
-                v-if="session.codex_goal_loop?.status && session.codex_goal_loop.status !== 'idle'"
-                class="mt-[0.24rem]"
-              >
-                <span
-                  class="inline-flex items-center rounded-full border border-[rgba(21,94,99,0.14)] bg-[rgba(214,238,234,0.82)] px-2 py-[0.16rem] text-[0.62rem] font-bold uppercase tracking-[0.08em] text-[color:var(--app-accent-deep)]"
-                >
-                  {{ session.codex_goal_loop.status }}
-                </span>
-              </div>
               <p class="mt-[0.28rem] mb-0 truncate text-[0.76rem] text-[color:var(--app-text-soft)]">
                 <template v-if="session.source === 'channel'">
                   <span>channel</span>

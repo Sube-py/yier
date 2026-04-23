@@ -5,7 +5,6 @@ import ProgressSpinner from 'primevue/progressspinner'
 
 import ChatComposer from '../components/ChatComposer.vue'
 import ComposerUserInputPanel from '../components/ComposerUserInputPanel.vue'
-import CodexAdvancedModeDock from '../components/CodexAdvancedModeDock.vue'
 import ChatTimeline from '../components/ChatTimeline.vue'
 import CodexWorkbar from '../components/CodexWorkbar.vue'
 import PlanModeSuggestion from '../components/PlanModeSuggestion.vue'
@@ -91,7 +90,6 @@ function handleTogglePlanMode() {
       </div>
       <div class="shrink-0 px-[1.1rem] pt-2 pb-4 max-[1023px]:px-4 max-sm:px-3 max-sm:pb-3">
         <div class="flex flex-col gap-3">
-          <CodexAdvancedModeDock v-if="workspace.isCodexWorkspace" />
           <div
             v-if="workspace.showQueuedComposerFollowupsPanel"
             class="grid gap-2"

@@ -71,6 +71,21 @@
   `cli`, `vscode`, `exec`, `appServer`
 - Timeline hydration for bridged Codex sessions reads live thread state via SDK thread read APIs instead of relying only on local transcript storage.
 
+## Codex IPC Owner/Follower Notes
+
+- IPC owner/follower state is tracked per conversation in [`yier_web/codex/ipc/owner_follower.py`](/Users/sube/me/yier/yier_web/codex/ipc/owner_follower.py).
+- [`CodexThreadFollowerBridge`](/Users/sube/me/yier/yier_web/codex/ipc/bridge.py) should stay a thin router:
+  - route IPC broadcasts to the per-conversation owner/follower session
+  - publish frontend refresh events such as `codex_session_updated`
+  - forward follower requests to the current owner
+  - avoid reintroducing event-name-specific snapshot/patch choreography
+- A local Yier session is `owner` only when it owns SDK turn streaming for that conversation. Owners start turns through the public SDK path (`Thread.turn(...)`), consume `turn_handle.stream()`, and broadcast `thread-stream-state-changed` snapshots/patches.
+- A local Yier session is `follower` after receiving a remote owner snapshot/patch. Followers should persist remote `ConversationState`, skip local IPC broadcasts for that conversation, and forward start/steer/interrupt/approval responses to `ownerClientId`.
+- If the owner disconnects via `client-status-changed`, clear `ipc_source_client_id` / owner role. The next local prompt may resume the SDK thread and become owner.
+- The app-facing rich conversation state still comes from [`yier_web/codex/ipc/state.py`](/Users/sube/me/yier/yier_web/codex/ipc/state.py). Do not downgrade IPC state to a minimal text-only shape when wiring owner/follower behavior.
+- IPC protocol framing and method versions should match the reference implementation under `/Users/sube/me/codex-ipc-with-codex/packages/ipc/src/ipc`; `thread-stream-state-changed` is version `6`.
+- When changing IPC behavior, update targeted tests in [`tests/test_codex_ipc.py`](/Users/sube/me/yier/tests/test_codex_ipc.py), [`tests/test_codex_backend.py`](/Users/sube/me/yier/tests/test_codex_backend.py), and [`tests/test_app.py`](/Users/sube/me/yier/tests/test_app.py).
+
 ## Approval And Elicitation Notes
 
 - App-server exposes MCP elicitation to this app primarily as `mcpServer/elicitation/request`.
@@ -94,14 +109,14 @@
   - multi-select enums via `array` item enums / `anyOf`
 - If a schema shape is unsupported, the frontend may still fall back to JSON response editing.
 - When changing elicitation behavior, update both:
-  - backend normalization in [`codex_backend.py`](/Users/sube/me/yier/yier_web/agent_backends/codex_backend.py)
+  - backend normalization in [`backend.py`](/Users/sube/me/yier/yier_web/codex/backend.py)
   - frontend approval rendering in [`ChatTimeline.vue`](/Users/sube/me/yier/web/src/components/ChatTimeline.vue)
 
 ## Known Pitfalls
 
 - Do not assume local `.codex` session files are the primary source of truth anymore; SDK listing is the preferred path.
 - Do not mix SDK snake_case params with lower-level wire camelCase in the same change without checking the call site carefully.
-- `thread_list()` and `Thread.read()` are good SDK-level entry points; streaming approval interception still depends on the lower-level client flow in this app.
+- `thread_list()`, `Thread.read()`, and `Thread.turn()` are good SDK-level entry points; streaming approval interception still depends on the custom approval-aware SDK wrapper in this app.
 - If you add or change persisted config fields, update the full chain together:
   - backend schemas in [`yier_web/schemas.py`](/Users/sube/me/yier/yier_web/schemas.py)
   - backend config read/write logic in [`yier_web/config.py`](/Users/sube/me/yier/yier_web/config.py)

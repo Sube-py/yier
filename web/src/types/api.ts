@@ -975,33 +975,6 @@ export interface ChannelLoginQrEvent {
   }
 }
 
-export interface CodexPairingsUpdatedEvent {
-  event: 'codex_pairings_updated'
-  data: {
-    paired_editors: CodexPairingExtensionSummary[]
-  }
-}
-
-export interface CodexPairedEditorUpdateEvent {
-  event: 'codex_paired_editor_update'
-  data: {
-    session_id: string
-    textfield_id: string
-    content: string
-    selection_start: number
-    selection_end: number
-  }
-}
-
-export interface CodexSessionUpdatedEvent {
-  event: 'codex_session_updated'
-  data: {
-    session_id: string
-    source_client_id?: string
-    change_type?: string
-  }
-}
-
 export type ChatStreamEvent =
   | ChatRunStartedEvent
   | ChatToolStartEvent
@@ -1031,9 +1004,6 @@ export type ChatStreamEvent =
   | ChannelOutboundMessageEvent
   | ChannelErrorEvent
   | ChannelLoginQrEvent
-  | CodexPairingsUpdatedEvent
-  | CodexPairedEditorUpdateEvent
-  | CodexSessionUpdatedEvent
 
 export interface UiChatMessage {
   id: string

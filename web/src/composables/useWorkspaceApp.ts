@@ -29,7 +29,6 @@ import type {
   ApprovalFormFieldState,
   ApprovalFormMode,
   ApprovalResponseRequest,
-  ArchiveCodexSessionResponse,
   AttachmentUploadResponse,
   BackendId,
   BackendRuntime,
@@ -45,14 +44,8 @@ import type {
   ChatStreamErrorEvent,
   ChatStreamEvent,
   ChatStreamRequest,
-  CodexInputItem,
-  CodexTurnControlResponse,
   ComposerAttachmentState,
   ChatTurnAbortedEvent,
-  CodexPairedEditorStateRequest,
-  CodexTurnTiming,
-  CodexWorkMode,
-  CodexWorkspaceResponse,
   ConfigResponse,
   CreateSessionRequest,
   DeleteSessionResponse,
@@ -62,7 +55,6 @@ import type {
   LlmProvider,
   McpConfigResponse,
   MessageAttachment,
-  OpenCodexSessionResponse,
   PendingRequest,
   SaveAppSettingsRequest,
   SessionActivityPageResponse,
@@ -78,13 +70,12 @@ import type {
   ToolDigestRawPayload,
   ToolRawPayload,
   UiChatMessage,
-  UpdateCodexSessionModeRequest,
   WorkspaceSurface,
 } from '../types/api'
 
 const SESSION_STORAGE_KEY = 'yier.active-session-id'
 const WORKSPACE_SURFACE_STORAGE_KEY = 'yier.workspace-surface'
-const CODEX_COMPACT_MEDIA_QUERY = '(max-width: 1023px)'
+const COMPACT_MEDIA_QUERY = '(max-width: 1023px)'
 const SESSION_ACTIVITY_PAGE_SIZE = 120
 const LLM_PROVIDER_DEFAULTS: Record<
   Exclude<LlmProvider, ''>,
@@ -101,7 +92,7 @@ const LLM_PROVIDER_DEFAULTS: Record<
 }
 
 function normalizeWorkspaceSurface(value: string | null | undefined): WorkspaceSurface {
-  if (value === 'codex' || value === 'yier' || value === 'claude') {
+  if (value === 'yier' || value === 'claude') {
     return value
   }
   return 'yier'
@@ -167,11 +158,6 @@ const BACKGROUND_SHELL_TOOL_NAMES = new Set([
   'send_background_command_input',
 ])
 
-const CODEX_BACKGROUND_TOOL_NAMES = new Set([
-  'start_codex_background_session',
-  'resume_codex_background_session',
-])
-
 interface QueuedComposerFollowup {
   id: string
   message: string
@@ -193,7 +179,6 @@ function createWorkspaceApp() {
   const channelPlatforms = ref<ChannelPlatformsResponse | null>(null)
   const channelConfig = ref<ChannelConfigResponse | null>(null)
   const channelMonitorSessions = ref<SessionSummary[]>([])
-  const codexWorkspace = ref<CodexWorkspaceResponse | null>(null)
   const channelLoginState = reactive({
     qrcodeUrl: '',
     accountId: '',
@@ -202,23 +187,15 @@ function createWorkspaceApp() {
   const activeSessionRuntime = ref<BackendRuntime | null>(null)
   const activeSessionId = ref(localStorage.getItem(SESSION_STORAGE_KEY) ?? '')
   const openingSessionId = ref('')
-  const archivingCodexThreadId = ref('')
   const chatMessages = ref<UiChatMessage[]>([])
   const activities = ref<ChatActivity[]>([])
-  const codexTurnTimings = ref<CodexTurnTiming[]>([])
   const isHydratingOlderActivity = ref(false)
   const sessionHistory = ref<SessionSummary[]>([])
-  const activeCodexWorkMode = ref<CodexWorkMode>('build')
-  const isCodexCompactLayout = ref(false)
   const isSidebarDrawerOpen = ref(false)
   const isRuntimeSheetOpen = ref(false)
   const composerText = ref('')
   const composerAttachments = ref<ComposerAttachmentState[]>([])
   const queuedComposerFollowups = ref<QueuedComposerFollowup[]>([])
-  const steerText = ref('')
-  const isSteering = ref(false)
-  const steeringQueuedComposerFollowupId = ref('')
-  const isInterrupting = ref(false)
   const composerSelectionStart = ref(0)
   const composerSelectionEnd = ref(0)
   const composerSelectionVersion = ref(0)
@@ -229,8 +206,6 @@ function createWorkspaceApp() {
     roots: false,
     mcp: false,
     reloadingMcp: false,
-    codexMode: false,
-    codexSandbox: false,
   })
   const appForm = reactive({
     defaultBackendId: 'yier' as BackendId,
@@ -268,30 +243,23 @@ function createWorkspaceApp() {
   const isSettingsRoute = computed(() => route.name === 'settings')
   const isChannelRoute = computed(() => route.name === 'channel')
   const isChatRoute = computed(() => route.name === 'chat')
-  const codexSessionHistory = computed<SessionSummary[]>(() =>
-    normalizeCodexSessionSummaries(codexWorkspace.value),
-  )
   const activeSession = computed(
     () => findSessionSummary(activeSessionId.value) ?? null,
   )
   const backendOptions = computed(
     () =>
-      config.value?.backends ?? [
+      (config.value?.backends ?? [
         { id: 'yier' as BackendId, label: 'Yier Agent' },
-        { id: 'codex' as BackendId, label: 'Codex App Server' },
-      ],
+      ]).filter((backend) => backend.id !== 'codex'),
   )
   const defaultAllowedRoots = computed(() => health.value?.allowed_roots ?? [])
   let closePersistentEventStream: (() => void) | null = null
-  let pairedEditorSyncTimer: number | null = null
-  let codexSessionSyncTimer: number | null = null
-  let codexCompactMediaQuery: MediaQueryList | null = null
   let latestSessionLoadRequestId = 0
-  let lastPairedEditorSyncSignature = ''
   let nextTimelineSequence = 0
   let currentStreamSequenceHint: number | null = null
   let isReplayingSessionActivityEvents = false
   let isFlushingQueuedComposerFollowups = false
+  let compactMediaQuery: MediaQueryList | null = null
   const unavailableSessionIds = new Set<string>()
   const backgroundActivityIdsByToolCallId = new Map<string, string>()
   const loadedTranscriptMessagesRaw = ref<StoredMessage[]>([])
@@ -317,9 +285,7 @@ function createWorkspaceApp() {
     if (backendHealth) {
       return backendHealth.ready
     }
-    return activeBackendId.value === 'codex'
-      ? Boolean(appForm.codexLauncherCommand.trim())
-      : llmReady.value
+    return llmReady.value
   })
   const canCompose = computed(
     () =>
@@ -336,7 +302,7 @@ function createWorkspaceApp() {
   )
   const isSwitchingSession = computed(() => Boolean(openingSessionId.value))
   const showQueuedComposerFollowupsPanel = computed(
-    () => isCodexWorkspace.value && queuedComposerFollowups.value.length > 0,
+    () => false,
   )
   const activeProjectPath = computed(
     () => activeSession.value?.project_path ?? newSessionDraft.projectPath,
@@ -346,32 +312,26 @@ function createWorkspaceApp() {
       ? 'Configuration workspace'
       : isChannelRoute.value
         ? 'Channel workspace'
-        : isCodexWorkspace.value
-          ? 'Codex workspace'
-          : 'Chat workspace',
+        : 'Chat workspace',
   )
   const workspaceSessionHistory = computed(() =>
-    activeWorkspaceSurface.value === 'codex' ? codexSessionHistory.value : sessionHistory.value,
+    sessionHistory.value,
   )
   const sessionHistoryCount = computed(() => workspaceSessionHistory.value.length)
   const sidebarSessionHistory = computed(() =>
-    isCodexWorkspace.value
-      ? codexSessionHistory.value
-      : sessionHistory.value.filter((session) => session.backend_id !== 'codex'),
+    sessionHistory.value.filter((session) => session.backend_id !== 'codex'),
   )
   const sidebarSessionHistoryCount = computed(() => sidebarSessionHistory.value.length)
   const isCodexWorkspace = computed(
-    () => isChatRoute.value && activeBackendId.value === 'codex',
-  )
-  const activeCodexProjects = computed(() => codexWorkspace.value?.projects ?? [])
-  const activeCodexPairedEditors = computed(
-    () => codexWorkspace.value?.paired_editors ?? [],
+    () => false,
   )
   const assistantLabel = computed(() =>
-    activeBackendId.value === 'codex' ? 'Codex' : 'Yier',
+    'Yier',
   )
+  const isCompactLayout = ref(false)
+  const isCodexCompactLayout = computed(() => isCompactLayout.value)
   const showMobileWorkspaceChrome = computed(
-    () => isChatRoute.value && isCodexCompactLayout.value,
+    () => false,
   )
   const showCodexMobileChrome = computed(
     () => isCodexWorkspace.value && showMobileWorkspaceChrome.value,
@@ -386,20 +346,16 @@ function createWorkspaceApp() {
     () => showCodexMobileChrome.value && isRuntimeSheetOpen.value,
   )
   const activeWorkspaceSurface = computed<WorkspaceSurface>(() => {
-    if (activeSession.value?.backend_id === 'codex') {
-      return 'codex'
-    }
     if (activeSession.value?.backend_id === 'yier') {
       return 'yier'
     }
-    return appForm.workspaceSurface
+    return appForm.workspaceSurface === 'claude' ? 'claude' : 'yier'
   })
   const workspaceSurfaceOptions: Array<{
     label: string
     value: WorkspaceSurface
     disabled: boolean
   }> = [
-      { label: 'Codex', value: 'codex', disabled: false },
       { label: 'Yier Agent', value: 'yier', disabled: false },
       { label: 'Claude Code', value: 'claude', disabled: true },
     ]
@@ -412,11 +368,7 @@ function createWorkspaceApp() {
     },
   })
   const composerPlaceholder = computed(() =>
-    activeBackendId.value === 'codex'
-      ? activeCodexWorkMode.value === 'plan'
-        ? 'Ask Codex anything'
-        : 'Ask for follow-up changes'
-      : 'Ask yier to inspect code, read files...',
+    'Ask yier to inspect code, read files...',
   )
   const composerPendingRequest = computed(() => loadedPendingRequests.value[0] ?? null)
   const composerUserInputRequest = computed(() =>
@@ -429,36 +381,6 @@ function createWorkspaceApp() {
       ? composerPendingRequest.value
       : null,
   )
-
-  function updateCodexCompactLayout(matches: boolean) {
-    isCodexCompactLayout.value = matches
-  }
-
-  function handleCodexCompactLayoutChange(event: MediaQueryListEvent) {
-    updateCodexCompactLayout(event.matches)
-  }
-
-  function setupCodexCompactLayoutWatcher() {
-    codexCompactMediaQuery = window.matchMedia(CODEX_COMPACT_MEDIA_QUERY)
-    updateCodexCompactLayout(codexCompactMediaQuery.matches)
-    if (typeof codexCompactMediaQuery.addEventListener === 'function') {
-      codexCompactMediaQuery.addEventListener('change', handleCodexCompactLayoutChange)
-      return
-    }
-    codexCompactMediaQuery.addListener(handleCodexCompactLayoutChange)
-  }
-
-  function teardownCodexCompactLayoutWatcher() {
-    if (!codexCompactMediaQuery) {
-      return
-    }
-    if (typeof codexCompactMediaQuery.removeEventListener === 'function') {
-      codexCompactMediaQuery.removeEventListener('change', handleCodexCompactLayoutChange)
-    } else {
-      codexCompactMediaQuery.removeListener(handleCodexCompactLayoutChange)
-    }
-    codexCompactMediaQuery = null
-  }
 
   function closeCodexSheets() {
     isSidebarDrawerOpen.value = false
@@ -496,17 +418,42 @@ function createWorkspaceApp() {
     }
   }
 
+  function updateCompactLayout(matches: boolean) {
+    isCompactLayout.value = matches
+  }
+
+  function handleCompactLayoutChange(event: MediaQueryListEvent) {
+    updateCompactLayout(event.matches)
+  }
+
+  function setupCompactLayoutWatcher() {
+    compactMediaQuery = window.matchMedia(COMPACT_MEDIA_QUERY)
+    updateCompactLayout(compactMediaQuery.matches)
+    if (typeof compactMediaQuery.addEventListener === 'function') {
+      compactMediaQuery.addEventListener('change', handleCompactLayoutChange)
+      return
+    }
+    compactMediaQuery.addListener(handleCompactLayoutChange)
+  }
+
+  function teardownCompactLayoutWatcher() {
+    if (!compactMediaQuery) {
+      return
+    }
+    if (typeof compactMediaQuery.removeEventListener === 'function') {
+      compactMediaQuery.removeEventListener('change', handleCompactLayoutChange)
+    } else {
+      compactMediaQuery.removeListener(handleCompactLayoutChange)
+    }
+    compactMediaQuery = null
+  }
+
   watch(activeSessionId, (value) => {
     if (!value) {
       localStorage.removeItem(SESSION_STORAGE_KEY)
     } else {
       localStorage.setItem(SESSION_STORAGE_KEY, value)
     }
-    schedulePairedEditorStateSync()
-  })
-
-  watch(composerText, () => {
-    schedulePairedEditorStateSync()
   })
 
   watch(
@@ -564,7 +511,7 @@ function createWorkspaceApp() {
   )
 
   onMounted(async () => {
-    setupCodexCompactLayoutWatcher()
+    setupCompactLayoutWatcher()
     window.addEventListener('keydown', handleGlobalKeydown)
     startPersistentEvents()
     await bootstrap()
@@ -573,17 +520,9 @@ function createWorkspaceApp() {
   onBeforeUnmount(() => {
     syncSheetScrollLock(false)
     window.removeEventListener('keydown', handleGlobalKeydown)
-    teardownCodexCompactLayoutWatcher()
+    teardownCompactLayoutWatcher()
     closePersistentEventStream?.()
     closePersistentEventStream = null
-    if (pairedEditorSyncTimer !== null) {
-      window.clearTimeout(pairedEditorSyncTimer)
-      pairedEditorSyncTimer = null
-    }
-    if (codexSessionSyncTimer !== null) {
-      window.clearTimeout(codexSessionSyncTimer)
-      codexSessionSyncTimer = null
-    }
   })
 
   async function bootstrap() {
@@ -592,7 +531,7 @@ function createWorkspaceApp() {
     try {
       await refreshDashboard()
       await ensureSession({
-        preferFreshOnMissingActiveSession: activeWorkspaceSurface.value === 'codex',
+        preferFreshOnMissingActiveSession: false,
       })
     } catch (error) {
       errorMessage.value = toErrorMessage(error)
@@ -602,13 +541,11 @@ function createWorkspaceApp() {
   }
 
   async function refreshDashboard() {
-    const prefersCodexSurface = appForm.workspaceSurface === 'codex'
     const [
       healthPayload,
       configPayload,
       mcpPayload,
       sessionsPayload,
-      codexWorkspacePayload,
       channelWorkspacePayload,
       channelPlatformsPayload,
       channelConfigPayload,
@@ -617,18 +554,7 @@ function createWorkspaceApp() {
       apiGet<HealthResponse>('/api/health'),
       apiGet<ConfigResponse>('/api/config'),
       apiGet<McpConfigResponse>('/api/config/mcp'),
-      prefersCodexSurface
-        ? Promise.resolve({ sessions: [] } satisfies SessionListResponse)
-        : apiGet<SessionListResponse>('/api/chat/sessions'),
-      prefersCodexSurface
-        ? safeApiGet<CodexWorkspaceResponse>('/api/codex/workspace', {
-          projects: [],
-          paired_editors: [],
-        })
-        : Promise.resolve({
-          projects: [],
-          paired_editors: [],
-        } satisfies CodexWorkspaceResponse),
+      apiGet<SessionListResponse>('/api/chat/sessions'),
       safeApiGet<ChannelWorkspaceResponse>('/api/channel/workspace', {
         platforms: [],
         accounts: [],
@@ -648,7 +574,6 @@ function createWorkspaceApp() {
     channelPlatforms.value = channelPlatformsPayload
     channelConfig.value = channelConfigPayload
     channelMonitorSessions.value = normalizeSessionSummaries(channelMonitorSessionsPayload)
-    codexWorkspace.value = codexWorkspacePayload
     sessionHistory.value = normalizeChatSessionSummaries(sessionsPayload)
     hydrateLlmForm(configPayload.llm)
     hydrateAppForm(configPayload)
@@ -678,7 +603,7 @@ function createWorkspaceApp() {
         ) {
           const fallbackProjectPath =
             activeProjectPath.value || newSessionDraft.projectPath
-          await createSession('codex', fallbackProjectPath, false)
+          await createSession('yier', fallbackProjectPath, false)
           return
         }
       }
@@ -703,23 +628,17 @@ function createWorkspaceApp() {
     projectPath: string,
     navigateToChat = true,
   ) {
-    closeCodexSheets()
-    const payload =
-      backendId === 'codex'
-        ? await apiPost<{ session_id: string }>('/api/codex/sessions', {
-          project_path: projectPath,
-        })
-        : await apiPost<{ session_id: string }>('/api/chat/sessions', {
-          backend_id: backendId,
-          project_path: projectPath,
-        } satisfies CreateSessionRequest)
+    const normalizedBackendId = backendId === 'codex' ? 'yier' : backendId
+    const payload = await apiPost<{ session_id: string }>('/api/chat/sessions', {
+      backend_id: normalizedBackendId,
+      project_path: projectPath,
+    } satisfies CreateSessionRequest)
     activeSessionId.value = payload.session_id
     chatMessages.value = []
     activities.value = []
     resetLoadedTranscriptState()
     resetTimelineSequence()
     activeSessionRuntime.value = null
-    activeCodexWorkMode.value = 'build'
     backgroundActivityIdsByToolCallId.clear()
     clearQueuedComposerFollowups()
     resetComposerDraft()
@@ -736,28 +655,13 @@ function createWorkspaceApp() {
   }
 
   function latestSessionIdForBackend(backendId: BackendId) {
-    if (backendId === 'codex') {
-      return codexSessionHistory.value.find((session) => session.source === 'chat')?.session_id
-    }
+    const normalizedBackendId = backendId === 'codex' ? 'yier' : backendId
     return sessionHistory.value.find(
-      (session) => session.source === 'chat' && session.backend_id === backendId,
+      (session) => session.source === 'chat' && session.backend_id === normalizedBackendId,
     )?.session_id
   }
 
-  function startNewCodexSession(projectPath: string) {
-    const nextProjectPath =
-      projectPath.trim() || activeProjectPath.value || newSessionDraft.projectPath
-    void createSession('codex', nextProjectPath, true)
-  }
-
   async function refreshSessionHistory() {
-    if (activeWorkspaceSurface.value === 'codex') {
-      codexWorkspace.value = await safeApiGet<CodexWorkspaceResponse>('/api/codex/workspace', {
-        projects: [],
-        paired_editors: [],
-      })
-      return
-    }
     sessionHistory.value = normalizeChatSessionSummaries(
       await apiGet<SessionListResponse>('/api/chat/sessions'),
     )
@@ -818,7 +722,7 @@ function createWorkspaceApp() {
           return
         }
         if (event.event === 'turn_aborted') {
-          throw new Error(event.data.reason || 'Codex turn was interrupted.')
+          throw new Error(event.data.reason || 'Turn was interrupted.')
         }
         if (event.event === 'stream_error' || event.event === 'error') {
           throw new Error(event.data.message)
@@ -848,7 +752,6 @@ function createWorkspaceApp() {
 
   function clearQueuedComposerFollowups() {
     queuedComposerFollowups.value = []
-    steeringQueuedComposerFollowupId.value = ''
   }
 
   function enqueueComposerFollowup(message: string) {
@@ -873,9 +776,6 @@ function createWorkspaceApp() {
     successMessage.value = ''
 
     try {
-      if (await handleCodexSlashCommand(content)) {
-        return true
-      }
       resetComposerDraft()
       await runChatMessage(activeSessionId.value, content, options)
       return true
@@ -928,13 +828,9 @@ function createWorkspaceApp() {
     }
   }
 
-  function handleCodexSessionStart(projectPath: string) {
-    closeSidebarDrawer()
-    startNewCodexSession(projectPath)
-  }
-
   function backendIdForWorkspaceSurface(surface: WorkspaceSurface): BackendId {
-    return surface === 'codex' ? 'codex' : 'yier'
+    void surface
+    return 'yier'
   }
 
   function buildDefaultSessionDefaults() {
@@ -999,13 +895,9 @@ function createWorkspaceApp() {
     newSessionDraft.backendId = backendId
 
     try {
-      if (target === 'codex') {
-        await loadCodexWorkspaceSnapshot()
-      } else {
-        sessionHistory.value = normalizeChatSessionSummaries(
-          await apiGet<SessionListResponse>('/api/chat/sessions'),
-        )
-      }
+      sessionHistory.value = normalizeChatSessionSummaries(
+        await apiGet<SessionListResponse>('/api/chat/sessions'),
+      )
       const existingSessionId = latestSessionIdForBackend(backendId)
       if (existingSessionId) {
         await openSessionFromHistory(existingSessionId)
@@ -1023,300 +915,6 @@ function createWorkspaceApp() {
       await persistWorkspaceSurfacePreference(target)
     } catch (error) {
       errorMessage.value = `Switched workspace, but failed to save that preference: ${toErrorMessage(error)}`
-    }
-  }
-
-  type CodexSlashProjectRef = {
-    projectIndex: number
-    project: CodexWorkspaceResponse['projects'][number]
-  }
-
-  type CodexSlashSessionRef = CodexSlashProjectRef & {
-    sessionIndex: number
-    session: CodexWorkspaceResponse['projects'][number]['sessions'][number]
-  }
-
-  type CodexSlashParsedCommand =
-    | { kind: 'project_list' }
-    | { kind: 'session_list'; projectIndex: number }
-    | { kind: 'open_latest'; projectIndex: number }
-    | { kind: 'open_session'; projectIndex: number; sessionIndex: number; prompt: string }
-    | { kind: 'new_session'; projectIndex: number; prompt: string }
-
-  function normalizeSlashCommandInput(value: string) {
-    return value.trim()
-  }
-
-  async function loadCodexWorkspaceSnapshot() {
-    const payload = await safeApiGet<CodexWorkspaceResponse>('/api/codex/workspace', {
-      projects: [],
-      paired_editors: [],
-    })
-    codexWorkspace.value = payload
-    return payload
-  }
-
-  function buildCodexSlashProjectRefs(workspace: CodexWorkspaceResponse): CodexSlashProjectRef[] {
-    return workspace.projects.map((project, index) => ({
-      projectIndex: index + 1,
-      project,
-    }))
-  }
-
-  function buildCodexSlashSessionRefs(workspace: CodexWorkspaceResponse): CodexSlashSessionRef[] {
-    return buildCodexSlashProjectRefs(workspace).flatMap((entry) =>
-      entry.project.sessions.map((session, sessionIndex) => ({
-        ...entry,
-        sessionIndex: sessionIndex + 1,
-        session,
-      })),
-    )
-  }
-
-  function formatCodexProjectListing(workspace: CodexWorkspaceResponse) {
-    const projects = buildCodexSlashProjectRefs(workspace)
-    if (!projects.length) {
-      return [
-        '## Codex Projects',
-        '',
-        'No active Codex projects were found.',
-        '',
-        '### Quick Start',
-        '',
-        '- `/codex list` show all projects',
-        '- `/codex 1 list` show sessions in project 1',
-        '- `/codex 1` continue the latest session in project 1',
-        '- `/codex 1 new` start a fresh session in project 1',
-        '- `/codex 1 new fix the failing tests` start a fresh session and send the first prompt',
-        '- `/codex 1 2 summarize the current state` continue a session and return only the final answer',
-      ].join('\n')
-    }
-
-    const lines = [
-      '## Codex Projects',
-      '',
-      '### Quick Start',
-      '',
-      '- `/codex list` show all projects',
-      '- `/codex 1 list` show sessions in project 1',
-      '- `/codex 1` continue the latest session in project 1',
-      '- `/codex 1 new` start a fresh session in project 1',
-      '- `/codex 1 new fix the failing tests` start a fresh session and send the first prompt',
-      '- `/codex 1 2 summarize the current state` continue a session and return only the final answer',
-      '',
-      '### Projects',
-      '',
-      '| ID | Project | Sessions | Path | Sessions Command | New Session |',
-      '| --- | --- | --- | --- | --- | --- |',
-    ]
-
-    for (const entry of projects) {
-      lines.push(
-        `| ${entry.projectIndex} | ${entry.project.project} | ${entry.project.session_count} | \`${entry.project.project_path}\` | \`/codex ${entry.projectIndex} list\` | \`/codex ${entry.projectIndex} new\` |`,
-      )
-    }
-
-    return lines.join('\n')
-  }
-
-  function formatCodexProjectSessions(projectRef: CodexSlashProjectRef) {
-    const lines = [
-      `## Project ${projectRef.projectIndex}: ${projectRef.project.project}`,
-      '',
-      `- Path: \`${projectRef.project.project_path}\``,
-      `- Sessions: ${projectRef.project.session_count}`,
-      `- Continue latest: \`/codex ${projectRef.projectIndex}\``,
-      `- Start new: \`/codex ${projectRef.projectIndex} new\``,
-      `- Start new with prompt: \`/codex ${projectRef.projectIndex} new your prompt\``,
-      `- Continue a session with prompt: \`/codex ${projectRef.projectIndex} 1 your prompt\``,
-      '',
-      '### Sessions',
-    ]
-
-    if (!projectRef.project.sessions.length) {
-      lines.push('', 'No active sessions in this project yet.')
-      return lines.join('\n')
-    }
-
-    lines.push('', '| Command | Session |', '| --- | --- |')
-    projectRef.project.sessions.forEach((session, sessionIndex) => {
-      const title = session.title.trim() || session.preview.trim() || session.thread_id
-      lines.push(
-        `| \`/codex ${projectRef.projectIndex} ${sessionIndex + 1}\` | ${title} |`,
-      )
-    })
-    return lines.join('\n')
-  }
-
-  function parseCodexSlashCommand(content: string): CodexSlashParsedCommand | null {
-    if (content === '/' || content === '/codex' || content === '/codex list' || content === '/codex ls') {
-      return { kind: 'project_list' }
-    }
-
-    const projectListMatch = /^\/codex\s+(?<project>\d+)\s+(?:list|ls)$/i.exec(content)
-    if (projectListMatch) {
-      return {
-        kind: 'session_list',
-        projectIndex: Number.parseInt(projectListMatch.groups?.project ?? '', 10),
-      }
-    }
-
-    const newSessionMatch = /^\/codex\s+(?<project>\d+)\s+new(?:\s+(?<prompt>.+))?$/i.exec(content)
-    if (newSessionMatch) {
-      return {
-        kind: 'new_session',
-        projectIndex: Number.parseInt(newSessionMatch.groups?.project ?? '', 10),
-        prompt: (newSessionMatch.groups?.prompt ?? '').trim(),
-      }
-    }
-
-    const openSessionMatch = /^\/codex\s+(?<project>\d+)\s+(?<session>\d+)(?:\s+(?<prompt>.+))?$/i.exec(
-      content,
-    )
-    if (openSessionMatch) {
-      return {
-        kind: 'open_session',
-        projectIndex: Number.parseInt(openSessionMatch.groups?.project ?? '', 10),
-        sessionIndex: Number.parseInt(openSessionMatch.groups?.session ?? '', 10),
-        prompt: (openSessionMatch.groups?.prompt ?? '').trim(),
-      }
-    }
-
-    const latestMatch = /^\/codex\s+(?<project>\d+)$/i.exec(content)
-    if (latestMatch) {
-      return {
-        kind: 'open_latest',
-        projectIndex: Number.parseInt(latestMatch.groups?.project ?? '', 10),
-      }
-    }
-
-    return null
-  }
-
-  function resolveCodexSlashProject(
-    workspace: CodexWorkspaceResponse,
-    projectIndex: number,
-  ): CodexSlashProjectRef | null {
-    return (
-      buildCodexSlashProjectRefs(workspace).find((entry) => entry.projectIndex === projectIndex) ??
-      null
-    )
-  }
-
-  function resolveCodexSlashSession(
-    workspace: CodexWorkspaceResponse,
-    projectIndex: number,
-    sessionIndex: number,
-  ): CodexSlashSessionRef | null {
-    return (
-      buildCodexSlashSessionRefs(workspace).find(
-        (entry) => entry.projectIndex === projectIndex && entry.sessionIndex === sessionIndex,
-      ) ?? null
-    )
-  }
-
-  function pushLocalAssistantMessage(content: string) {
-    chatMessages.value.push(makeUiMessage('assistant', content))
-  }
-
-  async function handleCodexSlashCommand(rawContent: string) {
-    const content = normalizeSlashCommandInput(rawContent)
-    if (!content.startsWith('/')) {
-      return false
-    }
-
-    const command = parseCodexSlashCommand(content)
-    if (!command) {
-      return false
-    }
-
-    errorMessage.value = ''
-    successMessage.value = ''
-
-    try {
-      const workspace = await loadCodexWorkspaceSnapshot()
-      if (command.kind === 'project_list') {
-        composerText.value = ''
-        composerSelectionStart.value = 0
-        composerSelectionEnd.value = 0
-        composerSelectionVersion.value += 1
-        pushLocalAssistantMessage(formatCodexProjectListing(workspace))
-        return true
-      }
-
-      const projectRef = resolveCodexSlashProject(workspace, command.projectIndex)
-      if (!projectRef) {
-        pushLocalAssistantMessage(
-          `Project ${command.projectIndex} was not found. Use \`/codex list\` to refresh the project list.`,
-        )
-        return true
-      }
-
-      composerText.value = ''
-      composerSelectionStart.value = 0
-      composerSelectionEnd.value = 0
-      composerSelectionVersion.value += 1
-
-      if (command.kind === 'session_list') {
-        pushLocalAssistantMessage(formatCodexProjectSessions(projectRef))
-        return true
-      }
-
-      if (command.kind === 'new_session') {
-        const sessionId = await createSession('codex', projectRef.project.project_path, true)
-        if (command.prompt) {
-          await runChatMessage(sessionId, command.prompt, { finalOnly: true })
-          successMessage.value = `Started a fresh Codex session in ${projectRef.project.project} and returned the final answer.`
-          return true
-        }
-        successMessage.value = `Started a fresh Codex session in ${projectRef.project.project}.`
-        return true
-      }
-
-      if (command.kind === 'open_session') {
-        if (!Number.isInteger(command.sessionIndex) || command.sessionIndex <= 0) {
-          pushLocalAssistantMessage(
-            `Invalid session number. Use \`/codex ${command.projectIndex} list\` to inspect this project.`,
-          )
-          return true
-        }
-        const sessionRef = resolveCodexSlashSession(workspace, command.projectIndex, command.sessionIndex)
-        if (!sessionRef) {
-          pushLocalAssistantMessage(
-            `Session ${command.projectIndex}.${command.sessionIndex} was not found. Use \`/codex ${command.projectIndex} list\` to refresh this project.`,
-          )
-          return true
-        }
-        const opened = await openCodexNativeSession(sessionRef.session.thread_id)
-        if (!opened) {
-          return true
-        }
-        if (command.prompt) {
-          await runChatMessage(sessionRef.session.thread_id, command.prompt, { finalOnly: true })
-          successMessage.value = `Opened Codex session ${command.projectIndex}.${command.sessionIndex} and returned the final answer.`
-          return true
-        }
-        successMessage.value = `Opened Codex session ${command.projectIndex}.${command.sessionIndex}.`
-        return true
-      }
-
-      const latestSession = projectRef.project.sessions[0]
-      if (!latestSession) {
-        pushLocalAssistantMessage(
-          `Project ${command.projectIndex} has no active sessions yet. Use \`/codex ${command.projectIndex} new\` to start one.`,
-        )
-        return true
-      }
-
-      const opened = await openCodexNativeSession(latestSession.thread_id)
-      if (!opened) {
-        return true
-      }
-      successMessage.value = `Opened the latest Codex session in ${projectRef.project.project}.`
-      return true
-    } catch (error) {
-      errorMessage.value = toErrorMessage(error)
-      return true
     }
   }
 
@@ -1339,10 +937,6 @@ function createWorkspaceApp() {
         errorMessage.value = 'Attachments can only be sent with the active prompt, not queued follow-ups.'
         return
       }
-      if (content.startsWith('/codex')) {
-        errorMessage.value = 'Slash commands cannot be queued while a Codex turn is running.'
-        return
-      }
       enqueueComposerFollowup(content)
       return
     }
@@ -1357,7 +951,7 @@ function createWorkspaceApp() {
   async function uploadComposerFiles(files: File[] | FileList) {
     const sessionId = activeSessionId.value
     if (!isCodexWorkspace.value || !sessionId || activeSession.value?.source === 'channel') {
-      errorMessage.value = 'Attachments are available for interactive Codex sessions.'
+      errorMessage.value = 'Attachments are not available in the Yier chat workspace.'
       return
     }
     const fileList = Array.from(files)
@@ -1455,74 +1049,10 @@ function createWorkspaceApp() {
     composerAttachments.value = []
   }
 
-  async function submitCodexSteer() {
-    const message = steerText.value.trim()
-    if (!message || !activeSessionId.value || isSteering.value) {
-      return false
-    }
-    isSteering.value = true
-    errorMessage.value = ''
-    try {
-      await apiPost<CodexTurnControlResponse>(
-        buildCodexTurnControlPath(activeSessionId.value, 'steer'),
-        {
-          message,
-        },
-      )
-      steerText.value = ''
-      successMessage.value = 'Steer instruction sent to the active Codex turn.'
-      return true
-    } catch (error) {
-      errorMessage.value = toErrorMessage(error)
-      return false
-    } finally {
-      isSteering.value = false
-    }
-  }
-
-  async function submitQueuedComposerFollowupSteer(followupId: string) {
-    const followup = queuedComposerFollowups.value.find((item) => item.id === followupId)
-    if (!followup || !activeSessionId.value || isSteering.value) {
-      return
-    }
-
-    steeringQueuedComposerFollowupId.value = followupId
-    steerText.value = followup.message
-    const steered = await submitCodexSteer()
-    if (steered) {
-      queuedComposerFollowups.value = queuedComposerFollowups.value.filter(
-        (item) => item.id !== followupId,
-      )
-    }
-    steeringQueuedComposerFollowupId.value = ''
-  }
-
   function removeQueuedComposerFollowup(followupId: string) {
     queuedComposerFollowups.value = queuedComposerFollowups.value.filter(
       (item) => item.id !== followupId,
     )
-    if (steeringQueuedComposerFollowupId.value === followupId) {
-      steeringQueuedComposerFollowupId.value = ''
-    }
-  }
-
-  async function interruptCodexTurn() {
-    if (!activeSessionId.value || isInterrupting.value) {
-      return
-    }
-    isInterrupting.value = true
-    errorMessage.value = ''
-    try {
-      await apiPost<CodexTurnControlResponse>(
-        buildCodexTurnControlPath(activeSessionId.value, 'interrupt'),
-        {},
-      )
-      successMessage.value = 'Interrupt request sent to Codex.'
-    } catch (error) {
-      errorMessage.value = toErrorMessage(error)
-    } finally {
-      isInterrupting.value = false
-    }
   }
 
   function normalizeActivityHistory(
@@ -1639,9 +1169,7 @@ function createWorkspaceApp() {
   }
 
   function buildSessionBasePath(sessionId: string): string {
-    return sessionBackendId(sessionId) === 'codex'
-      ? `/api/codex/sessions/${sessionId}`
-      : `/api/chat/sessions/${sessionId}`
+    return `/api/chat/sessions/${sessionId}`
   }
 
   function buildSessionApprovalPath(sessionId: string): string {
@@ -1656,18 +1184,8 @@ function createWorkspaceApp() {
     return `/api/chat/sessions/${encodeURIComponent(sessionId)}/attachments`
   }
 
-  function buildCodexTurnControlPath(sessionId: string, action: 'steer' | 'interrupt'): string {
-    return `/api/codex/sessions/${encodeURIComponent(sessionId)}/turns/${action}`
-  }
-
   function buildSessionDeletePath(sessionId: string): string {
     return buildSessionBasePath(sessionId)
-  }
-
-  function buildSessionModePath(sessionId: string): string {
-    return sessionBackendId(sessionId) === 'codex'
-      ? `${buildSessionBasePath(sessionId)}/mode`
-      : `${buildSessionBasePath(sessionId)}/codex-mode`
   }
 
   function syncIsSendingFromRuntime(runtime: BackendRuntime | null | undefined) {
@@ -1706,12 +1224,8 @@ function createWorkspaceApp() {
       transcript.activity_history,
       loadedActivityEventsRaw.value.length,
     )
-    codexTurnTimings.value = Array.isArray(transcript.codex_turn_timings)
-      ? transcript.codex_turn_timings
-      : []
     activeSessionRuntime.value = transcript.backend_runtime ?? null
     syncIsSendingFromRuntime(transcript.backend_runtime)
-    activeCodexWorkMode.value = transcript.codex_work_mode ?? 'build'
     rebuildLoadedSessionTimeline()
     void hydrateOlderActivityEvents(sessionId, requestId)
   }
@@ -1720,7 +1234,6 @@ function createWorkspaceApp() {
     chatMessages.value = []
     activities.value = []
     resetLoadedTranscriptState()
-    codexTurnTimings.value = []
     resetTimelineSequence()
     activeSessionRuntime.value = null
     backgroundActivityIdsByToolCallId.clear()
@@ -1731,7 +1244,7 @@ function createWorkspaceApp() {
     activeSessionId.value = sessionId
     resetActiveSessionView()
     await ensureSession({
-      preferFreshOnMissingActiveSession: activeWorkspaceSurface.value === 'codex',
+      preferFreshOnMissingActiveSession: false,
     })
     if (!isChatRoute.value) {
       await router.push({ name: 'chat' })
@@ -1758,115 +1271,6 @@ function createWorkspaceApp() {
       if (openingSessionId.value === sessionId) {
         openingSessionId.value = ''
       }
-    }
-  }
-
-  async function openCodexNativeSession(threadId: string) {
-    if (!threadId) {
-      return false
-    }
-
-    closeSidebarDrawer()
-
-    if (threadId === activeSessionId.value) {
-      await openSessionFromHistory(threadId)
-      return true
-    }
-
-    if (openingSessionId.value) {
-      return false
-    }
-
-    errorMessage.value = ''
-    successMessage.value = ''
-    openingSessionId.value = threadId
-    try {
-      const payload = await apiPost<OpenCodexSessionResponse>('/api/codex/sessions/open', {
-        thread_id: threadId,
-      })
-      await refreshSessionHistory()
-      await switchToSession(payload.session_id)
-      return true
-    } catch (error) {
-      errorMessage.value = toErrorMessage(error)
-      return false
-    } finally {
-      if (openingSessionId.value === threadId) {
-        openingSessionId.value = ''
-      }
-    }
-  }
-
-  async function archiveCodexNativeSession(threadId: string) {
-    const normalizedThreadId = threadId.trim()
-    if (!normalizedThreadId || openingSessionId.value || archivingCodexThreadId.value) {
-      return false
-    }
-
-    errorMessage.value = ''
-    successMessage.value = ''
-    archivingCodexThreadId.value = normalizedThreadId
-    try {
-      const archivedSession = codexSessionHistory.value.find(
-        (session) => session.session_id === normalizedThreadId,
-      )
-      const fallbackProjectPath =
-        archivedSession?.project_path || activeProjectPath.value || newSessionDraft.projectPath
-      const response = await apiPost<ArchiveCodexSessionResponse>('/api/codex/threads/archive', {
-        thread_id: normalizedThreadId,
-      })
-      if (!response.archived) {
-        throw new Error('Failed to archive Codex thread.')
-      }
-
-      const wasActiveSession = activeSessionId.value === normalizedThreadId
-      await refreshSessionHistory()
-
-      if (wasActiveSession) {
-        await createSession('codex', fallbackProjectPath, true)
-      }
-
-      successMessage.value = 'Thread archived.'
-      return true
-    } catch (error) {
-      errorMessage.value = toErrorMessage(error)
-      return false
-    } finally {
-      if (archivingCodexThreadId.value === normalizedThreadId) {
-        archivingCodexThreadId.value = ''
-      }
-    }
-  }
-
-  async function updateCodexWorkMode(mode: CodexWorkMode) {
-    if (
-      !activeSessionId.value ||
-      !activeBackendReady.value ||
-      activeCodexWorkMode.value === mode
-    ) {
-      return
-    }
-
-    savingState.codexMode = true
-    errorMessage.value = ''
-    successMessage.value = ''
-    try {
-      await apiPut<{ ok: boolean }>(
-        buildSessionModePath(activeSessionId.value),
-        {
-          codex_work_mode: mode,
-        } satisfies UpdateCodexSessionModeRequest,
-      )
-      activeCodexWorkMode.value = mode
-      const activeSummary = findSessionSummary(activeSessionId.value)
-      if (activeSummary) {
-        activeSummary.codex_work_mode = mode
-      }
-      successMessage.value = `Codex mode switched to ${mode}.`
-    } catch (error) {
-      errorMessage.value = toErrorMessage(error)
-    } finally {
-      savingState.codexMode = false
     }
   }
 
@@ -1912,60 +1316,9 @@ function createWorkspaceApp() {
   function handleComposerSelectionChange(payload: { start: number; end: number }) {
     composerSelectionStart.value = payload.start
     composerSelectionEnd.value = payload.end
-    schedulePairedEditorStateSync()
-  }
-
-  function schedulePairedEditorStateSync() {
-    if (pairedEditorSyncTimer !== null) {
-      window.clearTimeout(pairedEditorSyncTimer)
-    }
-    pairedEditorSyncTimer = window.setTimeout(() => {
-      pairedEditorSyncTimer = null
-      void syncPairedEditorState()
-    }, 80)
-  }
-
-  function scheduleCodexSessionSync(sessionId: string) {
-    if (
-      !sessionId ||
-      sessionId !== activeSessionId.value ||
-      unavailableSessionIds.has(sessionId)
-    ) {
-      return
-    }
-    if (codexSessionSyncTimer !== null) {
-      window.clearTimeout(codexSessionSyncTimer)
-    }
-    codexSessionSyncTimer = window.setTimeout(() => {
-      codexSessionSyncTimer = null
-      void loadSessionTranscript(sessionId)
-    }, 40)
-  }
-
-  async function syncPairedEditorState() {
-    const payload: CodexPairedEditorStateRequest = {
-      session_id: activeSessionId.value,
-      content: composerText.value,
-      selection_start: composerSelectionStart.value,
-      selection_end: composerSelectionEnd.value,
-    }
-    const signature = JSON.stringify(payload)
-    if (signature === lastPairedEditorSyncSignature) {
-      return
-    }
-
-    try {
-      await apiPost<{ ok: boolean }>('/api/codex/paired-editor/state', payload)
-      lastPairedEditorSyncSignature = signature
-    } catch {
-      lastPairedEditorSyncSignature = ''
-    }
   }
 
   function isRelevantPersistentEvent(event: ChatStreamEvent) {
-    if (event.event === 'codex_pairings_updated') {
-      return true
-    }
     if (
       event.event === 'channel_account_state' ||
       event.event === 'channel_login_qr' ||
@@ -2029,27 +1382,6 @@ function createWorkspaceApp() {
         ]
       }
 
-      if (event.event === 'codex_pairings_updated') {
-        codexWorkspace.value = {
-          projects: codexWorkspace.value?.projects ?? [],
-          paired_editors: event.data.paired_editors,
-        }
-        return
-      }
-
-      if (event.event === 'codex_paired_editor_update') {
-        composerText.value = event.data.content
-        composerSelectionStart.value = event.data.selection_start
-        composerSelectionEnd.value = event.data.selection_end
-        composerSelectionVersion.value += 1
-        return
-      }
-
-      if (event.event === 'codex_session_updated') {
-        scheduleCodexSessionSync(event.data.session_id)
-        return
-      }
-
       if (event.event === 'channel_account_state') {
         const accounts = channelWorkspace.value?.accounts ?? []
         const nextAccounts = [
@@ -2090,7 +1422,7 @@ function createWorkspaceApp() {
       if (event.event === 'run_started') {
         if (activeSessionRuntime.value) {
           activeSessionRuntime.value.status = 'active'
-          activeSessionRuntime.value.detail = 'Codex is working on this turn.'
+          activeSessionRuntime.value.detail = 'Yier is working on this turn.'
         }
         activities.value.push(
           makeActivity({
@@ -2264,21 +1596,11 @@ function createWorkspaceApp() {
         const activityId = getBackgroundActivityId(event.data.background_session_id)
         backgroundActivityIdsByToolCallId.set(event.data.tool_call_id, activityId)
         rekeyActivity(event.data.tool_call_id, activityId)
-        const backgroundToolName =
-          typeof event.data.tool_name === 'string' ? event.data.tool_name : null
         upsertShellActivity(activityId, {
           id: activityId,
           kind: 'background',
-          title: shellTitle(
-            'background_command',
-            event.data.background_session_id,
-            { background_tool_name: backgroundToolName },
-            backgroundToolName,
-          ),
-          detail:
-            backgroundToolName && CODEX_BACKGROUND_TOOL_NAMES.has(backgroundToolName)
-              ? '思考中'
-              : 'Background task is running.',
+          title: shellTitle('background_command', event.data.background_session_id),
+          detail: 'Background task is running.',
           state: 'running',
           command: normalizeShellCommand(event.data.command),
           cwd: event.data.cwd,
@@ -2293,7 +1615,6 @@ function createWorkspaceApp() {
             request: {
               command: normalizeShellCommand(event.data.command),
               cwd: event.data.cwd,
-              background_tool_name: backgroundToolName,
             },
             process: {
               session_id: event.data.background_session_id,
@@ -2322,35 +1643,13 @@ function createWorkspaceApp() {
       if (event.event === 'background_command_end') {
         const activityId = getBackgroundActivityId(event.data.background_session_id)
         const existing = activities.value.find((item) => item.id === activityId)
-        const backgroundToolName = codexBackgroundToolName(
-          existing?.shell?.request,
-          existing?.shell?.tool_name,
-        )
         upsertShellActivity(activityId, {
           id: activityId,
           kind: 'background',
-          title: shellTitle(
-            'background_command',
-            event.data.background_session_id,
-            existing?.shell?.request,
-            backgroundToolName,
-          ),
-          detail: codexBackgroundDetail(
-            {
-              session_id: event.data.background_session_id,
-              state: event.data.state,
-              exit_code: event.data.exit_code,
-              started_at: existing?.shell?.process?.started_at ?? 0,
-              finished_at: Date.now() / 1000,
-              runtime_seconds: existing?.shell?.process?.runtime_seconds ?? 0,
-              timed_out: false,
-            },
-            existing?.stdout ?? '',
-            backgroundToolName,
-            event.data.exit_code === null
-              ? `Finished with state ${event.data.state}.`
-              : `Finished with state ${event.data.state} and exit code ${event.data.exit_code}.`,
-          ),
+          title: shellTitle('background_command', event.data.background_session_id),
+          detail: event.data.exit_code === null
+            ? `Finished with state ${event.data.state}.`
+            : `Finished with state ${event.data.state} and exit code ${event.data.exit_code}.`,
           state:
             event.data.state === 'completed'
               ? 'done'
@@ -2531,7 +1830,7 @@ function createWorkspaceApp() {
           activeSessionRuntime.value.status = abortedEvent.data.status || 'interrupted'
           activeSessionRuntime.value.detail = abortedEvent.data.reason || 'Turn interrupted.'
         }
-        errorMessage.value = abortedEvent.data.reason || 'Codex turn was interrupted.'
+        errorMessage.value = abortedEvent.data.reason || 'Turn was interrupted.'
         activities.value.push(
           makeActivity({
             id: abortedEvent.data.turn_id
@@ -2539,7 +1838,7 @@ function createWorkspaceApp() {
               : createClientId(),
             title: 'Turn aborted',
             detail:
-              abortedEvent.data.reason || 'Codex interrupted this turn before completion.',
+              abortedEvent.data.reason || 'The turn was interrupted before completion.',
             state: 'error',
             kind: 'status',
           }),
@@ -2567,7 +1866,7 @@ function createWorkspaceApp() {
             meta: [
               streamErrorEvent.data.code ? `code ${streamErrorEvent.data.code}` : '',
               streamErrorEvent.data.thread_id ? `thread ${streamErrorEvent.data.thread_id}` : '',
-              streamErrorEvent.data.will_retry ? 'Codex will retry automatically.' : '',
+              streamErrorEvent.data.will_retry ? 'Yier will retry automatically.' : '',
             ].filter(Boolean),
           }),
         )
@@ -2647,26 +1946,6 @@ function createWorkspaceApp() {
       errorMessage.value = toErrorMessage(error)
     } finally {
       savingState.app = false
-    }
-  }
-
-  async function saveCodexSandboxMode() {
-    if (activeBackendId.value !== 'codex') {
-      return
-    }
-
-    savingState.codexSandbox = true
-    errorMessage.value = ''
-    successMessage.value = ''
-    try {
-      config.value = await apiPut<ConfigResponse>('/api/config/app', buildAppSettingsPayload())
-      health.value = await apiGet<HealthResponse>('/api/health')
-      hydrateAppForm(config.value)
-      successMessage.value = 'Codex permission mode saved.'
-    } catch (error) {
-      errorMessage.value = toErrorMessage(error)
-    } finally {
-      savingState.codexSandbox = false
     }
   }
 
@@ -3032,9 +2311,6 @@ function createWorkspaceApp() {
       if (!message) {
         return
       }
-      if (activeCodexWorkMode.value === 'plan') {
-        await updateCodexWorkMode('build')
-      }
       await sendComposerMessage(message)
       return
     }
@@ -3105,41 +2381,11 @@ function createWorkspaceApp() {
     return normalizeSessionSummaries(payload).filter((session) => session.backend_id !== 'codex')
   }
 
-  function normalizeCodexSessionSummaries(
-    workspace: CodexWorkspaceResponse | null | undefined,
-  ): SessionSummary[] {
-    const sessions = (workspace?.projects ?? []).flatMap((project) =>
-      project.sessions.map((session) => ({
-        session_id: session.thread_id,
-        title: session.title,
-        preview: session.preview,
-        updated_at: session.updated_at,
-        message_count: 0,
-        source: 'chat' as const,
-        backend_id: 'codex' as const,
-        project_path: session.project_path || session.cwd,
-        channel_meta: null,
-        codex_work_mode: 'build' as const,
-      })),
-    )
-    return sessions
-      .filter((session) => !unavailableSessionIds.has(session.session_id))
-      .sort(
-      (left, right) =>
-        right.updated_at - left.updated_at ||
-        right.title.localeCompare(left.title),
-      )
-  }
-
   function findSessionSummary(sessionId: string): SessionSummary | null {
     if (!sessionId) {
       return null
     }
-    return (
-      sessionHistory.value.find((session) => session.session_id === sessionId) ??
-      codexSessionHistory.value.find((session) => session.session_id === sessionId) ??
-      null
-    )
+    return sessionHistory.value.find((session) => session.session_id === sessionId) ?? null
   }
 
   function normalizeLlmProvider(value: unknown): LlmProvider {
@@ -4190,106 +3436,10 @@ function createWorkspaceApp() {
     return `Failed with exit code ${process.exit_code}.`
   }
 
-  function codexBackgroundToolName(
-    request: Record<string, unknown> | undefined,
-    fallbackToolName?: string | null,
-  ) {
-    const requestToolName =
-      typeof request?.background_tool_name === 'string' ? request.background_tool_name : null
-    if (requestToolName && CODEX_BACKGROUND_TOOL_NAMES.has(requestToolName)) {
-      return requestToolName
-    }
-    if (fallbackToolName && CODEX_BACKGROUND_TOOL_NAMES.has(fallbackToolName)) {
-      return fallbackToolName
-    }
-    return null
-  }
-
-  function parseJsonLines(text: string) {
-    const items: Record<string, unknown>[] = []
-    for (const line of text.split('\n')) {
-      const trimmed = line.trim()
-      if (!trimmed) {
-        continue
-      }
-      try {
-        const parsed = JSON.parse(trimmed)
-        if (isRecord(parsed)) {
-          items.push(parsed)
-        }
-      } catch {
-        continue
-      }
-    }
-    return items
-  }
-
-  function latestCodexBackgroundResult(stdoutText: string) {
-    const events = parseJsonLines(stdoutText)
-    for (let index = events.length - 1; index >= 0; index -= 1) {
-      const event = events[index]
-      if (!event || event.event !== 'codex_background_result' || !isRecord(event.result)) {
-        continue
-      }
-      return event
-    }
-    return null
-  }
-
-  function codexBackgroundTitle(
-    sessionId: string | null,
-    backgroundToolName: string | null,
-  ) {
-    const action = backgroundToolName === 'resume_codex_background_session' ? 'Resume' : 'Start'
-    return sessionId ? `${action} ${sessionId}` : action
-  }
-
-  function codexBackgroundDetail(
-    process: ShellProcessSnapshot | null,
-    stdoutText: string,
-    backgroundToolName: string | null,
-    fallback: string,
-  ) {
-    if (!backgroundToolName) {
-      return fallback
-    }
-
-    if (!process || process.state === 'running' || process.state === 'stopping') {
-      return '思考中'
-    }
-
-    const resultEvent = latestCodexBackgroundResult(stdoutText)
-    const resultPayload = resultEvent?.result
-    const latestAssistantMessage =
-      isRecord(resultPayload) && typeof resultPayload.latest_assistant_message === 'string'
-        ? resultPayload.latest_assistant_message.trim()
-        : ''
-
-    if (resultEvent?.ok === false || process.exit_code !== 0 || process.state === 'failed') {
-      return '失败了'
-    }
-
-    if (latestAssistantMessage) {
-      return latestAssistantMessage
-    }
-
-    if (process.exit_code === 0 || process.state === 'completed') {
-      return '已完成'
-    }
-
-    return fallback
-  }
-
   function shellTitle(
     kind: ShellActivityState['kind'],
     sessionId: string | null,
-    request?: Record<string, unknown>,
-    fallbackToolName?: string | null,
   ) {
-    const backgroundToolName = codexBackgroundToolName(request, fallbackToolName)
-    if (kind === 'background_command' && backgroundToolName) {
-      return codexBackgroundTitle(sessionId, backgroundToolName)
-    }
     if (kind === 'background_command') {
       return sessionId ? `Background ${sessionId}` : 'Background command'
     }
@@ -4313,34 +3463,11 @@ function createWorkspaceApp() {
     const isBackground = BACKGROUND_SHELL_TOOL_NAMES.has(toolName)
     const sessionId =
       typeof argumentsValue.session_id === 'string' ? argumentsValue.session_id : null
-    const existing =
-      sessionId && isBackground
-        ? activities.value.find((item) => item.id === getBackgroundActivityId(sessionId))
-        : null
-    const backgroundToolName = codexBackgroundToolName(
-      existing?.shell?.request,
-      existing?.shell?.tool_name,
-    )
     upsertShellActivity(activityId, {
       id: activityId,
       kind: isBackground ? 'background' : 'command',
-      title: shellTitle(
-        isBackground ? 'background_command' : 'shell_command',
-        sessionId,
-        existing?.shell?.request,
-        backgroundToolName,
-      ),
-      detail:
-        isBackground && backgroundToolName
-          ? codexBackgroundDetail(
-            existing?.shell?.process ?? null,
-            existing?.stdout ?? '',
-            backgroundToolName,
-            '思考中',
-          )
-          : isBackground
-            ? 'Waiting for background output.'
-            : 'Preparing shell command.',
+      title: shellTitle(isBackground ? 'background_command' : 'shell_command', sessionId),
+      detail: isBackground ? 'Waiting for background output.' : 'Preparing shell command.',
       state: 'running',
       command: normalizeShellCommand(argumentsValue.command),
       cwd: typeof argumentsValue.cwd === 'string' ? argumentsValue.cwd : '',
@@ -4377,17 +3504,6 @@ function createWorkspaceApp() {
       rekeyActivity(toolCallId, activityId)
     }
 
-    const existing = activities.value.find((item) => item.id === activityId)
-    const mergedRequest = {
-      ...(existing?.shell?.request ?? {}),
-      ...raw.request,
-    }
-    const backgroundToolName = codexBackgroundToolName(
-      mergedRequest,
-      existing?.shell?.tool_name,
-    )
-    const stdoutText = raw.streams.stdout.text || existing?.stdout || ''
-
     const meta: string[] = []
     if (metadata.truncated === true) {
       meta.push('Truncated')
@@ -4396,13 +3512,8 @@ function createWorkspaceApp() {
     upsertShellActivity(activityId, {
       id: activityId,
       kind: raw.kind === 'background_command' ? 'background' : 'command',
-      title: shellTitle(raw.kind, raw.process.session_id, mergedRequest, backgroundToolName),
-      detail: codexBackgroundDetail(
-        shell.process,
-        stdoutText,
-        backgroundToolName,
-        shellDetailFromProcess(shell.process, result),
-      ),
+      title: shellTitle(raw.kind, raw.process.session_id),
+      detail: shellDetailFromProcess(shell.process, result),
       state: activityStateFromShell(shell.process, isError),
       command: shellCommandFromRequest(raw.request, ''),
       cwd: shellCwdFromRequest(raw.request, ''),
@@ -4444,8 +3555,6 @@ function createWorkspaceApp() {
             : exitCode === null
               ? (shell?.process?.state ?? 'running')
               : 'failed'
-    const backgroundToolName = codexBackgroundToolName(shell?.request, shell?.tool_name)
-
     const nextEvents: ShellEventEntry[] = []
     if (state !== 'running' && shell) {
       const stateIndex = nextShellEventIndex(shell)
@@ -4462,26 +3571,8 @@ function createWorkspaceApp() {
     upsertShellActivity(activityId, {
       id: activityId,
       kind: kind === 'background_command' ? 'background' : 'command',
-      title: shellTitle(kind, sessionId, shell?.request, backgroundToolName),
-      detail:
-        kind === 'background_command' && backgroundToolName
-          ? codexBackgroundDetail(
-            {
-              session_id: sessionId,
-              state,
-              exit_code: exitCode,
-              started_at: shell?.process?.started_at ?? 0,
-              finished_at: state === 'running' ? null : Date.now() / 1000,
-              runtime_seconds: shell?.process?.runtime_seconds ?? 0,
-              timed_out: timedOut,
-            },
-            existing?.stdout ?? '',
-            backgroundToolName,
-            isError ? result : '',
-          )
-          : isError
-            ? result
-            : '',
+      title: shellTitle(kind, sessionId),
+      detail: isError ? result : '',
       state: isError
         ? 'error'
         : activityStateFromShell(
@@ -4638,23 +3729,6 @@ function createWorkspaceApp() {
     sessionHistory.value = sessionHistory.value.filter(
       (session) => session.session_id !== normalizedSessionId,
     )
-    if (codexWorkspace.value) {
-      codexWorkspace.value = {
-        ...codexWorkspace.value,
-        projects: codexWorkspace.value.projects
-          .map((project) => ({
-            ...project,
-            sessions: project.sessions.filter(
-              (session) => session.thread_id !== normalizedSessionId,
-            ),
-          }))
-          .filter((project) => project.sessions.length > 0)
-          .map((project) => ({
-            ...project,
-            session_count: project.sessions.length,
-          })),
-      }
-    }
     if (activeSessionId.value === normalizedSessionId) {
       activeSessionId.value = ''
     }
@@ -4672,29 +3746,21 @@ function createWorkspaceApp() {
     channelPlatforms,
     channelConfig,
     channelMonitorSessions,
-    codexWorkspace,
     channelLoginState,
     activeSessionRuntime,
     activeSessionId,
     openingSessionId,
-    archivingCodexThreadId,
     chatMessages,
     activities,
-    codexTurnTimings,
     isHydratingOlderActivity,
     isSwitchingSession,
     sessionHistory,
-    activeCodexWorkMode,
     isCodexCompactLayout,
     isSidebarDrawerOpen,
     isRuntimeSheetOpen,
     composerText,
     composerAttachments,
     queuedComposerFollowups,
-    steerText,
-    isSteering,
-    steeringQueuedComposerFollowupId,
-    isInterrupting,
     composerSelectionStart,
     composerSelectionEnd,
     composerSelectionVersion,
@@ -4726,8 +3792,6 @@ function createWorkspaceApp() {
     sidebarSessionHistory,
     sidebarSessionHistoryCount,
     isCodexWorkspace,
-    activeCodexProjects,
-    activeCodexPairedEditors,
     assistantLabel,
     showMobileWorkspaceChrome,
     showCodexMobileChrome,
@@ -4748,9 +3812,6 @@ function createWorkspaceApp() {
     closeRuntimeSheet,
     closeCodexSheets,
     handleNewChatClick,
-    handleCodexSessionStart,
-    openCodexNativeSession,
-    archiveCodexNativeSession,
     openSessionFromHistory,
     deleteSessionFromHistory,
     displayNameForPath,
@@ -4758,10 +3819,8 @@ function createWorkspaceApp() {
     openSettings,
     openChannel,
     openChat,
-    updateCodexWorkMode,
     saveLlmSettings,
     saveAppSettings,
-    saveCodexSandboxMode,
     saveAllowedRoots,
     saveMcpSettings,
     reloadMcpSettings,
@@ -4776,13 +3835,10 @@ function createWorkspaceApp() {
     submitPendingRequestDecision,
     submitMessage,
     sendComposerMessage,
-    submitQueuedComposerFollowupSteer,
     removeQueuedComposerFollowup,
     uploadComposerFiles,
     removeComposerAttachment,
     retryComposerAttachment,
-    submitCodexSteer,
-    interruptCodexTurn,
     handleComposerSelectionChange,
   })
 }

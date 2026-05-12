@@ -63,7 +63,17 @@ class SessionDefaultsSettings(BaseModel):
     channel_backend_id: BackendId = "yier"
     channel_project_path: str = ""
     channel_auto_approve_codex_requests: bool = True
-    workspace_surface: WorkspaceSurface = "codex"
+    workspace_surface: WorkspaceSurface = "yier"
+
+    @field_validator("default_backend_id", "channel_backend_id")
+    @classmethod
+    def normalize_chat_backend_id(cls, value: BackendId) -> BackendId:
+        return "yier" if value == "codex" else value
+
+    @field_validator("workspace_surface")
+    @classmethod
+    def normalize_workspace_surface(cls, value: WorkspaceSurface) -> WorkspaceSurface:
+        return "yier" if value == "codex" else value
 
 
 class StoredCodexSettings(BaseModel):
@@ -554,3 +564,34 @@ class CodexProjectGroup(BaseModel):
 class CodexWorkspaceResponse(BaseModel):
     projects: list[CodexProjectGroup] = Field(default_factory=list)
     paired_editors: list[CodexPairingExtensionSummary] = Field(default_factory=list)
+
+
+class CodexThreadCreateRequest(BaseModel):
+    project_path: str | None = None
+
+    @field_validator("project_path")
+    @classmethod
+    def strip_project_path(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
+
+
+class CodexThreadCreateResponse(BaseModel):
+    thread_id: str
+    state: dict[str, Any] | None = None
+
+
+class CodexThreadStateResponse(BaseModel):
+    thread_id: str
+    state: dict[str, Any] | None = None
+
+
+class CodexThreadNameRequest(BaseModel):
+    name: str
+
+    @field_validator("name")
+    @classmethod
+    def strip_name(cls, value: str) -> str:
+        return value.strip()

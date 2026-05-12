@@ -3,10 +3,8 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 from dataclasses import dataclass
-import inspect
 import json
 import logging
-import os
 from pathlib import Path
 from time import time
 from typing import Any, AsyncIterator, Awaitable, Callable, Literal
@@ -45,29 +43,10 @@ from yier_agents.src.config import AssistantSettings
 from yier_web.agent_backends import (
     PLAN_MODE_PROMPT,
     ChatSessionContext,
-    CodexAppServerBackend,
     YierAgentBackend,
 )
 from yier_web.attachments import AttachmentStorageError, AttachmentStorageService
-from yier_web.codex.background import (
-    FollowupQueueManager,
-    _build_codex_background_runner_command,
-    _write_codex_background_request,
-    create_find_codex_projects_tool,
-    create_find_codex_sessions_tool,
-    create_queue_background_followup_tool,
-    create_resume_codex_background_session_tool,
-    create_start_codex_background_session_tool,
-)
 from yier_web.config import AppConfigService
-from yier_web.codex.collaboration_mode import (
-    codex_work_mode_from_collaboration_mode,
-    normalize_protocol_collaboration_mode,
-    protocol_collaboration_mode_for_work_mode,
-)
-from yier_web.codex.ipc import CodexConversationStateService, CodexThreadFollowerBridge
-from yier_web.codex.pairing import CodexPairedEditorBridge
-from yier_web.codex.sdk.workspace import CodexWorkspaceService
 from yier_web.event_stream import EventStreamBroker
 from yier_web.session_conversation_state_store import SessionConversationStateStore
 from yier_web.session_metadata_store import SessionMetadataStore
@@ -75,14 +54,12 @@ from yier_web.session_ui_store import SessionUIStore
 from yier_web.schemas import (
     BackendRuntimePayload,
     ChannelMetaPayload,
-    CodexWorkspaceResponse,
     CodexWorkMode,
     MessageAttachmentPayload,
     PendingApproval,
     PendingRequest,
     MCPRuntimeEntry,
     SessionSummary,
-    StoredCodexSettings,
     StoredLLMSettings,
     StoredSessionMessage,
 )
@@ -96,12 +73,6 @@ StreamEmitter = Callable[[str, dict[str, Any]], Awaitable[None]]
 logger = logging.getLogger(__name__)
 
 
-async def _maybe_await(value: Any) -> Any:
-    if inspect.isawaitable(value):
-        return await value
-    return value
-
-
 @dataclass(slots=True)
 class SessionTranscriptView:
     messages: list[StoredSessionMessage]
@@ -110,29 +81,7 @@ class SessionTranscriptView:
     codex_turn_timings: list[dict[str, int | str | None]]
 
 
-def _codex_ipc_debug_enabled() -> bool:
-    return os.getenv("YIER_CODEX_IPC_DEBUG", "").strip().lower() not in {
-        "",
-        "0",
-        "false",
-        "no",
-        "off",
-    }
-
-
-def _codex_ipc_debug_log(message: str, **fields: Any) -> None:
-    if not _codex_ipc_debug_enabled():
-        return
-    if fields:
-        rendered = ", ".join(f"{key}={value!r}" for key, value in fields.items())
-        logger.warning(f"[chat-codex-ipc] {message} | {rendered}")
-        return
-    logger.warning(f"[chat-codex-ipc] {message}")
-
-
 class ChatService:
-    CODEX_PAIRING_MONITOR_INTERVAL_SECONDS = 1.0
-
     def __init__(
         self,
         project_root: Path,
@@ -158,28 +107,14 @@ class ChatService:
         self.attachment_storage = AttachmentStorageService(
             self.config_service.uploads_path
         )
-        self.codex_workspace = CodexWorkspaceService(
-            self.config_service.home_dir,
-            config_service=self.config_service,
-        )
         self.background_manager = BackgroundCommandManager(
             default_root=self.project_root,
             allow_shell=True,
             shell_program="/bin/bash",
         )
-        self.followup_queue = FollowupQueueManager()
         self.event_broker = event_broker or EventStreamBroker()
-        self.paired_editor_bridge = CodexPairedEditorBridge(
-            home_dir=self.config_service.home_dir,
-            event_broker=self.event_broker,
-        )
-        self.codex_ipc_bridge = CodexThreadFollowerBridge(chat_service=self)
-        self.codex_conversation_state = CodexConversationStateService(self)
-        self.backends: dict[
-            Literal["yier", "codex"], YierAgentBackend | CodexAppServerBackend
-        ] = {
+        self.backends: dict[Literal["yier"], YierAgentBackend] = {
             "yier": YierAgentBackend(self),
-            "codex": CodexAppServerBackend(self),
         }
         self._agent: Agent | None = None
         self._agent_signature: tuple[Any, ...] | None = None
@@ -187,10 +122,8 @@ class ChatService:
         self._session_run_locks: dict[str, asyncio.Lock] = {}
         self._background_owner_sessions: dict[str, str] = {}
         self._background_cursors: dict[str, dict[str, Any]] = {}
-        self._ipc_stream_tasks: dict[str, asyncio.Task[None]] = {}
         self._timeline_sequence_counters: dict[str, int] = {}
         self._background_supervisor_task: asyncio.Task[None] | None = None
-        self._codex_pairing_monitor_task: asyncio.Task[None] | None = None
         self._started = False
 
     async def start(self) -> None:
@@ -198,14 +131,9 @@ class ChatService:
             return
         await self.mcp_manager.start()
         self._started = True
-        await self.paired_editor_bridge.start()
-        await self.codex_ipc_bridge.start()
         await self.reload_agent(force_mcp_reconnect=False)
         self._background_supervisor_task = asyncio.create_task(
             self._background_supervisor_loop()
-        )
-        self._codex_pairing_monitor_task = asyncio.create_task(
-            self._codex_pairing_monitor_loop()
         )
 
     async def stop(self) -> None:
@@ -216,20 +144,7 @@ class ChatService:
             with suppress(asyncio.CancelledError):
                 await self._background_supervisor_task
             self._background_supervisor_task = None
-        if self._codex_pairing_monitor_task is not None:
-            self._codex_pairing_monitor_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._codex_pairing_monitor_task
-            self._codex_pairing_monitor_task = None
-        for task in list(self._ipc_stream_tasks.values()):
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
-        self._ipc_stream_tasks.clear()
-        await self.codex_ipc_bridge.stop()
-        await self.paired_editor_bridge.stop()
         await self.background_manager.close()
-        await self.codex_workspace.stop()
         await self.mcp_manager.stop()
         for backend in self.backends.values():
             await backend.stop()
@@ -268,29 +183,6 @@ class ChatService:
         snapshot = await self.mcp_manager.get_status()
         return {name: MCPRuntimeEntry(**payload) for name, payload in snapshot.items()}
 
-    async def _codex_pairing_monitor_loop(self) -> None:
-        last_signature = self.codex_workspace.paired_editors_signature()
-        while True:
-            await asyncio.sleep(self.CODEX_PAIRING_MONITOR_INTERVAL_SECONDS)
-            try:
-                paired_editors = self.codex_workspace.list_paired_editors()
-                next_signature = self.codex_workspace.paired_editors_signature(
-                    paired_editors
-                )
-            except Exception:
-                continue
-            if next_signature == last_signature:
-                continue
-            last_signature = next_signature
-            await self.event_broker.publish(
-                "codex_pairings_updated",
-                {
-                    "paired_editors": [
-                        editor.model_dump(mode="json") for editor in paired_editors
-                    ]
-                },
-            )
-
     async def create_session(
         self,
         backend_id: str | None = None,
@@ -298,36 +190,17 @@ class ChatService:
     ) -> str:
         settings = self.config_service.load_web_settings()
         resolved_backend_id = backend_id or settings.session_defaults.default_backend_id
+        if resolved_backend_id == "codex":
+            resolved_backend_id = "yier"
         resolved_project_path = self.config_service.resolve_project_path(
             project_path or settings.session_defaults.default_project_path
         )
-        if resolved_backend_id == "codex":
-            backend = self.backends.get("codex")
-            if isinstance(backend, CodexAppServerBackend):
-                bootstrap = await backend.bootstrap_session(
-                    Path(resolved_project_path),
-                )
-                session_id = bootstrap["thread_id"]
-                self.ensure_session_metadata(
-                    session_id,
-                    backend_id=resolved_backend_id,
-                    project_path=resolved_project_path,
-                    backend_state={
-                        "thread_id": bootstrap["thread_id"],
-                        "status": bootstrap["status"],
-                        "active_flags": bootstrap["active_flags"],
-                        "detail": bootstrap["detail"],
-                    },
-                    codex_work_mode="build",
-                )
-                return session_id
-
         session_id = str(uuid4())
         self.ensure_session_metadata(
             session_id,
             backend_id=resolved_backend_id,
             project_path=resolved_project_path,
-            codex_work_mode="build" if resolved_backend_id == "codex" else None,
+            codex_work_mode=None,
         )
         return session_id
 
@@ -547,11 +420,8 @@ class ChatService:
             if isinstance(updated_at, (int, float))
             else existing.get("updated_at"),
         }
-        if payload["backend_id"] == "codex" and payload["codex_work_mode"] not in {
-            "plan",
-            "build",
-        }:
-            payload["codex_work_mode"] = "build"
+        if payload["backend_id"] not in self.backends:
+            payload["backend_id"] = "yier"
         self.session_metadata_store.save(session_id, payload)
         if isinstance(next_conversation_state, dict):
             self.session_conversation_state_store.save(
@@ -559,22 +429,6 @@ class ChatService:
             )
         elif conversation_state_provided:
             self.session_conversation_state_store.delete(session_id)
-
-    async def update_paired_editor_state(
-        self,
-        *,
-        session_id: str,
-        content: str,
-        selection_start: int,
-        selection_end: int,
-    ) -> None:
-        await self.paired_editor_bridge.update_state(
-            session_id=session_id,
-            workspace_name=self._paired_editor_workspace_name(session_id),
-            content=content,
-            selection_start=selection_start,
-            selection_end=selection_end,
-        )
 
     async def save_chat_attachment(
         self, session_id: str, upload: Any
@@ -663,24 +517,6 @@ class ChatService:
                 continue
         return attachments
 
-    def _paired_editor_workspace_name(self, session_id: str) -> str:
-        normalized_session_id = session_id.strip()
-        if not normalized_session_id:
-            return "Yier"
-
-        metadata = self.get_session_metadata(normalized_session_id)
-        project_path_value = metadata.get("project_path")
-        if isinstance(project_path_value, str) and project_path_value.strip():
-            project_name = Path(project_path_value).name.strip()
-            if project_name:
-                return project_name
-
-        title_value = metadata.get("title")
-        if isinstance(title_value, str) and title_value.strip():
-            return title_value.strip()
-
-        return "Yier"
-
     def mark_channel_session(
         self,
         session_id: str,
@@ -715,184 +551,6 @@ class ChatService:
             preview=metadata["preview"],
             updated_at=metadata["updated_at"],
         )
-
-    def _resolve_codex_tool_project_path(
-        self,
-        caller_session_id: str,
-        project_path: str | None,
-    ) -> Path:
-        caller_metadata = self.get_session_metadata(caller_session_id)
-        resolved_project_path = self.config_service.resolve_project_path(
-            project_path or caller_metadata["project_path"]
-        )
-        return Path(resolved_project_path).resolve()
-
-    async def start_codex_background_session_from_tool(
-        self,
-        *,
-        caller_session_id: str,
-        prompt: str,
-        project_path: str | None = None,
-    ) -> dict[str, Any]:
-        normalized_prompt = prompt.strip()
-        if not normalized_prompt:
-            raise ValueError("Prompt must not be empty.")
-
-        caller_metadata = self.get_session_metadata(caller_session_id)
-        resolved_project_path = self._resolve_codex_tool_project_path(
-            caller_session_id,
-            project_path,
-        )
-        backend = self.backends.get("codex")
-        if not isinstance(backend, CodexAppServerBackend):
-            raise RuntimeError("Codex backend is not available.")
-
-        bootstrap = await asyncio.to_thread(
-            backend.bootstrap_session,
-            resolved_project_path,
-            caller_metadata["source"],
-            caller_metadata["channel_meta"],
-        )
-        session_id = str(bootstrap["thread_id"])
-        self.ensure_session_metadata(
-            session_id,
-            source=caller_metadata["source"],
-            channel_meta=caller_metadata["channel_meta"],
-            backend_id="codex",
-            project_path=str(resolved_project_path),
-            backend_state={
-                "thread_id": bootstrap["thread_id"],
-                "status": bootstrap["status"],
-                "active_flags": bootstrap["active_flags"],
-                "detail": bootstrap["detail"],
-            },
-            codex_work_mode="build",
-        )
-        start_response = await self.start_codex_turn_in_background(
-            session_id, normalized_prompt
-        )
-        turn = start_response.get("turn")
-        if not isinstance(turn, dict):
-            raise RuntimeError(
-                "Codex start turn response did not include a turn payload."
-            )
-        turn_id = turn.get("id")
-        if not isinstance(turn_id, str) or not turn_id:
-            raise RuntimeError("Codex start turn response did not include a turn id.")
-
-        metadata = self.get_session_metadata(session_id)
-        return {
-            "session_id": session_id,
-            "thread_id": str(metadata["backend_state"].get("thread_id") or session_id),
-            "turn_id": turn_id,
-            "project_path": metadata["project_path"],
-            "status": str(metadata["backend_state"].get("status") or "active"),
-        }
-
-    async def resume_codex_background_session_from_tool(
-        self,
-        *,
-        caller_session_id: str,
-        thread_id: str,
-        prompt: str,
-        project_path: str | None = None,
-    ) -> dict[str, Any]:
-        normalized_thread_id = thread_id.strip()
-        if not normalized_thread_id:
-            raise ValueError("Thread id must not be empty.")
-        normalized_prompt = prompt.strip()
-        if not normalized_prompt:
-            raise ValueError("Prompt must not be empty.")
-
-        caller_metadata = self.get_session_metadata(caller_session_id)
-        resolved_project_path = self._resolve_codex_tool_project_path(
-            caller_session_id,
-            project_path,
-        )
-        existing_metadata = self.session_metadata_store.load(normalized_thread_id)
-        if isinstance(existing_metadata, dict):
-            normalized = self.get_session_metadata(normalized_thread_id)
-            if normalized["backend_id"] != "codex":
-                raise RuntimeError("Existing session id is not backed by Codex.")
-            self.ensure_session_metadata(
-                normalized_thread_id,
-                source=caller_metadata["source"],
-                channel_meta=caller_metadata["channel_meta"],
-                backend_id="codex",
-                project_path=str(resolved_project_path),
-                backend_state={
-                    **normalized["backend_state"],
-                    "thread_id": normalized_thread_id,
-                },
-                codex_work_mode="build",
-                title=normalized["title"],
-                preview=normalized["preview"],
-                updated_at=normalized["updated_at"],
-            )
-        else:
-            self.ensure_session_metadata(
-                normalized_thread_id,
-                source=caller_metadata["source"],
-                channel_meta=caller_metadata["channel_meta"],
-                backend_id="codex",
-                project_path=str(resolved_project_path),
-                backend_state={"thread_id": normalized_thread_id},
-                codex_work_mode="build",
-            )
-
-        start_response = await self.start_codex_turn_in_background(
-            normalized_thread_id,
-            normalized_prompt,
-        )
-        turn = start_response.get("turn")
-        if not isinstance(turn, dict):
-            raise RuntimeError(
-                "Codex start turn response did not include a turn payload."
-            )
-        turn_id = turn.get("id")
-        if not isinstance(turn_id, str) or not turn_id:
-            raise RuntimeError("Codex start turn response did not include a turn id.")
-
-        metadata = self.get_session_metadata(normalized_thread_id)
-        return {
-            "session_id": normalized_thread_id,
-            "thread_id": str(
-                metadata["backend_state"].get("thread_id") or normalized_thread_id
-            ),
-            "turn_id": turn_id,
-            "project_path": metadata["project_path"],
-            "status": str(metadata["backend_state"].get("status") or "active"),
-        }
-
-    async def can_handle_codex_conversation(self, conversation_id: str) -> bool:
-        normalized_conversation_id = conversation_id.strip()
-        if not normalized_conversation_id:
-            return False
-        metadata = self.get_session_metadata(normalized_conversation_id)
-        if metadata["backend_id"] == "codex":
-            return True
-        return (
-            await self.codex_workspace.get_active_session(normalized_conversation_id)
-        ) is not None
-
-    async def ensure_codex_conversation_session(self, conversation_id: str) -> str:
-        normalized_conversation_id = conversation_id.strip()
-        if not normalized_conversation_id:
-            raise RuntimeError("Missing conversation id.")
-
-        metadata = self.session_metadata_store.load(normalized_conversation_id)
-        if isinstance(metadata, dict):
-            normalized = self.get_session_metadata(normalized_conversation_id)
-            if normalized["backend_id"] != "codex":
-                raise RuntimeError("Conversation is not backed by Codex.")
-            return normalized_conversation_id
-
-        session_id = await self.open_codex_native_session(normalized_conversation_id)
-        if session_id is None:
-            raise RuntimeError(
-                f"Codex conversation not found: {normalized_conversation_id}"
-            )
-        return session_id
 
     def get_session_context(
         self,
@@ -932,6 +590,8 @@ class ChatService:
                 if source == "channel"
                 else settings.session_defaults.default_backend_id
             )
+        if backend_id not in self.backends:
+            backend_id = "yier"
 
         default_project_path = (
             settings.session_defaults.channel_project_path
@@ -953,7 +613,7 @@ class ChatService:
             "codex_work_mode": (
                 payload.get("codex_work_mode")
                 if payload.get("codex_work_mode") in {"plan", "build"}
-                else ("build" if backend_id == "codex" else None)
+                else None
             ),
             "title": payload.get("title")
             if isinstance(payload.get("title"), str)
@@ -1048,42 +708,13 @@ class ChatService:
             },
         )
 
-    async def get_codex_workspace(self) -> CodexWorkspaceResponse:
-        return await self.codex_workspace.load_workspace()
-
-    async def open_codex_native_session(self, thread_id: str) -> str | None:
-        native_session = await self.codex_workspace.get_active_session(thread_id)
-        if native_session is None:
-            return None
-
-        session_id = native_session.thread_id
-        self.ensure_session_metadata(
-            session_id,
-            backend_id="codex",
-            project_path=native_session.cwd or native_session.project_path,
-            backend_state={"thread_id": native_session.thread_id},
-            codex_work_mode="build",
-            title=native_session.title,
-            preview=native_session.preview,
-            updated_at=native_session.updated_at or time(),
-        )
-        return session_id
-
-    async def archive_codex_native_session(self, thread_id: str) -> bool:
-        normalized_thread_id = thread_id.strip()
-        if not normalized_thread_id:
-            return False
-        return await self.codex_workspace.archive_thread(normalized_thread_id)
-
     def update_codex_session_mode(
         self, session_id: str, codex_work_mode: CodexWorkMode
     ) -> bool:
         metadata = self.get_session_metadata(session_id)
-        # Allow plan mode for both codex and yier backends.
-        if metadata["backend_id"] not in {"codex", "yier"}:
+        if metadata["backend_id"] != "yier":
             return False
 
-        # Persist the work mode to session metadata.
         self.ensure_session_metadata(
             session_id,
             source=metadata["source"],
@@ -1096,97 +727,7 @@ class ChatService:
             preview=metadata["preview"],
             updated_at=metadata["updated_at"],
         )
-
-        # For codex sessions, also update the collaboration_mode in
-        # backend_state and broadcast the change to the Codex CLI via IPC
-        # so that turn state params carry the correct collaborationMode.
-        if metadata["backend_id"] == "codex":
-            backend_state = metadata["backend_state"]
-            collaboration_mode = protocol_collaboration_mode_for_work_mode(
-                codex_work_mode,
-                current_value=backend_state.get("collaboration_mode"),
-                default_model=backend_state.get("model", ""),
-                default_reasoning_effort=backend_state.get("reasoning_effort"),
-            )
-            self.sync_codex_collaboration_mode(
-                session_id,
-                collaboration_mode,
-                broadcast=True,
-            )
-
         return True
-
-    def sync_codex_collaboration_mode(
-        self,
-        session_id: str,
-        collaboration_mode: Any,
-        *,
-        broadcast: bool = False,
-    ) -> bool:
-        metadata = self.get_session_metadata(session_id)
-        if metadata["backend_id"] != "codex":
-            return False
-
-        backend_state = metadata["backend_state"]
-        normalized_mode = normalize_protocol_collaboration_mode(
-            collaboration_mode,
-            default_model=backend_state.get("model", ""),
-            default_reasoning_effort=backend_state.get("reasoning_effort"),
-        )
-        codex_work_mode = codex_work_mode_from_collaboration_mode(normalized_mode)
-        self.ensure_session_metadata(
-            session_id,
-            source=metadata["source"],
-            channel_meta=metadata["channel_meta"],
-            backend_id=metadata["backend_id"],
-            project_path=metadata["project_path"],
-            backend_state=backend_state,
-            codex_work_mode=codex_work_mode,
-            title=metadata["title"],
-            preview=metadata["preview"],
-            updated_at=metadata["updated_at"],
-        )
-        self.update_session_backend_state(
-            session_id,
-            {"collaboration_mode": normalized_mode},
-        )
-        if broadcast:
-            self._schedule_ipc_collaboration_mode_broadcast(session_id)
-        return True
-
-    def _effective_codex_backend_model(self, backend_state: dict[str, Any]) -> str:
-        raw_model = backend_state.get("model")
-        if isinstance(raw_model, str) and raw_model.strip():
-            return raw_model.strip()
-        settings = self.config_service.load_web_settings().codex
-        return settings.model or StoredCodexSettings().model
-
-    def _effective_codex_backend_effort(self, backend_state: dict[str, Any]) -> str:
-        raw_effort = backend_state.get("reasoning_effort")
-        if isinstance(raw_effort, str) and raw_effort.strip():
-            return raw_effort.strip()
-        settings = self.config_service.load_web_settings().codex
-        return settings.reasoning_effort or StoredCodexSettings().reasoning_effort
-
-    def _schedule_ipc_collaboration_mode_broadcast(
-        self, session_id: str
-    ) -> None:
-        """Fire-and-forget IPC broadcast for collaboration mode change."""
-        loop = self._running_loop()
-        if loop is None:
-            return
-        loop.create_task(
-            self.codex_ipc_bridge.broadcast_stream_state(
-                session_id,
-                trigger_event="thread-follower-set-collaboration-mode",
-            )
-        )
-
-    def _running_loop(self) -> asyncio.AbstractEventLoop | None:
-        try:
-            return asyncio.get_running_loop()
-        except RuntimeError:
-            return None
 
     def list_session_summaries(self, source: str | None = None) -> list[SessionSummary]:
         session_entries: dict[str, dict[str, Any]] = {}
@@ -1252,84 +793,12 @@ class ChatService:
 
         return sorted(summaries, key=lambda item: item.updated_at, reverse=True)
 
-    async def load_codex_session_transcript_from_sdk(
-        self,
-        session_id: str,
-        *,
-        activity_limit: int | None = None,
-    ) -> SessionTranscriptView | None:
-        context = self.get_session_context(session_id)
-        thread_id = context.backend_state.get("thread_id")
-        if (
-            context.backend_id != "codex"
-            or not isinstance(thread_id, str)
-            or not thread_id
-        ):
-            return None
-
-        backend = self.backends.get(context.backend_id)
-        if not isinstance(backend, CodexAppServerBackend):
-            return None
-
-        response = await self.codex_workspace.read_thread(thread_id, include_turns=True)
-        if response is None:
-            return None
-
-        view = backend.build_thread_view(context, response.thread)
-        activity_events, activity_history = self._paginate_activity_events(
-            view["activity_events"],
-            limit=activity_limit,
-        )
-
-        project_path = response.thread.cwd
-        self.ensure_session_metadata(
-            session_id,
-            source=context.source,
-            channel_meta=context.channel_meta,
-            backend_id=context.backend_id,
-            project_path=project_path,
-            backend_state=context.backend_state,
-            codex_work_mode=self.get_session_metadata(session_id)["codex_work_mode"],
-            title=view["title"],
-            preview=view["preview"],
-            updated_at=view["updated_at"],
-        )
-        return SessionTranscriptView(
-            messages=view["messages"],
-            activity_events=activity_events,
-            activity_history=activity_history,
-            codex_turn_timings=view.get("codex_turn_timings", []),
-        )
-
-    async def get_codex_session_activity_page_from_sdk(
-        self,
-        session_id: str,
-        *,
-        before: int | None = None,
-        limit: int | None = None,
-    ) -> tuple[list[dict[str, Any]], dict[str, int | None]] | None:
-        transcript = await self.load_codex_session_transcript_from_sdk(session_id)
-        if transcript is None:
-            return None
-        return self._paginate_activity_events(
-            transcript.activity_events,
-            before=before,
-            limit=limit,
-        )
-
     async def load_session_transcript(
         self,
         session_id: str,
         *,
         activity_limit: int | None = None,
     ) -> SessionTranscriptView:
-        native_view = await self._native_codex_session_view(
-            session_id,
-            activity_limit=activity_limit,
-        )
-        if native_view is not None:
-            return native_view
-
         messages = self.build_transcript_messages(session_id)
         activity_events, activity_history = self.get_session_activity_page(
             session_id,
@@ -1339,7 +808,7 @@ class ChatService:
             messages=messages,
             activity_events=activity_events,
             activity_history=activity_history,
-            codex_turn_timings=await self._fallback_codex_turn_timings(session_id),
+            codex_turn_timings=[],
         )
 
     async def load_session_view(
@@ -1348,152 +817,6 @@ class ChatService:
     ) -> tuple[list[StoredSessionMessage], list[dict[str, Any]]]:
         transcript = await self.load_session_transcript(session_id)
         return (transcript.messages, transcript.activity_events)
-
-    def _codex_turn_timings_from_turns(
-        self,
-        turns: Any,
-    ) -> list[dict[str, int | str | None]]:
-        if not isinstance(turns, list):
-            return []
-        codex_turn_timings: list[dict[str, int | str | None]] = []
-        for turn in turns:
-            if not isinstance(turn, dict):
-                continue
-            turn_started_at_ms = turn.get("turnStartedAtMs")
-            final_started_at_ms = turn.get("finalAssistantStartedAtMs")
-            codex_turn_timings.append(
-                {
-                    "turn_id": str(turn.get("turnId") or turn.get("id") or ""),
-                    "turn_started_at_ms": (
-                        int(turn_started_at_ms)
-                        if isinstance(turn_started_at_ms, (int, float))
-                        else None
-                    ),
-                    "final_assistant_started_at_ms": (
-                        int(final_started_at_ms)
-                        if isinstance(final_started_at_ms, (int, float))
-                        else None
-                    ),
-                }
-            )
-        return codex_turn_timings
-
-    async def _fallback_codex_turn_timings(
-        self,
-        session_id: str,
-    ) -> list[dict[str, int | str | None]]:
-        metadata = self.get_session_metadata(session_id)
-        if metadata["backend_id"] != "codex":
-            return []
-        conversation_state = await self.build_codex_ipc_conversation_state(session_id)
-        return self._codex_turn_timings_from_turns(conversation_state.get("turns"))
-
-    async def _native_codex_session_view(
-        self,
-        session_id: str,
-        *,
-        activity_limit: int | None = None,
-    ) -> SessionTranscriptView | None:
-        context = self.get_session_context(session_id)
-        thread_id = context.backend_state.get("thread_id")
-        if (
-            context.backend_id != "codex"
-            or not isinstance(thread_id, str)
-            or not thread_id
-        ):
-            return None
-
-        backend = self.backends.get(context.backend_id)
-        if not isinstance(backend, CodexAppServerBackend):
-            return None
-
-        if backend.should_use_local_session_view(context):
-            activity_events, activity_history = self.get_session_activity_page(
-                session_id,
-                limit=activity_limit,
-            )
-            return SessionTranscriptView(
-                messages=self.build_transcript_messages(session_id),
-                activity_events=activity_events,
-                activity_history=activity_history,
-                codex_turn_timings=await self._fallback_codex_turn_timings(session_id),
-            )
-
-        cached_ipc_view = self._cached_codex_ipc_session_view(
-            session_id,
-            activity_limit=activity_limit,
-        )
-        if cached_ipc_view is not None:
-            return cached_ipc_view
-
-        view = await _maybe_await(
-            backend.load_thread_view(context, activity_limit=activity_limit)
-        )
-        self.ensure_session_metadata(
-            session_id,
-            source=context.source,
-            channel_meta=context.channel_meta,
-            backend_id=context.backend_id,
-            project_path=str(context.project_path),
-            backend_state=context.backend_state,
-            codex_work_mode=self.get_session_metadata(session_id)["codex_work_mode"],
-            title=view["title"],
-            preview=view["preview"],
-            updated_at=view["updated_at"],
-        )
-        return SessionTranscriptView(
-            messages=view["messages"],
-            activity_events=view["activity_events"],
-            activity_history=view["activity_history"],
-            codex_turn_timings=view.get("codex_turn_timings", []),
-        )
-
-    def _cached_codex_ipc_session_view(
-        self,
-        session_id: str,
-        *,
-        activity_limit: int | None = None,
-    ) -> SessionTranscriptView | None:
-        context = self.get_session_context(session_id)
-        if context.backend_id != "codex":
-            return None
-
-        metadata = self.get_session_metadata(
-            session_id,
-            include_conversation_state=True,
-        )
-        backend_state = metadata["backend_state"]
-        conversation_state = backend_state.get("ipc_conversation_state")
-        if not isinstance(conversation_state, dict):
-            return None
-
-        backend = self.backends.get(context.backend_id)
-        if not isinstance(backend, CodexAppServerBackend):
-            return None
-
-        view = backend.ipc_conversation_view(
-            context,
-            conversation_state,
-            activity_limit=activity_limit,
-        )
-        self.ensure_session_metadata(
-            session_id,
-            source=context.source,
-            channel_meta=context.channel_meta,
-            backend_id=context.backend_id,
-            project_path=str(context.project_path),
-            backend_state=context.backend_state,
-            codex_work_mode=self.get_session_metadata(session_id)["codex_work_mode"],
-            title=view["title"],
-            preview=view["preview"],
-            updated_at=view["updated_at"],
-        )
-        return SessionTranscriptView(
-            messages=view["messages"],
-            activity_events=view["activity_events"],
-            activity_history=view["activity_history"],
-            codex_turn_timings=view.get("codex_turn_timings", []),
-        )
 
     async def delete_session(self, session_id: str) -> bool:
         metadata = self.get_session_metadata(session_id)
@@ -1568,7 +891,6 @@ class ChatService:
         self._annotate_timeline_sequence(event, data)
         self._handle_internal_event(event, data)
         self._persist_ui_event(event, data)
-        await self.codex_ipc_bridge.notify_stream_event(event, data)
         if publish_to_event_broker:
             await self.event_broker.publish(event, data)
         if event_queue is not None:
@@ -1602,7 +924,7 @@ class ChatService:
                 project_path=str(context.project_path),
                 backend_state=context.backend_state,
             )
-            transcript_text = (raw_message or "").strip() or self._codex_input_payload_text(
+            transcript_text = (raw_message or "").strip() or self._input_payload_text(
                 user_message
             )
             transcript_attachments = (
@@ -1624,28 +946,8 @@ class ChatService:
             backend = self.backends.get(context.backend_id)
             if backend is None:
                 raise RuntimeError(f"Unknown backend: {context.backend_id}")
-            if context.backend_id != "codex":
-                await emit("run_started", {"session_id": session_id})
-            backend_input = (
-                user_message if context.backend_id == "codex" else transcript_text
-            )
-            if context.backend_id == "codex":
-                forwarded_response = await self.codex_ipc_bridge.forward_start_turn(
-                    session_id=session_id,
-                    input_payload=backend_input,
-                )
-                if forwarded_response is not None:
-                    turn = forwarded_response.get("turn")
-                    turn_id = turn.get("id") if isinstance(turn, dict) else None
-                    await emit(
-                        "run_started",
-                        {
-                            "session_id": session_id,
-                            "turn_id": turn_id,
-                            "forwarded_to_ipc_owner": True,
-                        },
-                    )
-                    return
+            await emit("run_started", {"session_id": session_id})
+            backend_input = transcript_text
             finish_reason = await backend.stream_chat(context, backend_input, emit)
         except Exception as exc:
             finish_reason = "error"
@@ -1686,49 +988,6 @@ class ChatService:
         if backend is None:
             return []
         pending_items = list(backend.pending_requests(context))
-        seen_request_ids = {
-            item.get("request_id")
-            for item in pending_items
-            if isinstance(item, dict)
-            and isinstance(item.get("request_id"), (str, int))
-        }
-        if isinstance(backend, CodexAppServerBackend):
-            metadata = self.get_session_metadata(
-                session_id,
-                include_conversation_state=True,
-            )
-            conversation_state = metadata["backend_state"].get("ipc_conversation_state")
-            requests = (
-                conversation_state.get("requests")
-                if isinstance(conversation_state, dict)
-                else None
-            )
-            if isinstance(requests, list):
-                for request in requests:
-                    if not isinstance(request, dict):
-                        continue
-                    method = request.get("method")
-                    params = request.get("params")
-                    record = (
-                        backend.build_pending_approval_record(
-                            request.get("id"),
-                            method,
-                            params,
-                        )
-                        if isinstance(method, str) and isinstance(params, dict)
-                        else None
-                    )
-                    if record is None:
-                        continue
-                    request_id_value = record.get("request_id")
-                    if (
-                        isinstance(request_id_value, (str, int))
-                        and request_id_value in seen_request_ids
-                    ):
-                        continue
-                    pending_items.append(record)
-                    if isinstance(request_id_value, (str, int)):
-                        seen_request_ids.add(request_id_value)
         return [PendingRequest.model_validate(item) for item in pending_items]
 
     def get_pending_approvals(self, session_id: str) -> list[PendingApproval]:
@@ -1754,27 +1013,7 @@ class ChatService:
             decision,
             content,
         )
-        if handled or not isinstance(backend, CodexAppServerBackend):
-            return handled
-        raw_request = self._pending_ipc_request(session_id, request_id)
-        if raw_request is None:
-            return False
-        method = raw_request.get("method")
-        params = raw_request.get("params")
-        if not isinstance(method, str) or not isinstance(params, dict):
-            return False
-        response_payload = backend.build_response_payload_for_request(
-            method,
-            params,
-            decision,
-            content,
-        )
-        return await self.codex_ipc_bridge.respond_to_pending_request(
-            session_id=session_id,
-            request=raw_request,
-            response_payload=response_payload,
-            decision=decision,
-        )
+        return handled
 
     async def respond_to_approval(
         self,
@@ -1788,20 +1027,6 @@ class ChatService:
             request_id,
             decision,
             content,
-        )
-
-    async def respond_to_codex_raw_request(
-        self,
-        session_id: str,
-        request_id: str,
-        response_payload: dict[str, Any],
-    ) -> bool:
-        context = self.get_session_context(session_id)
-        backend = self.backends.get(context.backend_id)
-        if not isinstance(backend, CodexAppServerBackend):
-            return False
-        return await backend.respond_to_raw_request(
-            context, request_id, response_payload
         )
 
     def resolve_pending_request_id(
@@ -1830,236 +1055,6 @@ class ChatService:
             preferred_kind=preferred_kind,
         )
 
-    def _pending_ipc_request(
-        self,
-        session_id: str,
-        request_id: str | int,
-    ) -> dict[str, Any] | None:
-        metadata = self.get_session_metadata(
-            session_id,
-            include_conversation_state=True,
-        )
-        conversation_state = metadata["backend_state"].get("ipc_conversation_state")
-        requests = conversation_state.get("requests") if isinstance(conversation_state, dict) else None
-        if not isinstance(requests, list):
-            return None
-        context = self.get_session_context(session_id)
-        backend = self.backends.get(context.backend_id)
-        if not isinstance(backend, CodexAppServerBackend):
-            return None
-        for request in requests:
-            if not isinstance(request, dict):
-                continue
-            normalized_request_id = backend.normalize_pending_request_id(
-                request.get("id")
-            )
-            if normalized_request_id == request_id:
-                return request
-        return None
-
-    async def start_codex_turn_in_background(
-        self,
-        session_id: str,
-        prompt: list[dict[str, Any]] | dict[str, Any] | str,
-    ) -> dict[str, Any]:
-        context = self.get_session_context(session_id)
-        backend = self.backends.get(context.backend_id)
-        if not isinstance(backend, CodexAppServerBackend):
-            raise RuntimeError("Only Codex sessions can start IPC-controlled turns.")
-
-        existing_task = self._ipc_stream_tasks.get(session_id)
-        if existing_task is not None and not existing_task.done():
-            raise RuntimeError("Codex turn is already running for this session.")
-
-        session_lock = self._session_lock(session_id)
-        if session_lock.locked():
-            raise RuntimeError("Codex turn is already running for this session.")
-
-        forwarded_response = await self.codex_ipc_bridge.forward_start_turn(
-            session_id=session_id,
-            input_payload=prompt,
-        )
-        if forwarded_response is not None:
-            return forwarded_response
-
-        user_message = self._codex_input_payload_text(prompt)
-        if user_message:
-            self._append_transcript_message(
-                session_id,
-                Message(role="user", content=user_message),
-                attachments=self.message_attachments_from_input_payload(
-                    session_id=session_id,
-                    input_payload=prompt,
-                ),
-            )
-
-        self.codex_ipc_bridge.mark_owner(
-            session_id,
-            await self.build_codex_ipc_conversation_state(session_id),
-        )
-        _codex_ipc_debug_log(
-            "start_codex_turn_in_background before backend.start_turn",
-            session_id=session_id,
-            prompt_type=type(prompt).__name__,
-        )
-        start_response = await backend.start_turn(context, prompt)
-        turn = start_response.get("turn")
-        if not isinstance(turn, dict):
-            raise RuntimeError(
-                "Codex start turn response did not include a turn payload."
-            )
-        turn_id = turn.get("id")
-        if not isinstance(turn_id, str) or not turn_id:
-            raise RuntimeError("Codex start turn response did not include a turn id.")
-        _codex_ipc_debug_log(
-            "start_codex_turn_in_background after backend.start_turn",
-            session_id=session_id,
-            turn_id=turn_id,
-        )
-
-        task = asyncio.create_task(
-            self._consume_codex_turn_stream_to_event_broker(session_id, turn_id),
-            name=f"codex-ipc-turn:{session_id}",
-        )
-        self._ipc_stream_tasks[session_id] = task
-
-        def cleanup(completed_task: asyncio.Task[None]) -> None:
-            if self._ipc_stream_tasks.get(session_id) is completed_task:
-                self._ipc_stream_tasks.pop(session_id, None)
-
-            with suppress(asyncio.CancelledError):
-                exception = completed_task.exception()
-            if exception is not None:
-                asyncio.create_task(
-                    self.event_broker.publish(
-                        "error",
-                        {
-                            "session_id": session_id,
-                            "message": str(exception),
-                        },
-                    )
-                )
-
-        task.add_done_callback(cleanup)
-        return start_response
-
-    async def _consume_codex_turn_stream_to_event_broker(
-        self,
-        session_id: str,
-        turn_id: str,
-    ) -> None:
-        context = self.get_session_context(session_id)
-        backend = self.backends.get(context.backend_id)
-        if not isinstance(backend, CodexAppServerBackend):
-            raise RuntimeError("Codex backend is not available.")
-
-        async def emit(event: str, data: dict[str, Any]) -> None:
-            await self._emit_stream_event(
-                event,
-                data,
-                publish_to_event_broker=True,
-            )
-
-        finish_reason = "stop"
-        try:
-            async with self._session_lock(session_id):
-                finish_reason = await backend.consume_turn_stream(
-                    context,
-                    turn_id,
-                    emit,
-                )
-        except Exception as exc:
-            finish_reason = "error"
-            logger.exception(
-                "Failed to consume Codex turn stream for session %s",
-                session_id,
-            )
-            await self._emit_stream_event(
-                "error",
-                {
-                    "session_id": session_id,
-                    "message": str(exc),
-                },
-                publish_to_event_broker=True,
-            )
-        finally:
-            await self._emit_stream_event(
-                "done",
-                {
-                    "session_id": session_id,
-                    "finish_reason": finish_reason,
-                },
-                publish_to_event_broker=True,
-            )
-
-    async def steer_codex_turn(
-        self,
-        *,
-        session_id: str,
-        turn_id: str | None,
-        input_payload: list[dict[str, Any]] | dict[str, Any] | str,
-    ) -> dict[str, Any]:
-        context = self.get_session_context(session_id)
-        backend = self.backends.get(context.backend_id)
-        if not isinstance(backend, CodexAppServerBackend):
-            raise RuntimeError("Codex backend is not available.")
-        forwarded_response = await self.codex_ipc_bridge.forward_steer_turn(
-            session_id=session_id,
-            turn_id=turn_id,
-            input_payload=input_payload,
-        )
-        if forwarded_response is not None:
-            return forwarded_response
-        return await backend.steer_turn(context, turn_id, input_payload)
-
-    async def interrupt_codex_turn(
-        self,
-        *,
-        session_id: str,
-        turn_id: str | None,
-    ) -> dict[str, Any]:
-        context = self.get_session_context(session_id)
-        backend = self.backends.get(context.backend_id)
-        if not isinstance(backend, CodexAppServerBackend):
-            raise RuntimeError("Codex backend is not available.")
-        source_client_id = (
-            self.codex_ipc_bridge.owner_client_id(session_id)
-            or context.backend_state.get("ipc_source_client_id")
-        )
-        if isinstance(source_client_id, str) and source_client_id:
-            return await self.codex_ipc_bridge.interrupt_owner_turn(
-                session_id=session_id,
-            )
-        return await backend.interrupt_turn(context, turn_id)
-
-    def edit_last_codex_user_turn(
-        self,
-        session_id: str,
-        content: str,
-    ) -> None:
-        transcript = self.transcript_store.get_session_messages(session_id) or []
-        for message in reversed(transcript):
-            if message.role != "user":
-                continue
-            message.content = content
-            self.transcript_store.save(session_id, transcript)
-            return
-
-    async def build_codex_ipc_conversation_state(
-        self, session_id: str
-    ) -> dict[str, Any]:
-        return await self.codex_conversation_state.build_conversation_state(session_id)
-
-    def apply_codex_ipc_stream_change(
-        self,
-        session_id: str,
-        change: dict[str, Any],
-    ) -> None:
-        self.codex_conversation_state.apply_stream_change(session_id, change)
-
-    def build_codex_ipc_queued_followups(self, session_id: str) -> list[dict[str, Any]]:
-        return self.codex_conversation_state.build_queued_followups(session_id)
-
     async def _stream_with_yier_backend(
         self,
         session_id: str,
@@ -2077,8 +1072,6 @@ class ChatService:
             )
             return "error"
 
-        # Plan mode: inject planning instructions before the user message.
-        # This mirrors the Codex backend's _normalize_turn_input_payload behavior.
         metadata = self.get_session_metadata(session_id)
         if metadata.get("codex_work_mode") == "plan":
             prompt = f"{PLAN_MODE_PROMPT}\n\n{prompt}"
@@ -2351,7 +1344,7 @@ class ChatService:
         collect(input_payload)
         return attachments
 
-    def _codex_input_payload_text(
+    def _input_payload_text(
         self,
         input_payload: list[dict[str, Any]] | dict[str, Any] | str,
     ) -> str:
@@ -2586,57 +1579,6 @@ class ChatService:
         self,
         completed_session_ids: set[str],
     ) -> None:
-        if not completed_session_ids:
-            return
-
-        ready_items = self.followup_queue.pop_ready(completed_session_ids)
-        if not ready_items:
-            return
-
-        agent = await self._get_agent()
-        if agent is None:
-            return
-
-        for item in ready_items:
-            started_payload = {
-                "session_id": item.owner_session_id,
-                "background_session_id": item.trigger_session_id,
-                "queue_id": item.queue_id,
-                "prompt": item.prompt,
-            }
-            self._persist_ui_event("background_followup_started", started_payload)
-            await self.event_broker.publish(
-                "background_followup_started", started_payload
-            )
-            await self.codex_ipc_bridge.notify_stream_event(
-                "background_followup_started", started_payload
-            )
-
-            async def emit(event: str, data: dict[str, Any]) -> None:
-                self._handle_internal_event(event, data)
-                self._persist_ui_event(event, data)
-                await self.event_broker.publish(event, data)
-
-            finish_reason = await self._run_agent_prompt(
-                agent=agent,
-                session_id=item.owner_session_id,
-                prompt=item.prompt,
-                emit=emit,
-            )
-            finished_payload = {
-                "session_id": item.owner_session_id,
-                "background_session_id": item.trigger_session_id,
-                "queue_id": item.queue_id,
-                "finish_reason": finish_reason,
-            }
-            self._persist_ui_event("background_followup_finished", finished_payload)
-            await self.event_broker.publish(
-                "background_followup_finished", finished_payload
-            )
-            await self.codex_ipc_bridge.notify_stream_event(
-                "background_followup_finished", finished_payload
-            )
-
         for background_session_id in completed_session_ids:
             self._background_owner_sessions.pop(background_session_id, None)
 
@@ -2727,13 +1669,6 @@ class ChatService:
             create_wait_background_command_tool(self.background_manager),
             create_stop_background_command_tool(self.background_manager),
             create_send_background_command_input_tool(self.background_manager),
-            create_queue_background_followup_tool(
-                self.background_manager, self.followup_queue
-            ),
-            create_find_codex_projects_tool(self),
-            create_find_codex_sessions_tool(self),
-            create_start_codex_background_session_tool(self, self.background_manager),
-            create_resume_codex_background_session_tool(self, self.background_manager),
             create_write_file_tool(normalized_roots, default_root=workspace_root),
             create_search_files_tool(normalized_roots, default_root=workspace_root),
         ]

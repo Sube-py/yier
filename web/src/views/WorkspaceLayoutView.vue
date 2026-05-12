@@ -2,8 +2,6 @@
 import Message from 'primevue/message'
 import { RouterView } from 'vue-router'
 
-import CodexRuntimeSheet from '../components/workspace/CodexRuntimeSheet.vue'
-import CodexSidebarDrawer from '../components/workspace/CodexSidebarDrawer.vue'
 import WorkspaceHeader from '../components/workspace/WorkspaceHeader.vue'
 import WorkspaceSidebar from '../components/workspace/WorkspaceSidebar.vue'
 import { provideWorkspaceAppContext } from '../composables/useWorkspaceApp'
@@ -42,7 +40,4 @@ const workspace = provideWorkspaceAppContext()
       <RouterView />
     </main>
   </div>
-
-  <CodexSidebarDrawer />
-  <CodexRuntimeSheet />
 </template>

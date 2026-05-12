@@ -3,8 +3,6 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-import shlex
-import shutil
 from typing import Any
 
 from pydantic import ValidationError
@@ -225,15 +223,10 @@ class AppConfigService:
     def backend_options(self) -> list[BackendOption]:
         return [
             BackendOption(id="yier", label="Yier Agent"),
-            BackendOption(id="codex", label="Codex App Server"),
         ]
 
     def build_backend_health(self) -> dict[str, BackendHealth]:
         settings = self.load_web_settings()
-        codex_command = (
-            settings.codex.launcher_command or "codex app-server --listen stdio://"
-        )
-        codex_binary = self._resolve_command_binary(codex_command)
         return {
             "yier": BackendHealth(
                 ready=settings.llm.is_ready,
@@ -241,14 +234,6 @@ class AppConfigService:
                     None
                     if settings.llm.is_ready
                     else "Configure provider/API key/model in Settings to use the built-in Yier backend."
-                ),
-            ),
-            "codex": BackendHealth(
-                ready=codex_binary is not None,
-                detail=(
-                    None
-                    if codex_binary is not None
-                    else f"Cannot find the launcher for `{codex_command}`. Install Codex or update the launcher command."
                 ),
             ),
         }
@@ -405,18 +390,6 @@ class AppConfigService:
         if candidate.is_absolute():
             return candidate.resolve()
         return (self.project_root / candidate).resolve()
-
-    def _resolve_command_binary(self, launcher_command: str) -> str | None:
-        try:
-            parts = shlex.split(launcher_command)
-        except ValueError:
-            return None
-        if not parts:
-            return None
-        binary = parts[0]
-        if binary.startswith("/"):
-            return binary if Path(binary).exists() else None
-        return shutil.which(binary)
 
     def _write_json(self, path: Path, payload: dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

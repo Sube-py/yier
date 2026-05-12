@@ -4,7 +4,6 @@ requires-python = ">=3.12"
 
 [manifest]
 members = [
-    "codex-app-server-sdk",
     "yier",
     "yier-channel",
 ]
@@ -119,15 +118,16 @@ wheels = [
 ]
 
 [[package]]
-name = "codex-app-server-sdk"
-version = "0.2.0"
-source = { editable = "packages/codex-app-server-sdk" }
+name = "codex-ipc"
+version = "0.1.0"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic" },
 ]
-
-[package.metadata]
-requires-dist = [{ name = "pydantic", specifier = ">=2.12" }]
+sdist = { url = "https://files.pythonhosted.org/packages/f5/d9/9f23f5d9fe54e6461b7996df6f95ec47e0f77f4e1ab773d43a3a98e77aba/codex_ipc-0.1.0.tar.gz", hash = "sha256:483c3ed41e0dbe4eb01f9c09a60ba4132545ddbfd0c8958c58badb349073caac", size = 123021, upload-time = "2026-05-12T12:58:09.507Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8d/60/28153c6925fee60af7b264e28b04d714566f7a64707851b06d38f2d23390/codex_ipc-0.1.0-py3-none-any.whl", hash = "sha256:60deb14876ee9dae289fb8e034b2dc4d4ede4cc3bd58aaef65c68e195218ffde", size = 101281, upload-time = "2026-05-12T12:58:07.821Z" },
+]
 
 [[package]]
 name = "colorama"
@@ -1223,7 +1223,7 @@ name = "yier"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "codex-app-server-sdk" },
+    { name = "codex-ipc" },
     { name = "granian", extra = ["reload"] },
     { name = "httpx" },
     { name = "litestar" },
@@ -1240,7 +1240,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "codex-app-server-sdk", editable = "packages/codex-app-server-sdk" },
+    { name = "codex-ipc", specifier = ">=0.1.0" },
     { name = "granian", extras = ["reload"], specifier = ">=2.7.2" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "litestar", specifier = ">=2.21.1" },

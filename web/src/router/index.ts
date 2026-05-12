@@ -23,6 +23,11 @@ export function createAppRouter(history: RouterHistory = createWebHistory(import
             component: () => import('../views/ChatView.vue'),
           },
           {
+            path: 'codex',
+            name: 'codex',
+            component: () => import('../views/CodexView.vue'),
+          },
+          {
             path: 'settings',
             name: 'settings',
             component: () => import('../views/SettingsView.vue'),

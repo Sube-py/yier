@@ -20,10 +20,7 @@ Backend dependencies:
 uv sync
 ```
 
-This repo is self-contained for the Python SDK dependency:
-
-- `codex-app-server-sdk` is vendored under [packages/codex-app-server-sdk](/Users/sube/me/yier/packages/codex-app-server-sdk)
-- teammates do not need to clone a separate `codex` repository just to install dependencies
+Codex workspace support uses the published `codex-ipc` package from PyPI.
 
 Frontend dependencies:
 

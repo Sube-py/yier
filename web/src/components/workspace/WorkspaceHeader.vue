@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import Button from 'primevue/button'
+import { RouterLink } from 'vue-router'
 
 import { useWorkspaceAppContext } from '../../composables/useWorkspaceApp'
 
@@ -52,6 +53,14 @@ const workspace = useWorkspaceAppContext()
       <p class="eyebrow">{{ workspace.workspaceEyebrow }}</p>
     </div>
     <div class="flex items-center gap-3 max-[1023px]:flex-col max-[1023px]:items-stretch">
+      <RouterLink
+        v-if="workspace.isChatRoute"
+        to="/codex"
+        class="inline-flex h-9 items-center gap-2 rounded-lg border border-[color:var(--app-border)] bg-white px-3 text-sm font-semibold text-[color:var(--app-text)] transition hover:border-[color:var(--app-accent)]"
+      >
+        <i class="pi pi-bolt text-xs"></i>
+        <span>Codex</span>
+      </RouterLink>
       <Button
         :label="workspace.isChatRoute ? 'Settings' : 'Back to Chat'"
         :icon="workspace.isChatRoute ? 'pi pi-sliders-h' : 'pi pi-comments'"

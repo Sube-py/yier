@@ -52,39 +52,19 @@
   - or a small local bootstrap cache that is reconciled after config loads
 - When using local bootstrap cache for UX, keep the backend config as the durable source of truth and treat the cache only as a first-paint hint.
 
-## Codex SDK Notes
+## Codex IPC Notes
 
-- `codex-app-server-sdk==0.2.0` is sourced from a local path:
-  [`../codex/sdk/python`](/Users/sube/me/codex/sdk/python)
-- Prefer the public SDK surface when possible:
-  `Codex`, `Thread`, `thread_list()`, `thread_resume()`, `Thread.read()`, `Thread.turn()`
-- Public SDK kwargs are snake_case, not wire camelCase.
-  Examples:
-  `approval_policy`, `approvals_reviewer`, `sandbox_policy`, `source_kinds`, `sort_key`
-- Keep direct `AppServerClient` usage only where needed for runtime control that the high-level SDK does not cleanly expose in this app.
-
-## Current Codex Integration Behavior
-
-- Codex workspace session listing prefers SDK `thread_list()` and only falls back to reading local `~/.codex` data if SDK listing fails.
-- Codex workspace grouping is still project-oriented in this app, even though SDK threads are flat.
-- Only interactive thread sources are shown in the Codex workspace list:
-  `cli`, `vscode`, `exec`, `appServer`
-- Timeline hydration for bridged Codex sessions reads live thread state via SDK thread read APIs instead of relying only on local transcript storage.
-
-## Codex IPC Owner/Follower Notes
-
-- IPC owner/follower state is tracked per conversation in [`yier_web/codex/ipc/owner_follower.py`](/Users/sube/me/yier/yier_web/codex/ipc/owner_follower.py).
-- [`CodexThreadFollowerBridge`](/Users/sube/me/yier/yier_web/codex/ipc/bridge.py) should stay a thin router:
-  - route IPC broadcasts to the per-conversation owner/follower session
-  - publish frontend refresh events such as `codex_session_updated`
-  - forward follower requests to the current owner
-  - avoid reintroducing event-name-specific snapshot/patch choreography
-- A local Yier session is `owner` only when it owns SDK turn streaming for that conversation. Owners start turns through the public SDK path (`Thread.turn(...)`), consume `turn_handle.stream()`, and broadcast `thread-stream-state-changed` snapshots/patches.
-- A local Yier session is `follower` after receiving a remote owner snapshot/patch. Followers should persist remote `ConversationState`, skip local IPC broadcasts for that conversation, and forward start/steer/interrupt/approval responses to `ownerClientId`.
-- If the owner disconnects via `client-status-changed`, clear `ipc_source_client_id` / owner role. The next local prompt may resume the SDK thread and become owner.
-- The app-facing rich conversation state still comes from [`yier_web/codex/ipc/state.py`](/Users/sube/me/yier/yier_web/codex/ipc/state.py). Do not downgrade IPC state to a minimal text-only shape when wiring owner/follower behavior.
-- IPC protocol framing and method versions should match the reference implementation under `/Users/sube/me/codex-ipc-with-codex/packages/ipc/src/ipc`; `thread-stream-state-changed` is version `6`.
-- When changing IPC behavior, update targeted tests in [`tests/test_codex_ipc.py`](/Users/sube/me/yier/tests/test_codex_ipc.py), [`tests/test_codex_backend.py`](/Users/sube/me/yier/tests/test_codex_backend.py), and [`tests/test_app.py`](/Users/sube/me/yier/tests/test_app.py).
+- Codex behavior is implemented through the published `codex-ipc` package.
+- Do not add `codex-app-server-sdk` or `yier_web.codex.sdk` imports back into yier.
+- The standalone Codex workspace is served from `/codex` and `/api/codex/ws`.
+- `ChatService` owns Yier chat only. Codex thread state and commands belong in
+  [`yier_web/codex/ipc_manager.py`](/Users/sube/me/yier/yier_web/codex/ipc_manager.py)
+  and [`yier_web/routes/codex.py`](/Users/sube/me/yier/yier_web/routes/codex.py).
+- Keep one `CodexIpcSession` per active Codex thread so UI subscription changes
+  do not stop running turns.
+- When changing Codex behavior, update manager/controller tests in
+  [`tests/test_codex_ipc_manager.py`](/Users/sube/me/yier/tests/test_codex_ipc_manager.py)
+  and frontend tests under [`web/src/codex`](/Users/sube/me/yier/web/src/codex).
 
 ## Approval And Elicitation Notes
 

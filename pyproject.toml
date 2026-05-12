@@ -5,7 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "codex-app-server-sdk==0.2.0",
+    "codex-ipc>=0.1.0",
     "granian[reload]>=2.7.2",
     "httpx>=0.28.1",
     "litestar>=2.21.1",
@@ -29,11 +29,10 @@ build-backend = "setuptools.build_meta"
 include = ["yier_web*"]
 
 [tool.uv.workspace]
-members = ["packages/yier-channel", "packages/codex-app-server-sdk"]
+members = ["packages/yier-channel"]
 
 [tool.uv.sources]
 yier-channel = { workspace = true }
-codex-app-server-sdk = { workspace = true }
 
 [dependency-groups]
 dev = ["pytest>=9.0.2", "ruff>=0.15.10"]

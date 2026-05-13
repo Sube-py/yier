@@ -11,6 +11,10 @@ from litestar.exceptions import HTTPException, WebSocketDisconnect
 from litestar.status_codes import HTTP_400_BAD_REQUEST, HTTP_404_NOT_FOUND
 
 from yier_web.codex.ipc_manager import CodexIpcManager, CodexSubscriberQueue
+from yier_web.codex.ws_commands import (
+    CodexWsCommandContext,
+    CodexWsCommandStrategyFactory,
+)
 from yier_web.schemas import (
     ArchiveCodexSessionResponse,
     CodexThreadCreateRequest,
@@ -28,13 +32,9 @@ def _codex_manager(state: State) -> CodexIpcManager:
     return cast(CodexIpcManager, manager)
 
 
-def _payload_text(payload: dict[str, Any], key: str) -> str:
-    value = payload.get(key)
-    return value.strip() if isinstance(value, str) else ""
-
-
 class CodexController(Controller):
     path = "/codex"
+    ws_command_factory = CodexWsCommandStrategyFactory()
 
     @get("/workspace")
     async def get_workspace(self, state: State) -> CodexWorkspaceResponse:
@@ -66,7 +66,9 @@ class CodexController(Controller):
         )
         return CodexThreadCreateResponse(
             thread_id=str(payload["thread_id"]),
-            state=payload.get("state") if isinstance(payload.get("state"), dict) else None,
+            state=payload.get("state")
+            if isinstance(payload.get("state"), dict)
+            else None,
         )
 
     @post("/threads/{thread_id:str}/archive")
@@ -116,29 +118,18 @@ class CodexController(Controller):
             }
         )
 
-        receive_task: asyncio.Task[Any] | None = asyncio.create_task(
-            socket.receive_json()
-        )
-        send_task: asyncio.Task[dict[str, Any]] | None = asyncio.create_task(
-            outbox.get()
-        )
+        receive_task: asyncio.Task[Any] = asyncio.create_task(socket.receive_json())
+        send_task: asyncio.Task[dict[str, Any]] = asyncio.create_task(outbox.get())
 
         try:
             while True:
-                pending_tasks = [
-                    task for task in (receive_task, send_task) if task is not None
-                ]
                 done, _pending = await asyncio.wait(
-                    pending_tasks,
+                    {receive_task, send_task},
                     return_when=asyncio.FIRST_COMPLETED,
                 )
 
                 if receive_task in done:
-                    try:
-                        incoming = receive_task.result()
-                    except WebSocketDisconnect:
-                        receive_task = None
-                        break
+                    incoming = receive_task.result()
                     receive_task = asyncio.create_task(socket.receive_json())
                     await self._handle_ws_message(
                         manager=manager,
@@ -151,15 +142,15 @@ class CodexController(Controller):
                     outbound = send_task.result()
                     await socket.send_json(outbound)
                     send_task = asyncio.create_task(outbox.get())
+        except WebSocketDisconnect:
+            pass
         finally:
-            if receive_task is not None:
-                receive_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError, WebSocketDisconnect):
-                    await receive_task
-            if send_task is not None:
-                send_task.cancel()
+            for task in (receive_task, send_task):
+                if task.done():
+                    continue
+                task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
-                    await send_task
+                    await task
             for thread_id in subscribed_thread_ids:
                 manager.unsubscribe(thread_id, outbox)
 
@@ -219,123 +210,12 @@ class CodexController(Controller):
         outbox: CodexSubscriberQueue,
         subscribed_thread_ids: set[str],
     ) -> dict[str, Any]:
-        if message_type == "list_threads":
-            workspace = await manager.workspace()
-            await outbox.put(
-                {
-                    "type": "workspace",
-                    "payload": workspace.model_dump(mode="json"),
-                }
+        strategy = self.ws_command_factory.get(message_type)
+        return await strategy.execute(
+            CodexWsCommandContext(
+                manager=manager,
+                payload=payload,
+                outbox=outbox,
+                subscribed_thread_ids=subscribed_thread_ids,
             )
-            return workspace.model_dump(mode="json")
-
-        if message_type == "start_thread":
-            result = await manager.start_thread(
-                project_path=_payload_text(payload, "project_path") or None,
-            )
-            workspace = await manager.workspace()
-            await outbox.put(
-                {
-                    "type": "workspace",
-                    "payload": workspace.model_dump(mode="json"),
-                }
-            )
-            return result
-
-        thread_id = _payload_text(payload, "thread_id")
-        if not thread_id:
-            raise ValueError("thread_id is required.")
-
-        if message_type == "subscribe_thread":
-            state = await manager.subscribe(thread_id, outbox)
-            subscribed_thread_ids.add(thread_id)
-            return {"thread_id": thread_id, "state": state}
-
-        if message_type == "unsubscribe_thread":
-            manager.unsubscribe(thread_id, outbox)
-            subscribed_thread_ids.discard(thread_id)
-            return {"thread_id": thread_id}
-
-        if message_type == "send_prompt":
-            prompt = _payload_text(payload, "prompt")
-            if not prompt:
-                raise ValueError("prompt is required.")
-            collaboration_mode = payload.get("collaboration_mode")
-            await manager.send_prompt(
-                thread_id,
-                prompt,
-                collaboration_mode=(
-                    dict(collaboration_mode)
-                    if isinstance(collaboration_mode, dict)
-                    else None
-                ),
-            )
-            return {"thread_id": thread_id}
-
-        if message_type == "steer_prompt":
-            prompt = _payload_text(payload, "prompt")
-            if not prompt:
-                raise ValueError("prompt is required.")
-            await manager.steer_prompt(thread_id, prompt)
-            return {"thread_id": thread_id}
-
-        if message_type == "enqueue_followup":
-            prompt = _payload_text(payload, "prompt")
-            if not prompt:
-                raise ValueError("prompt is required.")
-            return await manager.enqueue_followup(thread_id, prompt)
-
-        if message_type == "remove_followup":
-            message_id = _payload_text(payload, "message_id")
-            if not message_id:
-                raise ValueError("message_id is required.")
-            await manager.remove_followup(thread_id, message_id)
-            return {"thread_id": thread_id, "message_id": message_id}
-
-        if message_type == "interrupt_turn":
-            turn_id = _payload_text(payload, "turn_id") or None
-            interrupted = await manager.interrupt_turn(thread_id, turn_id)
-            return {"thread_id": thread_id, "forwarded": interrupted}
-
-        if message_type == "compact_thread":
-            forwarded = await manager.compact_thread(thread_id)
-            return {"thread_id": thread_id, "forwarded": forwarded}
-
-        if message_type == "set_collaboration_mode":
-            collaboration_mode = payload.get("collaboration_mode")
-            await manager.set_collaboration_mode(
-                thread_id,
-                dict(collaboration_mode)
-                if isinstance(collaboration_mode, dict)
-                else None,
-            )
-            return {"thread_id": thread_id}
-
-        if message_type == "submit_user_input_response":
-            request_id = _payload_text(payload, "request_id")
-            response = payload.get("response")
-            if not request_id:
-                raise ValueError("request_id is required.")
-            submitted = await manager.submit_user_input_response(
-                thread_id,
-                request_id,
-                dict(response) if isinstance(response, dict) else {"answers": {}},
-            )
-            return {"thread_id": thread_id, "submitted": submitted}
-
-        if message_type == "rename_thread":
-            name = _payload_text(payload, "name")
-            if not name:
-                raise ValueError("name is required.")
-            await manager.rename_thread(thread_id, name)
-            return {"thread_id": thread_id}
-
-        if message_type == "archive_thread":
-            await manager.archive_thread(thread_id)
-            return {"thread_id": thread_id}
-
-        if message_type == "unarchive_thread":
-            await manager.unarchive_thread(thread_id)
-            return {"thread_id": thread_id}
-
-        raise ValueError(f"Unsupported Codex command: {message_type}")
+        )

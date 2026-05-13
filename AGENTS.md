@@ -10,18 +10,15 @@
 ## Environment
 
 - This repo uses `uv`, not a manually managed virtualenv workflow.
-- Python dependencies are resolved from [`pyproject.toml`](/Users/sube/me/yier/pyproject.toml) and [`uv.lock`](/Users/sube/me/yier/uv.lock).
+- Python dependencies are resolved from `pyproject.toml`.
 - Use `uv run ...` for Python commands.
 - Do not assume `python` is available on `$PATH`; in this environment `uv run python ...` is the reliable path.
-- The project requires Python `>=3.12`.
-- Frontend commands run from [`web`](/Users/sube/me/yier/web) and use `pnpm`.
+- Frontend commands run from `web` and use `pnpm`.
 
 ## Common Commands
 
 - Backend tests:
   `uv run pytest`
-- Targeted backend tests:
-  `uv run pytest tests/test_codex_backend.py tests/test_codex_workspace.py tests/test_app.py`
 - Python compile sanity check:
   `uv run python -m compileall yier_web`
 - Frontend unit tests:
@@ -33,14 +30,19 @@
 
 ## Workspace Layout
 
-- Main backend app code lives in [`yier_web`](/Users/sube/me/yier/yier_web).
-- Frontend app code lives in [`web/src`](/Users/sube/me/yier/web/src).
-- The repo is a `uv` workspace and includes [`packages/yier-channel`](/Users/sube/me/yier/packages/yier-channel).
+- Main backend app code lives in `yier_web`.
+- Frontend app code lives in `web/src`.
+
+## Architecture Conventions
+
+- Prefer appropriate design patterns when they make behavior clearer or reduce conditional complexity, especially for command dispatch, state transitions, adapters, factories, strategies, and cross-boundary integrations.
+- Keep modules highly cohesive and loosely coupled across both backend and frontend code. A module should own one clear responsibility and expose narrow interfaces.
+- Split growing files into focused modules instead of accumulating unrelated concerns in one place. This applies to Python services/routes/managers and Vue composables/components/views alike.
+- Keep each source file under roughly 500 lines where practical. If a file approaches that size, look for a natural boundary to extract before adding more behavior.
 
 ## Frontend Conventions
 
-- Prefer Tailwind CSS for new frontend styling work. Reuse existing semantic classes when touching old code, but do not default to adding more large hand-written CSS blocks if Tailwind utilities or small extracted components can express the change cleanly.
-- Do not keep expanding [`web/src/App.vue`](/Users/sube/me/yier/web/src/App.vue) with unrelated UI concerns.
+- Use tailwindcss for styling.
 - Frontend structure should prefer module-based splitting:
   - page-level or workspace-level UI should live in a `views` layer
   - module-specific subparts should stay close to that module
@@ -55,7 +57,6 @@
 ## Codex IPC Notes
 
 - Codex behavior is implemented through the published `codex-ipc` package.
-- Do not add `codex-app-server-sdk` or `yier_web.codex.sdk` imports back into yier.
 - The standalone Codex workspace is served from `/codex` and `/api/codex/ws`.
 - `ChatService` owns Yier chat only. Codex thread state and commands belong in
   [`yier_web/codex/ipc_manager.py`](/Users/sube/me/yier/yier_web/codex/ipc_manager.py)
@@ -65,46 +66,3 @@
 - When changing Codex behavior, update manager/controller tests in
   [`tests/test_codex_ipc_manager.py`](/Users/sube/me/yier/tests/test_codex_ipc_manager.py)
   and frontend tests under [`web/src/codex`](/Users/sube/me/yier/web/src/codex).
-
-## Approval And Elicitation Notes
-
-- App-server exposes MCP elicitation to this app primarily as `mcpServer/elicitation/request`.
-- Raw MCP-style `elicitation/create` is also normalized by the backend for compatibility.
-- Treat both methods as the same logical `mcp_elicitation` flow in this codebase.
-- The backend normalizes elicitation payloads so the frontend can read a consistent `payload.request`.
-- `payload.request.mode` may be:
-  - `form`
-  - `url`
-- Do not assume elicitation payloads are plain approval prompts.
-
-## Elicitation UI Notes
-
-- Users should not be forced to type raw JSON for normal elicitation forms.
-- The frontend currently renders structured controls for common schema shapes:
-  - `string`
-  - `number`
-  - `integer`
-  - `boolean`
-  - single-select enums via `enum` or `oneOf`
-  - multi-select enums via `array` item enums / `anyOf`
-- If a schema shape is unsupported, the frontend may still fall back to JSON response editing.
-- When changing elicitation behavior, update both:
-  - backend normalization in [`backend.py`](/Users/sube/me/yier/yier_web/codex/backend.py)
-  - frontend approval rendering in [`ChatTimeline.vue`](/Users/sube/me/yier/web/src/components/ChatTimeline.vue)
-
-## Known Pitfalls
-
-- Do not assume local `.codex` session files are the primary source of truth anymore; SDK listing is the preferred path.
-- Do not mix SDK snake_case params with lower-level wire camelCase in the same change without checking the call site carefully.
-- `thread_list()`, `Thread.read()`, and `Thread.turn()` are good SDK-level entry points; streaming approval interception still depends on the custom approval-aware SDK wrapper in this app.
-- If you add or change persisted config fields, update the full chain together:
-  - backend schemas in [`yier_web/schemas.py`](/Users/sube/me/yier/yier_web/schemas.py)
-  - backend config read/write logic in [`yier_web/config.py`](/Users/sube/me/yier/yier_web/config.py)
-  - frontend API types in [`web/src/types/api.ts`](/Users/sube/me/yier/web/src/types/api.ts)
-  - frontend hydration/save logic
-  - relevant backend and frontend tests
-- After backend schema/config changes, do not trust a hot frontend refresh alone. Restart the backend process before judging whether `/api/config` or `settings.json` behavior is correct.
-- If you change approval payload structure, also update:
-  - [`web/src/types/api.ts`](/Users/sube/me/yier/web/src/types/api.ts)
-  - [`web/src/App.vue`](/Users/sube/me/yier/web/src/App.vue)
-  - frontend tests in [`web/src/__tests__/App.spec.ts`](/Users/sube/me/yier/web/src/__tests__/App.spec.ts)

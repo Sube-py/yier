@@ -1,0 +1,207 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+from yier_web.codex.ipc_manager import CodexIpcManager, CodexSubscriberQueue
+
+
+def _payload_text(payload: dict[str, Any], key: str) -> str:
+    value = payload.get(key)
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _required_payload_text(payload: dict[str, Any], key: str) -> str:
+    value = _payload_text(payload, key)
+    if not value:
+        raise ValueError(f"{key} is required.")
+    return value
+
+
+def _payload_dict(payload: dict[str, Any], key: str) -> dict[str, Any] | None:
+    value = payload.get(key)
+    return dict(value) if isinstance(value, dict) else None
+
+
+@dataclass(slots=True)
+class CodexWsCommandContext:
+    manager: CodexIpcManager
+    payload: dict[str, Any]
+    outbox: CodexSubscriberQueue
+    subscribed_thread_ids: set[str]
+
+
+class CodexWsCommandStrategy:
+    async def execute(self, context: CodexWsCommandContext) -> dict[str, Any]:
+        raise NotImplementedError
+
+
+async def _publish_workspace(
+    manager: CodexIpcManager,
+    outbox: CodexSubscriberQueue,
+) -> dict[str, Any]:
+    workspace = await manager.workspace()
+    payload = workspace.model_dump(mode="json")
+    await outbox.put(
+        {
+            "type": "workspace",
+            "payload": payload,
+        }
+    )
+    return payload
+
+
+class ListThreadsCommandStrategy(CodexWsCommandStrategy):
+    async def execute(self, context: CodexWsCommandContext) -> dict[str, Any]:
+        return await _publish_workspace(context.manager, context.outbox)
+
+
+class StartThreadCommandStrategy(CodexWsCommandStrategy):
+    async def execute(self, context: CodexWsCommandContext) -> dict[str, Any]:
+        result = await context.manager.start_thread(
+            project_path=_payload_text(context.payload, "project_path") or None,
+        )
+        await _publish_workspace(context.manager, context.outbox)
+        return result
+
+
+class ThreadCommandStrategy(CodexWsCommandStrategy):
+    def thread_id(self, context: CodexWsCommandContext) -> str:
+        return _required_payload_text(context.payload, "thread_id")
+
+
+class SubscribeThreadCommandStrategy(ThreadCommandStrategy):
+    async def execute(self, context: CodexWsCommandContext) -> dict[str, Any]:
+        thread_id = self.thread_id(context)
+        state = await context.manager.subscribe(thread_id, context.outbox)
+        context.subscribed_thread_ids.add(thread_id)
+        return {"thread_id": thread_id, "state": state}
+
+
+class UnsubscribeThreadCommandStrategy(ThreadCommandStrategy):
+    async def execute(self, context: CodexWsCommandContext) -> dict[str, Any]:
+        thread_id = self.thread_id(context)
+        context.manager.unsubscribe(thread_id, context.outbox)
+        context.subscribed_thread_ids.discard(thread_id)
+        return {"thread_id": thread_id}
+
+
+class SendPromptCommandStrategy(ThreadCommandStrategy):
+    async def execute(self, context: CodexWsCommandContext) -> dict[str, Any]:
+        thread_id = self.thread_id(context)
+        prompt = _required_payload_text(context.payload, "prompt")
+        await context.manager.send_prompt(
+            thread_id,
+            prompt,
+            collaboration_mode=_payload_dict(context.payload, "collaboration_mode"),
+        )
+        return {"thread_id": thread_id}
+
+
+class SteerPromptCommandStrategy(ThreadCommandStrategy):
+    async def execute(self, context: CodexWsCommandContext) -> dict[str, Any]:
+        thread_id = self.thread_id(context)
+        prompt = _required_payload_text(context.payload, "prompt")
+        await context.manager.steer_prompt(thread_id, prompt)
+        return {"thread_id": thread_id}
+
+
+class EnqueueFollowupCommandStrategy(ThreadCommandStrategy):
+    async def execute(self, context: CodexWsCommandContext) -> dict[str, Any]:
+        thread_id = self.thread_id(context)
+        prompt = _required_payload_text(context.payload, "prompt")
+        return await context.manager.enqueue_followup(thread_id, prompt)
+
+
+class RemoveFollowupCommandStrategy(ThreadCommandStrategy):
+    async def execute(self, context: CodexWsCommandContext) -> dict[str, Any]:
+        thread_id = self.thread_id(context)
+        message_id = _required_payload_text(context.payload, "message_id")
+        await context.manager.remove_followup(thread_id, message_id)
+        return {"thread_id": thread_id, "message_id": message_id}
+
+
+class InterruptTurnCommandStrategy(ThreadCommandStrategy):
+    async def execute(self, context: CodexWsCommandContext) -> dict[str, Any]:
+        thread_id = self.thread_id(context)
+        turn_id = _payload_text(context.payload, "turn_id") or None
+        interrupted = await context.manager.interrupt_turn(thread_id, turn_id)
+        return {"thread_id": thread_id, "forwarded": interrupted}
+
+
+class CompactThreadCommandStrategy(ThreadCommandStrategy):
+    async def execute(self, context: CodexWsCommandContext) -> dict[str, Any]:
+        thread_id = self.thread_id(context)
+        forwarded = await context.manager.compact_thread(thread_id)
+        return {"thread_id": thread_id, "forwarded": forwarded}
+
+
+class SetCollaborationModeCommandStrategy(ThreadCommandStrategy):
+    async def execute(self, context: CodexWsCommandContext) -> dict[str, Any]:
+        thread_id = self.thread_id(context)
+        await context.manager.set_collaboration_mode(
+            thread_id,
+            _payload_dict(context.payload, "collaboration_mode"),
+        )
+        return {"thread_id": thread_id}
+
+
+class SubmitUserInputResponseCommandStrategy(ThreadCommandStrategy):
+    async def execute(self, context: CodexWsCommandContext) -> dict[str, Any]:
+        thread_id = self.thread_id(context)
+        request_id = _required_payload_text(context.payload, "request_id")
+        submitted = await context.manager.submit_user_input_response(
+            thread_id,
+            request_id,
+            _payload_dict(context.payload, "response") or {"answers": {}},
+        )
+        return {"thread_id": thread_id, "submitted": submitted}
+
+
+class RenameThreadCommandStrategy(ThreadCommandStrategy):
+    async def execute(self, context: CodexWsCommandContext) -> dict[str, Any]:
+        thread_id = self.thread_id(context)
+        name = _required_payload_text(context.payload, "name")
+        await context.manager.rename_thread(thread_id, name)
+        return {"thread_id": thread_id}
+
+
+class ArchiveThreadCommandStrategy(ThreadCommandStrategy):
+    async def execute(self, context: CodexWsCommandContext) -> dict[str, Any]:
+        thread_id = self.thread_id(context)
+        await context.manager.archive_thread(thread_id)
+        return {"thread_id": thread_id}
+
+
+class UnarchiveThreadCommandStrategy(ThreadCommandStrategy):
+    async def execute(self, context: CodexWsCommandContext) -> dict[str, Any]:
+        thread_id = self.thread_id(context)
+        await context.manager.unarchive_thread(thread_id)
+        return {"thread_id": thread_id}
+
+
+class CodexWsCommandStrategyFactory:
+    def __init__(self) -> None:
+        self.strategies: dict[str, CodexWsCommandStrategy] = {
+            "list_threads": ListThreadsCommandStrategy(),
+            "start_thread": StartThreadCommandStrategy(),
+            "subscribe_thread": SubscribeThreadCommandStrategy(),
+            "unsubscribe_thread": UnsubscribeThreadCommandStrategy(),
+            "send_prompt": SendPromptCommandStrategy(),
+            "steer_prompt": SteerPromptCommandStrategy(),
+            "enqueue_followup": EnqueueFollowupCommandStrategy(),
+            "remove_followup": RemoveFollowupCommandStrategy(),
+            "interrupt_turn": InterruptTurnCommandStrategy(),
+            "compact_thread": CompactThreadCommandStrategy(),
+            "set_collaboration_mode": SetCollaborationModeCommandStrategy(),
+            "submit_user_input_response": SubmitUserInputResponseCommandStrategy(),
+            "rename_thread": RenameThreadCommandStrategy(),
+            "archive_thread": ArchiveThreadCommandStrategy(),
+            "unarchive_thread": UnarchiveThreadCommandStrategy(),
+        }
+
+    def get(self, message_type: str) -> CodexWsCommandStrategy:
+        strategy = self.strategies.get(message_type)
+        if strategy is None:
+            raise ValueError(f"Unsupported Codex command: {message_type}")
+        return strategy

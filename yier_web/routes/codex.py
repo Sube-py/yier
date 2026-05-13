@@ -137,6 +137,7 @@ class CodexController(Controller):
                     try:
                         incoming = receive_task.result()
                     except WebSocketDisconnect:
+                        receive_task = None
                         break
                     receive_task = asyncio.create_task(socket.receive_json())
                     await self._handle_ws_message(
@@ -153,7 +154,7 @@ class CodexController(Controller):
         finally:
             if receive_task is not None:
                 receive_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
+                with contextlib.suppress(asyncio.CancelledError, WebSocketDisconnect):
                     await receive_task
             if send_task is not None:
                 send_task.cancel()

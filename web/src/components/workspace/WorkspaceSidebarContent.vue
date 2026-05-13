@@ -4,7 +4,6 @@ import ScrollPanel from 'primevue/scrollpanel'
 import Select from 'primevue/select'
 import Skeleton from 'primevue/skeleton'
 import Tag from 'primevue/tag'
-import { RouterLink } from 'vue-router'
 
 import WorkspaceBrandPanel from './WorkspaceBrandPanel.vue'
 import { useWorkspaceAppContext } from '../../composables/useWorkspaceApp'
@@ -37,13 +36,6 @@ const workspace = useWorkspaceAppContext()
       fluid
       @click="workspace.handleNewChatClick"
     />
-    <RouterLink
-      to="/codex"
-      class="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-[color:var(--app-border)] bg-white px-3 text-sm font-semibold text-[color:var(--app-text)] transition hover:border-[color:var(--app-accent)]"
-    >
-      <i class="pi pi-bolt text-xs"></i>
-      <span>Codex</span>
-    </RouterLink>
   </div>
   <div
     v-if="workspace.isBooting"
@@ -153,7 +145,7 @@ const workspace = useWorkspaceAppContext()
     <p class="m-0 text-[0.92rem] text-[color:var(--app-text-soft)]">Workspaces</p>
     <Select
       v-if="!workspace.isBooting"
-      v-model="workspace.workspaceSurfaceModel"
+      :model-value="workspace.workspaceSurfaceModel"
       :options="workspace.workspaceSurfaceOptions"
       option-label="label"
       option-value="value"
@@ -161,6 +153,7 @@ const workspace = useWorkspaceAppContext()
       class="workspace-switcher-control w-full"
       size="small"
       aria-label="Switch workspace"
+      @update:modelValue="workspace.switchWorkspaceSurface"
     />
     <Skeleton
       v-else

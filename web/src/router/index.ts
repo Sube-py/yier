@@ -14,6 +14,11 @@ export function createAppRouter(history: RouterHistory = createWebHistory(import
         component: () => import('../views/LoginView.vue'),
       },
       {
+        path: '/codex',
+        name: 'codex',
+        component: () => import('../views/CodexView.vue'),
+      },
+      {
         path: '/',
         component: () => import('../views/WorkspaceLayoutView.vue'),
         children: [
@@ -21,11 +26,6 @@ export function createAppRouter(history: RouterHistory = createWebHistory(import
             path: 'chat',
             name: 'chat',
             component: () => import('../views/ChatView.vue'),
-          },
-          {
-            path: 'codex',
-            name: 'codex',
-            component: () => import('../views/CodexView.vue'),
           },
           {
             path: 'settings',

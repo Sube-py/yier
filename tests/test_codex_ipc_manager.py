@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import Any, Callable
 
 import pytest
+from litestar.exceptions import WebSocketDisconnect
 from litestar.testing import TestClient
 
 from yier_web.app import AppServices, create_app
@@ -16,6 +17,7 @@ from yier_web.codex.ipc_manager import CodexIpcManager
 from yier_web.config import AppConfigService
 from yier_web.event_stream import EventStreamBroker
 from yier_web.frontend import FrontendService
+from yier_web.routes.codex import CodexController
 from yier_web.schemas import CodexWorkspaceResponse
 
 
@@ -205,6 +207,23 @@ class FakeChannelWorkspaceService:
 class FakeDirectoryPickerService:
     def select_directory(self, initial_path: str | None = None) -> str | None:
         return None
+
+
+class DisconnectingCodexSocket:
+    def __init__(self, manager: CodexIpcManager) -> None:
+        self.app = SimpleNamespace(state=SimpleNamespace(codex_ipc_manager=manager))
+        self.accepted = False
+        self.sent_messages: list[dict[str, Any]] = []
+
+    async def accept(self) -> None:
+        self.accepted = True
+
+    async def receive_json(self) -> dict[str, Any]:
+        await asyncio.sleep(0)
+        raise WebSocketDisconnect(detail="disconnect event")
+
+    async def send_json(self, message: dict[str, Any]) -> None:
+        self.sent_messages.append(message)
 
 
 def build_app(tmp_path: Path, factory: FakeSessionFactory) -> tuple[AppConfigService, TestClient[Any]]:
@@ -461,3 +480,27 @@ def test_codex_controller_http_and_websocket_contract(tmp_path: Path) -> None:
             error_message = error_messages[-1]
             assert error_message["type"] == "error"
             assert error_message["code"] == "bad_request"
+
+
+def test_codex_websocket_disconnect_during_cleanup_is_quiet(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        config_service = AppConfigService(
+            project_root=tmp_path / "project",
+            home_dir=tmp_path / "home",
+        )
+        manager = CodexIpcManager(
+            config_service=config_service,
+            event_broker=EventStreamBroker(),
+            session_factory=FakeSessionFactory(),
+        )
+        socket = DisconnectingCodexSocket(manager)
+
+        controller = CodexController.__new__(CodexController)
+        await CodexController.__dict__["websocket_handler"].fn(
+            controller,
+            socket,
+        )
+
+        assert socket.accepted is True
+
+    asyncio.run(scenario())

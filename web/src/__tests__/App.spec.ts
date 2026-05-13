@@ -1,10 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
-import { nextTick } from 'vue'
+import { defineComponent, nextTick } from 'vue'
 import PrimeVue from 'primevue/config'
 import Aura from '@primeuix/themes/aura'
 
 import App from '../App.vue'
+import { provideWorkspaceAppContext } from '../composables/useWorkspaceApp'
 import { createTestRouter } from '../router'
 
 class MockEventSource {
@@ -32,6 +33,35 @@ class MockEventSource {
 
   static reset() {
     MockEventSource.instances = []
+  }
+}
+
+class MockWebSocket {
+  static readonly CONNECTING = 0
+  static readonly OPEN = 1
+  static readonly CLOSING = 2
+  static readonly CLOSED = 3
+  static instances: MockWebSocket[] = []
+
+  readyState = MockWebSocket.CONNECTING
+  onopen: (() => void) | null = null
+  onclose: (() => void) | null = null
+  onerror: (() => void) | null = null
+  onmessage: ((event: MessageEvent<string>) => void) | null = null
+
+  constructor(readonly url: string) {
+    MockWebSocket.instances.push(this)
+  }
+
+  send() {}
+
+  close() {
+    this.readyState = MockWebSocket.CLOSED
+    this.onclose?.()
+  }
+
+  static reset() {
+    MockWebSocket.instances = []
   }
 }
 
@@ -207,7 +237,7 @@ function fileSearchRaw(overrides: Record<string, unknown> = {}) {
   }
 }
 
-async function mountApp(initialPath = '/chat') {
+async function mountAppWithRouter(initialPath = '/chat') {
   const router = createTestRouter()
   await router.push(initialPath)
   await router.isReady()
@@ -218,7 +248,117 @@ async function mountApp(initialPath = '/chat') {
     },
   })
   await nextTick()
+  return { router, wrapper }
+}
+
+async function mountApp(initialPath = '/chat') {
+  const { wrapper } = await mountAppWithRouter(initialPath)
   return wrapper
+}
+
+function stubBasicWorkspaceFetch() {
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const path = input.toString()
+    if (path.endsWith('/api/health')) {
+      return jsonResponse({
+        frontend: { ready: true, mode: 'static' },
+        llm: { ready: true },
+        mcp: { ready: true, runtime: {} },
+        backends: {
+          yier: { ready: true, label: 'Yier Agent' },
+          codex: { ready: true, label: 'Codex App Server' },
+        },
+        allowed_roots: ['/tmp/project'],
+      })
+    }
+    if (path.endsWith('/api/config')) {
+      return jsonResponse({
+        llm: { base_url: 'https://example.test', model: 'demo', has_api_key: true },
+        allowed_roots: ['/tmp/project'],
+        mcp_runtime: {},
+        backends: [
+          { id: 'yier', label: 'Yier Agent' },
+          { id: 'codex', label: 'Codex App Server' },
+        ],
+        session_defaults: {
+          default_backend_id: 'yier',
+          default_project_path: '/tmp/project',
+          channel_backend_id: 'yier',
+          channel_project_path: '/tmp/project',
+          channel_auto_approve_codex_requests: true,
+          workspace_surface: 'yier',
+        },
+        codex: {
+          launcher_command: 'codex app-server --listen stdio://',
+          model: 'gpt-5-codex',
+          sandbox: 'workspace-write',
+          approval_policy: 'on-request',
+          approvals_reviewer: 'user',
+          personality: 'friendly',
+          reasoning_effort: 'medium',
+          show_reasoning_cards: false,
+          service_tier: '',
+        },
+      })
+    }
+    if (path.endsWith('/api/config/mcp')) {
+      return jsonResponse({ mcp_servers: {}, runtime: {} })
+    }
+    if (isSessionListRequest(path, init)) {
+      return jsonResponse({
+        sessions: [
+          {
+            session_id: 'session-1',
+            title: 'First yier session',
+            preview: 'first preview',
+            updated_at: 100,
+            message_count: 2,
+            source: 'chat',
+            backend_id: 'yier',
+            project_path: '/tmp/project',
+            channel_meta: null,
+          },
+        ],
+      })
+    }
+    if (isSessionTranscriptRequest(path, 'session-1', init)) {
+      return jsonResponse({
+        session_id: 'session-1',
+        source: 'chat',
+        backend_id: 'yier',
+        project_path: '/tmp/project',
+        backend_runtime: {
+          backend_id: 'yier',
+          label: 'Yier Agent',
+          ready: true,
+          status: 'idle',
+          active_flags: [],
+          detail: null,
+          pending_approval_count: 0,
+        },
+        pending_requests: [],
+        pending_approvals: [],
+        messages: [{ role: 'assistant', content: 'yier transcript body' }],
+        activity_events: [],
+        codex_turn_timings: [],
+      })
+    }
+    if (path.endsWith('/api/channel/workspace')) {
+      return jsonResponse({ platforms: [], accounts: [] })
+    }
+    if (path.endsWith('/api/channel/platforms')) {
+      return jsonResponse({ platforms: [] })
+    }
+    if (path.endsWith('/api/channel/config')) {
+      return jsonResponse({ enabled_platforms: [], weixin: {} })
+    }
+    if (path.endsWith('/api/channel/monitor/sessions')) {
+      return jsonResponse({ sessions: [] })
+    }
+    throw new Error(`Unexpected request: ${path}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  return fetchMock
 }
 
 describe('App', () => {
@@ -227,6 +367,7 @@ describe('App', () => {
     document.body.innerHTML = ''
     vi.restoreAllMocks()
     MockEventSource.reset()
+    MockWebSocket.reset()
     vi.stubGlobal(
       'matchMedia',
       vi.fn().mockImplementation((query: string) => ({
@@ -255,6 +396,7 @@ describe('App', () => {
       },
     )
     vi.stubGlobal('EventSource', MockEventSource)
+    vi.stubGlobal('WebSocket', MockWebSocket)
     vi.stubGlobal('alert', vi.fn())
   })
 
@@ -568,6 +710,68 @@ describe('App', () => {
     expect(wrapper.text()).toContain('First yier session')
     expect(wrapper.text()).not.toContain('Codex hidden session')
     expect(wrapper.text()).toContain('Recent sessions1')
+  })
+
+  it('shows Codex in the workspace switcher', async () => {
+    stubBasicWorkspaceFetch()
+    const wrapper = await mountApp()
+    await flushPromises()
+
+    const workspaceSelect = wrapper
+      .findAllComponents({ name: 'Select' })
+      .find((select) => select.classes().includes('workspace-switcher-control'))
+
+    if (!workspaceSelect) {
+      throw new Error('Expected workspace switcher select to render.')
+    }
+
+    expect(workspaceSelect.props('options')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          label: 'Codex',
+          value: 'codex',
+          disabled: false,
+        }),
+      ]),
+    )
+  })
+
+  it('routes Codex workspace surface selections to the top-level Codex page', async () => {
+    const fetchMock = stubBasicWorkspaceFetch()
+    const router = createTestRouter()
+    await router.push('/chat')
+    await router.isReady()
+
+    const Harness = defineComponent({
+      setup() {
+        const workspace = provideWorkspaceAppContext()
+        return { workspace }
+      },
+      template: '<button type="button" @click="workspace.switchWorkspaceSurface(\'codex\')">Codex</button>',
+    })
+
+    const wrapper = mount(Harness, {
+      global: {
+        plugins: [router],
+      },
+    })
+    await flushPromises()
+
+    await (
+      wrapper.vm as unknown as {
+        workspace: { switchWorkspaceSurface: (surface: 'codex') => Promise<void> }
+      }
+    ).workspace.switchWorkspaceSurface('codex')
+    await flushPromises()
+
+    expect(router.currentRoute.value.name).toBe('codex')
+    expect(router.currentRoute.value.matched).toHaveLength(1)
+    expect(
+      fetchMock.mock.calls.some(([input]) =>
+        input.toString().endsWith('/api/config/app'),
+      ),
+    ).toBe(false)
+    wrapper.unmount()
   })
 
 

@@ -92,7 +92,7 @@ const LLM_PROVIDER_DEFAULTS: Record<
 }
 
 function normalizeWorkspaceSurface(value: string | null | undefined): WorkspaceSurface {
-  if (value === 'yier' || value === 'claude') {
+  if (value === 'yier' || value === 'codex' || value === 'claude') {
     return value
   }
   return 'yier'
@@ -323,7 +323,7 @@ function createWorkspaceApp() {
   )
   const sidebarSessionHistoryCount = computed(() => sidebarSessionHistory.value.length)
   const isCodexWorkspace = computed(
-    () => false,
+    () => route.name === 'codex',
   )
   const assistantLabel = computed(() =>
     'Yier',
@@ -346,6 +346,9 @@ function createWorkspaceApp() {
     () => showCodexMobileChrome.value && isRuntimeSheetOpen.value,
   )
   const activeWorkspaceSurface = computed<WorkspaceSurface>(() => {
+    if (route.name === 'codex') {
+      return 'codex'
+    }
     if (activeSession.value?.backend_id === 'yier') {
       return 'yier'
     }
@@ -356,9 +359,10 @@ function createWorkspaceApp() {
     value: WorkspaceSurface
     disabled: boolean
   }> = [
-      { label: 'Yier Agent', value: 'yier', disabled: false },
-      { label: 'Claude Code', value: 'claude', disabled: true },
-    ]
+    { label: 'Yier Agent', value: 'yier', disabled: false },
+    { label: 'Codex', value: 'codex', disabled: false },
+    { label: 'Claude Code', value: 'claude', disabled: true },
+  ]
   const workspaceSurfaceModel = computed<WorkspaceSurface>({
     get() {
       return activeWorkspaceSurface.value
@@ -885,6 +889,11 @@ function createWorkspaceApp() {
 
     if (target === 'claude') {
       successMessage.value = 'Claude Code workspace is coming soon.'
+      return
+    }
+
+    if (target === 'codex') {
+      await router.push({ name: 'codex' })
       return
     }
 
@@ -3812,6 +3821,7 @@ function createWorkspaceApp() {
     closeRuntimeSheet,
     closeCodexSheets,
     handleNewChatClick,
+    switchWorkspaceSurface,
     openSessionFromHistory,
     deleteSessionFromHistory,
     displayNameForPath,

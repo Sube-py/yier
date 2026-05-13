@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
 
+from codex_app_server.generated.v2_all import (
+    AbsolutePathBuf,
+    IdleThreadStatus,
+    SessionSource,
+    SessionSourceValue,
+    Thread,
+    ThreadListResponse,
+    ThreadStatus,
+)
 import pytest
 from litestar.exceptions import WebSocketDisconnect
 from litestar.testing import TestClient
@@ -21,17 +29,29 @@ from yier_web.routes.codex import CodexController
 from yier_web.schemas import CodexWorkspaceResponse
 
 
-@dataclass(slots=True)
-class FakeThread:
-    id: str
-    cwd: str
-    name: str = ""
-    preview: str = ""
-    created_at: int = 1
-    updated_at: int = 2
-    status: str = "idle"
-    source: str = "appServer"
-    ephemeral: bool = False
+def fake_thread(
+    thread_id: str,
+    cwd: str,
+    *,
+    name: str = "",
+    preview: str = "",
+    created_at: int = 1,
+    updated_at: int = 2,
+) -> Thread:
+    return Thread(
+        cli_version="test",
+        created_at=created_at,
+        cwd=AbsolutePathBuf(root=cwd),
+        ephemeral=False,
+        id=thread_id,
+        model_provider="openai",
+        name=name,
+        preview=preview,
+        source=SessionSource(root=SessionSourceValue.app_server),
+        status=ThreadStatus(root=IdleThreadStatus(type="idle")),
+        turns=[],
+        updated_at=updated_at,
+    )
 
 
 class FakeCodexIpcSession:
@@ -66,11 +86,13 @@ class FakeCodexIpcSession:
         self.rename_calls: list[tuple[str, str | None]] = []
         self.archive_calls: list[tuple[str | None, str | None, bool]] = []
         self.unarchive_calls: list[str | None] = []
+        self.fork_calls: list[str | None] = []
+        self.list_threads_calls: list[dict[str, Any] | None] = []
         self._state_queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
-        self.list_threads_response = SimpleNamespace(
+        self.list_threads_response = ThreadListResponse(
             data=[
-                FakeThread(id="thread-a", cwd="/tmp/project-a", name="Alpha", preview="one"),
-                FakeThread(id="thread-b", cwd="/tmp/project-b", name="Beta", preview="two"),
+                fake_thread("thread-a", "/tmp/project-a", name="Alpha", preview="one"),
+                fake_thread("thread-b", "/tmp/project-b", name="Beta", preview="two"),
             ]
         )
 
@@ -95,7 +117,8 @@ class FakeCodexIpcSession:
     async def hydrate_initial_state(self, *, owner_wait_seconds: float = 0.4) -> None:
         return None
 
-    async def list_threads(self, params: dict[str, Any] | None = None) -> SimpleNamespace:
+    async def list_threads(self, params: dict[str, Any] | None = None) -> ThreadListResponse:
+        self.list_threads_calls.append(params)
         return self.list_threads_response
 
     async def run_prompt(
@@ -151,6 +174,22 @@ class FakeCodexIpcSession:
     async def unarchive_thread(self, thread_id: str | None = None) -> dict[str, Any]:
         self.unarchive_calls.append(thread_id)
         return {"id": thread_id or self.thread_id}
+
+    async def fork_thread(
+        self,
+        thread_id: str | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> SimpleNamespace:
+        self.fork_calls.append(thread_id)
+        self.thread_id = "thread-forked"
+        self.state = {
+            "id": self.thread_id,
+            "threadId": self.thread_id,
+            "cwd": "/tmp/project-a",
+            "title": "Forked thread",
+            "turns": [],
+        }
+        return SimpleNamespace(id=self.thread_id)
 
     async def watch_state(self, *, replay: bool = True):
         if replay:
@@ -277,6 +316,12 @@ def test_codex_manager_keeps_separate_sessions_alive(tmp_path: Path) -> None:
         await manager.start()
         workspace = await manager.workspace()
         assert len(workspace.projects) == 2
+        assert factory.workspace_session().list_threads_calls[-1] == {
+            "archived": False,
+            "limit": 100,
+            "sort_key": "updated_at",
+            "sort_direction": "desc",
+        }
 
         created = await manager.start_thread(project_path="/tmp/project-c")
         assert created["thread_id"] == "thread-created"
@@ -332,6 +377,15 @@ def test_codex_controller_http_and_websocket_contract(tmp_path: Path) -> None:
         workspace_response = client.get("/api/codex/workspace")
         assert workspace_response.status_code == 200
         assert len(workspace_response.json()["projects"]) == 2
+        sessions = [
+            session
+            for project in workspace_response.json()["projects"]
+            for session in project["sessions"]
+        ]
+        thread_a = next(session for session in sessions if session["thread_id"] == "thread-a")
+        assert thread_a["cwd"] == "/tmp/project-a"
+        assert thread_a["status"] == "idle"
+        assert thread_a["source"] == "appServer"
 
         create_response = client.post(
             "/api/codex/threads",
@@ -374,6 +428,12 @@ def test_codex_controller_http_and_websocket_contract(tmp_path: Path) -> None:
             ws.send_json({"id": "list-1", "type": "list_threads", "payload": {}})
             list_messages = receive_until(lambda message: message.get("type") == "ack" and message.get("id") == "list-1")
             assert any(message["type"] == "workspace" for message in list_messages)
+            assert factory.workspace_session().list_threads_calls[-1] == {
+                "archived": False,
+                "limit": 100,
+                "sort_key": "updated_at",
+                "sort_direction": "desc",
+            }
 
             ws.send_json(
                 {
@@ -454,6 +514,36 @@ def test_codex_controller_http_and_websocket_contract(tmp_path: Path) -> None:
                 lambda message: message.get("type") == "ack" and message.get("id") == "archive-1"
             )
             assert any(message["type"] == "thread_archived" for message in archive_messages)
+
+            ws.send_json(
+                {
+                    "id": "fork-1",
+                    "type": "fork_thread",
+                    "payload": {"thread_id": "thread-b"},
+                }
+            )
+            fork_messages = receive_until(
+                lambda message: message.get("type") == "ack" and message.get("id") == "fork-1"
+            )
+            assert fork_messages[-1]["payload"]["thread_id"] == "thread-forked"
+            assert any(message["type"] == "workspace" for message in fork_messages)
+            assert factory.by_thread_id("thread-forked").fork_calls[-1] == "thread-b"
+
+            ws.send_json(
+                {
+                    "id": "sub-fork",
+                    "type": "subscribe_thread",
+                    "payload": {"thread_id": "thread-forked"},
+                }
+            )
+            sub_fork = receive_until(
+                lambda message: message.get("type") == "ack" and message.get("id") == "sub-fork"
+            )
+            assert any(
+                message["type"] == "thread_snapshot"
+                and message["payload"]["thread_id"] == "thread-forked"
+                for message in sub_fork
+            )
 
             ws.send_json(
                 {

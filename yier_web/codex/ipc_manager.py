@@ -6,11 +6,23 @@ from dataclasses import dataclass
 import logging
 from pathlib import Path
 import shlex
-from time import time
 from typing import Any, Callable
 
 from codex_ipc import AppServerConfig, CodexIpcConfig, CodexIpcSession, JsonDict
-
+from codex_app_server.generated.v2_all import (
+    AbsolutePathBuf,
+    ActiveThreadStatus,
+    CustomSessionSource,
+    IdleThreadStatus,
+    NotLoadedThreadStatus,
+    SessionSource,
+    SessionSourceValue,
+    SubAgentSessionSource,
+    SystemErrorThreadStatus,
+    Thread,
+    ThreadListResponse,
+    ThreadStatus,
+)
 from yier_web.config import AppConfigService
 from yier_web.event_stream import EventStreamBroker
 from yier_web.schemas import (
@@ -43,42 +55,56 @@ def _compact_text(value: object, *, limit: int = 72) -> str:
     return f"{compacted[: limit - 3]}..."
 
 
-def _seconds(value: object) -> float:
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        return 0.0
-    return float(value)
+def _thread_status(status: ThreadStatus) -> str:
+    match status.root:
+        case NotLoadedThreadStatus(type=status_type):
+            return status_type
+        case IdleThreadStatus(type=status_type):
+            return status_type
+        case SystemErrorThreadStatus(type=status_type):
+            return status_type
+        case ActiveThreadStatus(type=status_type):
+            return status_type
 
 
-def _thread_status(thread: object) -> str:
-    status = getattr(thread, "status", None)
-    root = getattr(status, "root", status)
-    if isinstance(root, str):
-        return root
-    status_type = getattr(root, "type", None)
-    if isinstance(status_type, str) and status_type:
-        return status_type
-    value = getattr(root, "value", None)
-    return str(value or "idle")
+def _thread_source(source: SessionSource) -> str:
+    match source.root:
+        case SessionSourceValue() as source_value:
+            return source_value.value
+        case CustomSessionSource(custom=custom):
+            return custom
+        case SubAgentSessionSource():
+            return "subAgent"
 
 
-def _thread_source(thread: object) -> str:
-    source = getattr(thread, "source", None)
-    root = getattr(source, "root", source)
-    if isinstance(root, str):
-        return root
-    custom = getattr(root, "custom", None)
-    if isinstance(custom, str) and custom:
-        return custom
-    value = getattr(root, "value", None)
-    return str(value or "active")
-
-
-def _project_from_cwd(cwd: str) -> tuple[str, str]:
-    if not cwd.strip():
-        return ("Unknown project", "")
-    path = Path(cwd).expanduser()
-    project = path.name or cwd
+def _project_from_cwd(cwd: AbsolutePathBuf) -> tuple[str, str]:
+    path = Path(cwd.root).expanduser()
+    project = path.name or cwd.root
     return (project, str(path))
+
+
+def _summary_used_at(summary: CodexNativeSessionSummary) -> float:
+    return summary.updated_at or summary.started_at
+
+
+def _thread_summary(thread: Thread) -> CodexNativeSessionSummary:
+    cwd = thread.cwd.root
+    project, project_path = _project_from_cwd(thread.cwd)
+    name = _compact_text(thread.name)
+    preview = _compact_text(thread.preview, limit=120)
+    title = name or preview or thread.id
+    return CodexNativeSessionSummary(
+        thread_id=thread.id,
+        title=title,
+        preview=preview or title,
+        updated_at=float(thread.updated_at),
+        started_at=float(thread.created_at),
+        status=_thread_status(thread.status),
+        cwd=cwd,
+        project=project,
+        project_path=project_path,
+        source=_thread_source(thread.source),
+    )
 
 
 class CodexIpcManager:
@@ -126,12 +152,14 @@ class CodexIpcManager:
         response = await self.list_threads()
         return self._workspace_from_threads(response)
 
-    async def list_threads(self) -> object:
+    async def list_threads(self) -> ThreadListResponse:
         session = await self._ensure_workspace_session()
         return await session.list_threads(
             {
                 "archived": False,
                 "limit": 100,
+                "sort_key": "updated_at",
+                "sort_direction": "desc",
             }
         )
 
@@ -257,6 +285,27 @@ class CodexIpcManager:
         await managed.session.archive_thread(thread_id, cwd=cwd)
         await self._broadcast_thread_event("thread_archived", thread_id)
         await self._close_thread(thread_id)
+
+    async def fork_thread(self, thread_id: str) -> JsonDict:
+        source_thread_id = thread_id.strip()
+        if not source_thread_id:
+            raise ValueError("thread_id is required.")
+
+        session = self._new_session(self._config(thread_id=source_thread_id))
+        await session.start()
+        try:
+            await session.fork_thread(source_thread_id)
+            forked_thread_id = session.thread_id
+            if not forked_thread_id:
+                raise RuntimeError("Codex did not return a forked thread id.")
+            managed = await self._register_session(forked_thread_id, session)
+        except Exception:
+            await session.stop()
+            raise
+        return {
+            "thread_id": forked_thread_id,
+            "state": managed.state or managed.session.state,
+        }
 
     async def unarchive_thread(self, thread_id: str) -> None:
         session = await self._ensure_workspace_session()
@@ -419,44 +468,35 @@ class CodexIpcManager:
         value = settings.reasoning_effort.strip()
         return value if value and value != "none" else None
 
-    def _workspace_from_threads(self, response: object) -> CodexWorkspaceResponse:
-        threads = getattr(response, "data", None)
-        if not isinstance(threads, list):
-            return CodexWorkspaceResponse(projects=[], paired_editors=[])
+    def _workspace_from_threads(
+        self, response: ThreadListResponse
+    ) -> CodexWorkspaceResponse:
+        threads = response.data
 
         projects: dict[str, list[CodexNativeSessionSummary]] = {}
         for thread in threads:
-            thread_id = getattr(thread, "id", "")
-            if not isinstance(thread_id, str) or not thread_id.strip():
+            if thread.ephemeral:
                 continue
-            if bool(getattr(thread, "ephemeral", False)):
-                continue
-            cwd = getattr(thread, "cwd", "") or ""
-            cwd = cwd if isinstance(cwd, str) else ""
-            project, project_path = _project_from_cwd(cwd)
-            name = _compact_text(getattr(thread, "name", None))
-            preview = _compact_text(getattr(thread, "preview", None), limit=120)
-            title = name or preview or thread_id
-            summary = CodexNativeSessionSummary(
-                thread_id=thread_id,
-                title=title,
-                preview=preview or title,
-                updated_at=_seconds(getattr(thread, "updated_at", 0)),
-                started_at=_seconds(getattr(thread, "created_at", 0)),
-                status=_thread_status(thread),
-                cwd=cwd,
-                project=project,
-                project_path=project_path,
-                source=_thread_source(thread),
+            summary = _thread_summary(thread)
+            projects.setdefault(summary.project_path or summary.project, []).append(
+                summary
             )
-            projects.setdefault(project_path or project, []).append(summary)
 
         project_groups: list[CodexProjectGroup] = []
         for project_path, sessions in projects.items():
-            sessions.sort(key=lambda item: item.updated_at or item.started_at, reverse=True)
+            sessions.sort(
+                key=lambda item: (
+                    _summary_used_at(item),
+                    item.started_at,
+                    item.thread_id,
+                ),
+                reverse=True,
+            )
             project_groups.append(
                 CodexProjectGroup(
-                    project=sessions[0].project if sessions else Path(project_path).name,
+                    project=sessions[0].project
+                    if sessions
+                    else Path(project_path).name,
                     project_path=project_path,
                     session_count=len(sessions),
                     sessions=sessions,
@@ -465,7 +505,7 @@ class CodexIpcManager:
 
         project_groups.sort(
             key=lambda group: (
-                group.sessions[0].updated_at if group.sessions else 0.0,
+                _summary_used_at(group.sessions[0]) if group.sessions else 0.0,
                 group.project.lower(),
             ),
             reverse=True,

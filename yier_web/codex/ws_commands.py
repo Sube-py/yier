@@ -173,6 +173,14 @@ class ArchiveThreadCommandStrategy(ThreadCommandStrategy):
         return {"thread_id": thread_id}
 
 
+class ForkThreadCommandStrategy(ThreadCommandStrategy):
+    async def execute(self, context: CodexWsCommandContext) -> dict[str, Any]:
+        thread_id = self.thread_id(context)
+        result = await context.manager.fork_thread(thread_id)
+        await _publish_workspace(context.manager, context.outbox)
+        return result
+
+
 class UnarchiveThreadCommandStrategy(ThreadCommandStrategy):
     async def execute(self, context: CodexWsCommandContext) -> dict[str, Any]:
         thread_id = self.thread_id(context)
@@ -197,6 +205,7 @@ class CodexWsCommandStrategyFactory:
             "submit_user_input_response": SubmitUserInputResponseCommandStrategy(),
             "rename_thread": RenameThreadCommandStrategy(),
             "archive_thread": ArchiveThreadCommandStrategy(),
+            "fork_thread": ForkThreadCommandStrategy(),
             "unarchive_thread": UnarchiveThreadCommandStrategy(),
         }
 

@@ -109,6 +109,11 @@ export interface CodexThreadCreateResponse {
   state?: CodexConversationState | null
 }
 
+export interface CodexThreadForkResponse {
+  thread_id: string
+  state?: CodexConversationState | null
+}
+
 export type CodexClientCommand =
   | 'list_threads'
   | 'subscribe_thread'
@@ -124,6 +129,7 @@ export type CodexClientCommand =
   | 'submit_user_input_response'
   | 'rename_thread'
   | 'archive_thread'
+  | 'fork_thread'
   | 'unarchive_thread'
 
 export type CodexServerEventType =
@@ -160,4 +166,3 @@ export type CodexSocketMessage =
   | CodexServerEvent
 
 export type CodexSocketStatus = 'idle' | 'connecting' | 'open' | 'closed' | 'error'
-

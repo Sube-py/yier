@@ -20,6 +20,19 @@ class FakeCodexSocket implements CodexRealtimeClient {
   readonly eventListeners = new Set<(event: CodexServerEvent) => void>()
   readonly statusListeners = new Set<(status: CodexSocketStatus) => void>()
   closed = false
+  readonly forkedThread = {
+    thread_id: 'thread-forked',
+    title: 'Forked',
+    preview: 'forked',
+    updated_at: 30,
+    started_at: 30,
+    status: 'idle',
+    cwd: '/tmp/alpha',
+    project: 'alpha',
+    project_path: '/tmp/alpha',
+    source: 'appServer',
+  }
+  includeForkedThread = false
 
   async connect() {
     this.statusListeners.forEach((listener) => listener('open'))
@@ -67,6 +80,7 @@ class FakeCodexSocket implements CodexRealtimeClient {
                 project_path: '/tmp/alpha',
                 source: 'appServer',
               },
+              ...(this.includeForkedThread ? [this.forkedThread] : []),
             ],
           },
         ],
@@ -80,6 +94,13 @@ class FakeCodexSocket implements CodexRealtimeClient {
         state: { id: threadId, turns: [], requests: [] },
         stream_role: null,
         queued_followups: [],
+      } as TPayload
+    }
+    if (type === 'fork_thread') {
+      this.includeForkedThread = true
+      return {
+        thread_id: this.forkedThread.thread_id,
+        state: { id: this.forkedThread.thread_id, turns: [], requests: [] },
       } as TPayload
     }
     return { ok: true } as TPayload
@@ -176,5 +197,24 @@ describe('useCodexWorkspace', () => {
         response: { answers: { mode: { answers: ['Plan'] } } },
       },
     })
+  })
+
+  it('forks a thread, refreshes the workspace, and selects the forked thread', async () => {
+    const socket = new FakeCodexSocket()
+    const { workspace } = mountHarness(socket)
+    await flushPromises()
+
+    await workspace.forkThread('thread-a')
+    await flushPromises()
+
+    expect(socket.commands.slice(-4)).toEqual([
+      { type: 'fork_thread', payload: { thread_id: 'thread-a' } },
+      { type: 'list_threads', payload: {} },
+      { type: 'unsubscribe_thread', payload: { thread_id: 'thread-a' } },
+      { type: 'subscribe_thread', payload: { thread_id: 'thread-forked' } },
+    ])
+    expect(workspace.activeThreadId.value).toBe('thread-forked')
+    expect(workspace.successMessage.value).toBe('Thread forked.')
+    expect(workspace.forkingThreadId.value).toBe('')
   })
 })

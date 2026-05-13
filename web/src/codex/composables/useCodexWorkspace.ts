@@ -9,6 +9,7 @@ import type {
   CodexQueuedFollowup,
   CodexSocketStatus,
   CodexThreadCreateResponse,
+  CodexThreadForkResponse,
   CodexThreadStatePayload,
   CodexWorkMode,
   CodexWorkspaceResponse,
@@ -164,6 +165,7 @@ export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
   const isRenaming = ref(false)
   const isArchiving = ref(false)
   const archivingThreadId = ref('')
+  const forkingThreadId = ref('')
   const projectPathDraft = ref('')
 
   const flatThreads = computed<CodexNativeSessionSummary[]>(() =>
@@ -564,6 +566,42 @@ export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
     archivingThreadId.value = ''
   }
 
+  async function forkThread(threadId = activeThreadId.value) {
+    const normalizedThreadId = threadId.trim()
+    if (!normalizedThreadId) {
+      return
+    }
+    forkingThreadId.value = normalizedThreadId
+    errorMessage.value = ''
+    successMessage.value = ''
+    try {
+      const payload = await socket.sendCommand<CodexThreadForkResponse>('fork_thread', {
+        thread_id: normalizedThreadId,
+      })
+      const forkedThreadId = payload.thread_id.trim()
+      if (!forkedThreadId) {
+        throw new Error('Codex did not return a forked thread id.')
+      }
+      if (payload.state) {
+        setThreadPayload({
+          thread_id: forkedThreadId,
+          state: payload.state,
+          stream_role: null,
+          queued_followups: [],
+        })
+      }
+      await refreshWorkspace()
+      const selected = await selectThread(forkedThreadId)
+      if (selected) {
+        successMessage.value = 'Thread forked.'
+      }
+    } catch (error) {
+      errorMessage.value = toErrorMessage(error)
+    } finally {
+      forkingThreadId.value = ''
+    }
+  }
+
   async function unarchiveThread(threadId: string) {
     const normalizedThreadId = threadId.trim()
     if (!normalizedThreadId) {
@@ -629,6 +667,8 @@ export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
     enqueueFollowup,
     errorMessage,
     flatThreads,
+    forkingThreadId,
+    forkThread,
     isActiveTurnInProgress,
     isArchiving,
     isBooting,

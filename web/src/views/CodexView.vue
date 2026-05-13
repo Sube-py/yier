@@ -16,6 +16,11 @@ const composerText = ref('')
 function submitUserInputResponse(requestId: string, response: JsonRecord) {
   void codex.submitUserInputResponse(requestId, response)
 }
+
+function showCodexError(message: string) {
+  codex.errorMessage = message
+  codex.successMessage = ''
+}
 </script>
 
 <template>
@@ -27,10 +32,13 @@ function submitUserInputResponse(requestId: string, response: JsonRecord) {
       :active-thread-id="codex.activeThreadId"
       :opening-thread-id="codex.openingThreadId"
       :archiving-thread-id="codex.archivingThreadId"
+      :forking-thread-id="codex.forkingThreadId"
       :busy="codex.isCommandBusy || codex.isBooting"
       @select-thread="codex.selectThread"
       @start-thread="codex.startThread"
       @archive-thread="codex.archiveThread"
+      @fork-thread="codex.forkThread"
+      @copy-error="showCodexError"
       @refresh="codex.refreshWorkspace"
     />
 
@@ -71,10 +79,13 @@ function submitUserInputResponse(requestId: string, response: JsonRecord) {
           :active-thread-id="codex.activeThreadId"
           :opening-thread-id="codex.openingThreadId"
           :archiving-thread-id="codex.archivingThreadId"
+          :forking-thread-id="codex.forkingThreadId"
           :busy="codex.isCommandBusy || codex.isBooting"
           @select-thread="codex.selectThread"
           @start-thread="codex.startThread"
           @archive-thread="codex.archiveThread"
+          @fork-thread="codex.forkThread"
+          @copy-error="showCodexError"
           @refresh="codex.refreshWorkspace"
         />
 

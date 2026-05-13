@@ -16,6 +16,8 @@ vi.mock('../composables/useCodexWorkspace', () => ({
     compactThread: vi.fn(),
     enqueueFollowup: vi.fn(),
     errorMessage: '',
+    forkingThreadId: '',
+    forkThread: vi.fn(),
     isActiveTurnInProgress: false,
     isArchiving: false,
     isBooting: false,

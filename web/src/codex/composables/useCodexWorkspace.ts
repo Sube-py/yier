@@ -31,17 +31,26 @@ export interface CodexRealtimeClient {
 
 export interface UseCodexWorkspaceOptions {
   autoConnect?: boolean
+  persistActiveThread?: boolean
+  selectInitialThread?: boolean
   socket?: CodexRealtimeClient
+  socketUrl?: string
 }
 
-function readActiveThreadId() {
+function readActiveThreadId(enabled = true) {
+  if (!enabled) {
+    return ''
+  }
   if (typeof localStorage === 'undefined') {
     return ''
   }
   return localStorage.getItem(ACTIVE_THREAD_STORAGE_KEY) ?? ''
 }
 
-function persistActiveThreadId(threadId: string) {
+function persistActiveThreadId(threadId: string, enabled = true) {
+  if (!enabled) {
+    return
+  }
   if (typeof localStorage === 'undefined') {
     return
   }
@@ -151,11 +160,12 @@ function buildCollaborationPayload(
 }
 
 export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
-  const socket = options.socket ?? new CodexSocket()
+  const persistThreadSelection = options.persistActiveThread !== false
+  const socket = options.socket ?? new CodexSocket(options.socketUrl)
   const status = ref<CodexSocketStatus>('idle')
   const workspace = ref<CodexWorkspaceResponse>(emptyWorkspace())
   const threadPayloads = ref<Record<string, CodexThreadStatePayload>>({})
-  const activeThreadId = ref(readActiveThreadId())
+  const activeThreadId = ref(readActiveThreadId(persistThreadSelection))
   const activeSubscriptionId = ref('')
   const openingThreadId = ref('')
   const errorMessage = ref('')
@@ -265,7 +275,7 @@ export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
         removeThreadPayload(threadId)
         if (activeThreadId.value === threadId) {
           activeThreadId.value = ''
-          persistActiveThreadId('')
+          persistActiveThreadId('', persistThreadSelection)
         }
       }
       void refreshWorkspaceAndSelect()
@@ -311,7 +321,9 @@ export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
     })
     try {
       await socket.connect()
-      await refreshWorkspaceAndSelect()
+      if (options.selectInitialThread !== false) {
+        await refreshWorkspaceAndSelect()
+      }
     } catch (error) {
       errorMessage.value = toErrorMessage(error)
     } finally {
@@ -338,7 +350,7 @@ export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
       ''
     if (!nextThread) {
       activeThreadId.value = ''
-      persistActiveThreadId('')
+      persistActiveThreadId('', persistThreadSelection)
       return
     }
     await selectThread(nextThread)
@@ -364,7 +376,7 @@ export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
       }
       activeThreadId.value = normalizedThreadId
       activeSubscriptionId.value = normalizedThreadId
-      persistActiveThreadId(normalizedThreadId)
+      persistActiveThreadId(normalizedThreadId, persistThreadSelection)
       const payload = await socket.sendCommand<CodexThreadStatePayload>(
         'subscribe_thread',
         { thread_id: normalizedThreadId },
@@ -383,7 +395,7 @@ export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
   }
 
   async function startThread(projectPath?: string) {
-    await runCommand(async () => {
+    return await runCommand(async () => {
       const payload = await socket.sendCommand<CodexThreadCreateResponse>(
         'start_thread',
         {
@@ -402,6 +414,7 @@ export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
       await refreshWorkspace()
       await selectThread(threadId)
       successMessage.value = 'Thread started.'
+      return payload
     })
   }
 
@@ -503,9 +516,9 @@ export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
   async function setMode(mode: CodexWorkMode) {
     const threadId = activeThreadId.value
     if (!threadId || activeMode.value === mode) {
-      return
+      return true
     }
-    await runCommand(async () => {
+    const result = await runCommand(async () => {
       const collaborationMode = buildCollaborationPayload(mode, activeThreadState.value)
       await socket.sendCommand('set_collaboration_mode', {
         thread_id: threadId,
@@ -522,7 +535,9 @@ export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
             },
           },
       })
+      return true
     })
+    return result === true
   }
 
   async function renameThread(name: string) {
@@ -557,7 +572,7 @@ export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
       if (activeThreadId.value === normalizedThreadId) {
         activeThreadId.value = ''
         activeSubscriptionId.value = ''
-        persistActiveThreadId('')
+        persistActiveThreadId('', persistThreadSelection)
       }
       await refreshWorkspaceAndSelect()
       successMessage.value = 'Thread archived.'
@@ -612,6 +627,25 @@ export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
       await refreshWorkspace()
       successMessage.value = 'Thread unarchived.'
     })
+  }
+
+  async function startEmbedThread(projectPath: string) {
+    const normalizedProjectPath = projectPath.trim()
+    if (!normalizedProjectPath) {
+      errorMessage.value = 'cwd is required.'
+      return null
+    }
+    const payload = await startThread(normalizedProjectPath)
+    return payload
+  }
+
+  async function resumeEmbedThread(threadId: string) {
+    const normalizedThreadId = threadId.trim()
+    if (!normalizedThreadId) {
+      errorMessage.value = 'thread_id is required.'
+      return false
+    }
+    return await selectThread(normalizedThreadId)
   }
 
   async function submitUserInputResponse(
@@ -684,11 +718,13 @@ export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
     selectThread,
     sendPrompt,
     setMode,
+    startEmbedThread,
     startThread,
     status,
     steerPrompt,
     submitUserInputResponse,
     successMessage,
+    resumeEmbedThread,
     unarchiveThread,
     workspace,
     interruptTurn,

@@ -1506,6 +1506,9 @@ def test_auth_redirects_frontend_and_blocks_api_when_password_is_configured(
         assert api_response.status_code == 401
         assert api_response.json()["detail"] == "Authentication required."
 
+        embed_response = client.get("/codex/embed", follow_redirects=False)
+        assert embed_response.status_code == 200
+
 
 def test_auth_login_logout_and_hashed_password_flow(
     tmp_path: Path,

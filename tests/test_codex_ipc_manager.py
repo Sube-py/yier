@@ -250,7 +250,12 @@ class FakeDirectoryPickerService:
 
 class DisconnectingCodexSocket:
     def __init__(self, manager: CodexIpcManager) -> None:
-        self.app = SimpleNamespace(state=SimpleNamespace(codex_ipc_manager=manager))
+        self.app = SimpleNamespace(
+            state=SimpleNamespace(
+                auth_service=AuthService(),
+                codex_ipc_manager=manager,
+            )
+        )
         self.accepted = False
         self.sent_messages: list[dict[str, Any]] = []
 
@@ -570,6 +575,75 @@ def test_codex_controller_http_and_websocket_contract(tmp_path: Path) -> None:
             error_message = error_messages[-1]
             assert error_message["type"] == "error"
             assert error_message["code"] == "bad_request"
+
+
+def test_codex_websocket_embed_token_allows_unauthenticated_access(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("YIER_AUTH_PASSWORD", "deploy-secret")
+    monkeypatch.setenv("YIER_CODEX_EMBED_TOKEN", "embed-secret")
+    factory = FakeSessionFactory()
+    _, client = build_app(tmp_path, factory)
+
+    with client:
+        with client.websocket_connect(
+            "/api/codex/ws",
+            params={"embed_token": "embed-secret"},
+        ) as ws:
+            ready = ws.receive_json()
+            assert ready["type"] == "connection_ready"
+
+            ws.send_json({"id": "list-embed", "type": "list_threads", "payload": {}})
+            while True:
+                message = ws.receive_json()
+                if message.get("type") == "ack" and message.get("id") == "list-embed":
+                    assert message["ok"] is True
+                    break
+
+
+def test_codex_websocket_rejects_missing_or_invalid_embed_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("YIER_AUTH_PASSWORD", "deploy-secret")
+    monkeypatch.setenv("YIER_CODEX_EMBED_TOKEN", "embed-secret")
+    factory = FakeSessionFactory()
+    _, client = build_app(tmp_path, factory)
+
+    with client:
+        with client.websocket_connect("/api/codex/ws") as ws:
+            message = ws.receive_json()
+            assert message["type"] == "error"
+            assert message["code"] == "unauthorized"
+
+        with client.websocket_connect(
+            "/api/codex/ws",
+            params={"embed_token": "wrong-secret"},
+        ) as ws:
+            message = ws.receive_json()
+            assert message["type"] == "error"
+            assert message["code"] == "unauthorized"
+
+
+def test_codex_websocket_keeps_authenticated_access_with_password_auth(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("YIER_AUTH_PASSWORD", "deploy-secret")
+    factory = FakeSessionFactory()
+    _, client = build_app(tmp_path, factory)
+
+    with client:
+        login_response = client.post(
+            "/api/auth/login",
+            json={"password": "deploy-secret"},
+        )
+        assert login_response.status_code == 201
+
+        with client.websocket_connect("/api/codex/ws") as ws:
+            ready = ws.receive_json()
+            assert ready["type"] == "connection_ready"
 
 
 def test_codex_websocket_disconnect_during_cleanup_is_quiet(tmp_path: Path) -> None:

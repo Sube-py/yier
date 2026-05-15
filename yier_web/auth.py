@@ -8,12 +8,14 @@ import os
 from pathlib import PurePosixPath
 import secrets
 import time
+from typing import Any
 
 from litestar import Request
 from litestar.response import Redirect, Response
 
 
 AUTH_COOKIE_NAME = "yier_auth_session"
+CODEX_EMBED_TOKEN_ENV = "YIER_CODEX_EMBED_TOKEN"
 DEFAULT_SESSION_TTL_HOURS = 24 * 7
 PBKDF2_HASH_PREFIX = "pbkdf2_sha256"
 PBKDF2_DEFAULT_ITERATIONS = 600_000
@@ -24,6 +26,7 @@ PUBLIC_API_PATHS = {
 }
 PUBLIC_FRONTEND_PATHS = {
     "/login",
+    "/codex/embed",
     "/__vite_ping",
     "/vite.svg",
 }
@@ -104,6 +107,7 @@ class AuthService:
         self._password = os.getenv("YIER_AUTH_PASSWORD", "").strip()
         self._password_hash = os.getenv("YIER_AUTH_PASSWORD_HASH", "").strip()
         self._secret = os.getenv("YIER_AUTH_SECRET", "").strip()
+        self._codex_embed_token = os.getenv(CODEX_EMBED_TOKEN_ENV, "").strip()
         self._session_ttl_seconds = (
             _env_positive_int("YIER_AUTH_SESSION_TTL_HOURS", DEFAULT_SESSION_TTL_HOURS)
             * 3600
@@ -132,7 +136,23 @@ class AuthService:
         if not self.enabled:
             return True
 
-        token = request.cookies.get(AUTH_COOKIE_NAME)
+        return self._is_authenticated_cookie(request.cookies)
+
+    def is_codex_embed_token_valid(self, token: str | None) -> bool:
+        if not self._codex_embed_token:
+            return False
+        return hmac.compare_digest((token or "").strip(), self._codex_embed_token)
+
+    def is_codex_websocket_authorized(self, connection: Any) -> bool:
+        if not self.enabled:
+            return True
+        if self._is_authenticated_cookie(getattr(connection, "cookies", {})):
+            return True
+        query_params = getattr(connection, "query_params", {})
+        return self.is_codex_embed_token_valid(query_params.get("embed_token"))
+
+    def _is_authenticated_cookie(self, cookies: Any) -> bool:
+        token = cookies.get(AUTH_COOKIE_NAME)
         if not token:
             return False
 

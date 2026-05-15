@@ -14,6 +14,11 @@ export function createAppRouter(history: RouterHistory = createWebHistory(import
         component: () => import('../views/LoginView.vue'),
       },
       {
+        path: '/codex/embed',
+        name: 'codex-embed',
+        component: () => import('../views/CodexEmbedView.vue'),
+      },
+      {
         path: '/codex',
         name: 'codex',
         component: () => import('../views/CodexView.vue'),

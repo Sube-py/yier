@@ -44,6 +44,10 @@ function defaultSocketUrl(path = '/api/codex/ws') {
   return `${protocol}//${window.location.host}${path}`
 }
 
+export function codexSocketUrl(path = '/api/codex/ws') {
+  return defaultSocketUrl(path)
+}
+
 function parseSocketMessage(raw: unknown): CodexSocketMessage | null {
   if (typeof raw !== 'string') {
     return null
@@ -210,4 +214,3 @@ export class CodexSocket {
     }
   }
 }
-

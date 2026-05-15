@@ -29,9 +29,11 @@ vi.mock('../composables/useCodexWorkspace', () => ({
     refreshWorkspace: vi.fn(),
     removeFollowup: vi.fn(),
     renameThread: vi.fn(),
+    resumeEmbedThread: vi.fn(),
     selectThread: vi.fn(),
     sendPrompt: vi.fn(),
     setMode: vi.fn(),
+    startEmbedThread: vi.fn(),
     startThread: vi.fn(),
     status: 'idle',
     steerPrompt: vi.fn(),
@@ -46,15 +48,20 @@ describe('Codex route separation', () => {
   it('resolves Codex to its own workspace route outside the chat view', () => {
     const router = createTestRouter()
     const codexMatch = router.resolve('/codex').matched
+    const embedMatch = router.resolve('/codex/embed').matched
     const chatMatch = router.resolve('/chat').matched
     const codexComponent = codexMatch[codexMatch.length - 1]?.components?.default
+    const embedComponent = embedMatch[embedMatch.length - 1]?.components?.default
     const chatComponent = chatMatch[chatMatch.length - 1]?.components?.default
 
     expect(router.resolve('/codex').name).toBe('codex')
+    expect(router.resolve('/codex/embed').name).toBe('codex-embed')
     expect(router.resolve('/chat').name).toBe('chat')
     expect(codexMatch).toHaveLength(1)
+    expect(embedMatch).toHaveLength(1)
     expect(chatMatch.length).toBeGreaterThan(1)
     expect(codexComponent).not.toBe(chatComponent)
+    expect(embedComponent).not.toBe(codexComponent)
   })
 
   it('keeps the Codex header Chat link pointed at the chat route', async () => {
@@ -68,6 +75,7 @@ describe('Codex route separation', () => {
         stubs: {
           CodexComposer: true,
           CodexConversation: true,
+          CodexChatPane: true,
           CodexRequestPanel: true,
           CodexSidebar: true,
           CodexThreadToolbar: true,

@@ -1,17 +1,13 @@
 <script setup lang="ts">
-import { proxyRefs, ref } from 'vue'
+import { proxyRefs } from 'vue'
 import { RouterLink } from 'vue-router'
 
-import CodexComposer from '../codex/components/CodexComposer.vue'
-import CodexConversation from '../codex/components/CodexConversation.vue'
-import CodexRequestPanel from '../codex/components/CodexRequestPanel.vue'
+import CodexChatPane from '../codex/components/CodexChatPane.vue'
 import CodexSidebar from '../codex/components/CodexSidebar.vue'
-import CodexThreadToolbar from '../codex/components/CodexThreadToolbar.vue'
 import { useCodexWorkspace } from '../codex/composables/useCodexWorkspace'
 import type { JsonRecord } from '../codex/types'
 
 const codex = proxyRefs(useCodexWorkspace())
-const composerText = ref('')
 
 function submitUserInputResponse(requestId: string, response: JsonRecord) {
   void codex.submitUserInputResponse(requestId, response)
@@ -89,73 +85,32 @@ function showCodexError(message: string) {
           @refresh="codex.refreshWorkspace"
         />
 
-        <section class="flex min-h-0 flex-col overflow-hidden">
-          <CodexThreadToolbar
-            v-if="codex.activeThreadId"
-            :thread-id="codex.activeThreadId"
-            :state="codex.activeThreadState"
-            :status="codex.activeStatus"
-            :mode="codex.activeMode"
-            :busy="codex.isCommandBusy"
-            :renaming="codex.isRenaming"
-            :archiving="codex.isArchiving"
-            @rename-thread="codex.renameThread"
-            @archive-thread="codex.archiveThread()"
-            @compact-thread="codex.compactThread"
-            @interrupt-turn="codex.interruptTurn"
-            @set-mode="codex.setMode"
-            @refresh="codex.refreshWorkspace"
-          />
-          <header
-            v-else
-            class="grid gap-1 border-b border-[color:var(--app-border)] bg-[rgba(255,253,247,0.88)] px-4 py-4"
-          >
-            <p class="m-0 text-xs font-bold uppercase tracking-[0.14em] text-[color:var(--app-text-soft)]">
-              Codex workspace
-            </p>
-            <h2 class="m-0 text-xl font-semibold text-[color:var(--app-text)]">
-              Select or start a thread
-            </h2>
-          </header>
-
-          <div v-if="codex.errorMessage || codex.successMessage" class="grid gap-2 px-4 pt-3">
-            <p
-              v-if="codex.errorMessage"
-              class="m-0 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700"
-            >
-              {{ codex.errorMessage }}
-            </p>
-            <p
-              v-else-if="codex.successMessage"
-              class="m-0 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700"
-            >
-              {{ codex.successMessage }}
-            </p>
-          </div>
-
-          <CodexConversation :state="codex.activeThreadState" />
-
-          <CodexRequestPanel
-            :request="codex.activeUserInputRequest"
-            :disabled="codex.isCommandBusy"
-            @submit-response="submitUserInputResponse"
-          />
-
-          <CodexComposer
-            v-model="composerText"
-            :disabled="!codex.activeThreadId || codex.status !== 'open'"
-            :busy="codex.isCommandBusy"
-            :is-working="codex.isActiveTurnInProgress"
-            :mode="codex.activeMode"
-            :queued-followups="codex.queuedFollowups"
-            @send-prompt="codex.sendPrompt"
-            @steer-prompt="codex.steerPrompt"
-            @enqueue-followup="codex.enqueueFollowup"
-            @remove-followup="codex.removeFollowup"
-            @interrupt-turn="codex.interruptTurn"
-            @set-mode="codex.setMode"
-          />
-        </section>
+        <CodexChatPane
+          :active-thread-id="codex.activeThreadId"
+          :active-thread-state="codex.activeThreadState"
+          :active-user-input-request="codex.activeUserInputRequest"
+          :active-status="codex.activeStatus"
+          :active-mode="codex.activeMode"
+          :queued-followups="codex.queuedFollowups"
+          :socket-status="codex.status"
+          :error-message="codex.errorMessage"
+          :success-message="codex.successMessage"
+          :is-command-busy="codex.isCommandBusy"
+          :is-renaming="codex.isRenaming"
+          :is-archiving="codex.isArchiving"
+          :is-active-turn-in-progress="codex.isActiveTurnInProgress"
+          @rename-thread="codex.renameThread"
+          @archive-thread="codex.archiveThread()"
+          @compact-thread="codex.compactThread"
+          @interrupt-turn="codex.interruptTurn"
+          @set-mode="codex.setMode"
+          @refresh="codex.refreshWorkspace"
+          @submit-user-input-response="submitUserInputResponse"
+          @send-prompt="codex.sendPrompt"
+          @steer-prompt="codex.steerPrompt"
+          @enqueue-followup="codex.enqueueFollowup"
+          @remove-followup="codex.removeFollowup"
+        />
       </div>
     </main>
   </div>

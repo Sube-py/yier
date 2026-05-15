@@ -2,7 +2,11 @@ import { defineComponent, h, nextTick } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { useCodexWorkspace, type CodexRealtimeClient } from '../composables/useCodexWorkspace'
+import {
+  useCodexWorkspace,
+  type CodexRealtimeClient,
+  type UseCodexWorkspaceOptions,
+} from '../composables/useCodexWorkspace'
 import type {
   CodexClientCommand,
   CodexServerEvent,
@@ -103,6 +107,17 @@ class FakeCodexSocket implements CodexRealtimeClient {
         state: { id: this.forkedThread.thread_id, turns: [], requests: [] },
       } as TPayload
     }
+    if (type === 'start_thread') {
+      return {
+        thread_id: 'thread-created',
+        state: {
+          id: 'thread-created',
+          turns: [],
+          requests: [],
+          cwd: String(payload.project_path ?? '/tmp/created'),
+        },
+      } as TPayload
+    }
     return { ok: true } as TPayload
   }
 
@@ -121,12 +136,15 @@ class FakeCodexSocket implements CodexRealtimeClient {
   }
 }
 
-function mountHarness(socket: FakeCodexSocket) {
+function mountHarness(
+  socket: FakeCodexSocket,
+  options: Omit<UseCodexWorkspaceOptions, 'socket'> = {},
+) {
   const holder: { workspace?: ReturnType<typeof useCodexWorkspace> } = {}
   const wrapper = mount(
     defineComponent({
       setup() {
-        holder.workspace = useCodexWorkspace({ socket })
+        holder.workspace = useCodexWorkspace({ socket, ...options })
         return () => h('div')
       },
     }),
@@ -216,5 +234,45 @@ describe('useCodexWorkspace', () => {
     expect(workspace.activeThreadId.value).toBe('thread-forked')
     expect(workspace.successMessage.value).toBe('Thread forked.')
     expect(workspace.forkingThreadId.value).toBe('')
+  })
+
+  it('starts embed threads without using the persisted active thread', async () => {
+    localStorage.setItem('yier.codex.active-thread-id', 'thread-a')
+    const socket = new FakeCodexSocket()
+    const { workspace } = mountHarness(socket, {
+      persistActiveThread: false,
+      selectInitialThread: false,
+    })
+    await flushPromises()
+
+    expect(workspace.activeThreadId.value).toBe('')
+
+    await workspace.startEmbedThread('/tmp/embed')
+    await flushPromises()
+
+    expect(socket.commands.slice(-3)).toEqual([
+      { type: 'start_thread', payload: { project_path: '/tmp/embed' } },
+      { type: 'list_threads', payload: {} },
+      { type: 'subscribe_thread', payload: { thread_id: 'thread-created' } },
+    ])
+    expect(workspace.activeThreadId.value).toBe('thread-created')
+    expect(localStorage.getItem('yier.codex.active-thread-id')).toBe('thread-a')
+  })
+
+  it('resumes embed threads by subscribing to the requested thread', async () => {
+    const socket = new FakeCodexSocket()
+    const { workspace } = mountHarness(socket, {
+      persistActiveThread: false,
+      selectInitialThread: false,
+    })
+    await flushPromises()
+
+    await workspace.resumeEmbedThread('thread-b')
+    await flushPromises()
+
+    expect(socket.commands.slice(-1)).toEqual([
+      { type: 'subscribe_thread', payload: { thread_id: 'thread-b' } },
+    ])
+    expect(workspace.activeThreadId.value).toBe('thread-b')
   })
 })

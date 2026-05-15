@@ -15,6 +15,7 @@ from yier_web.codex.ws_commands import (
     CodexWsCommandContext,
     CodexWsCommandStrategyFactory,
 )
+from yier_web.auth import AuthService
 from yier_web.schemas import (
     ArchiveCodexSessionResponse,
     CodexThreadCreateRequest,
@@ -30,6 +31,13 @@ def _codex_manager(state: State) -> CodexIpcManager:
     if manager is None:
         raise RuntimeError("Codex IPC manager is not configured.")
     return cast(CodexIpcManager, manager)
+
+
+def _auth_service(state: State) -> AuthService:
+    auth_service = getattr(state, "auth_service", None)
+    if auth_service is None:
+        raise RuntimeError("Auth service is not configured.")
+    return cast(AuthService, auth_service)
 
 
 class CodexController(Controller):
@@ -108,6 +116,17 @@ class CodexController(Controller):
     async def websocket_handler(self, socket: WebSocket) -> None:
         manager = _codex_manager(socket.app.state)
         await socket.accept()
+        if not _auth_service(socket.app.state).is_codex_websocket_authorized(socket):
+            await socket.send_json(
+                {
+                    "type": "error",
+                    "code": "unauthorized",
+                    "message": "Authentication or a valid Codex embed token is required.",
+                }
+            )
+            await socket.close(code=1008, reason="Codex WebSocket unauthorized.")
+            return
+
         outbox: CodexSubscriberQueue = asyncio.Queue()
         subscribed_thread_ids: set[str] = set()
 

@@ -55,8 +55,90 @@ Optional auth settings:
 
 - `YIER_AUTH_SECRET`: optional extra signing secret for session cookies
 - `YIER_AUTH_SESSION_TTL_HOURS`: cookie lifetime in hours, default is `168`
+- `YIER_CODEX_EMBED_TOKEN`: token for unauthenticated Codex iframe access
 
 If neither password variable is set, authentication is disabled.
+
+## Codex Iframe Embed
+
+Yier exposes a chat-only Codex iframe at `/codex/embed`. The iframe does not
+show the Codex session list or the main app navigation.
+
+Set an embed token on the Yier server:
+
+```bash
+export YIER_CODEX_EMBED_TOKEN='change-this-embed-token'
+```
+
+Embed the chat frame with only the token in the URL:
+
+```html
+<iframe
+  id="codex-frame"
+  src="http://127.0.0.1:9999/codex/embed?embed_token=change-this-embed-token"
+  style="width: 100%; height: 720px; border: 0"
+></iframe>
+```
+
+Start a new Codex thread for a cwd, set plan mode, and send an initial prompt:
+
+```js
+const frame = document.querySelector('#codex-frame')
+
+frame.contentWindow.postMessage(
+  {
+    type: 'yier:codex-start',
+    cwd: '/Users/me/project',
+    mode: 'plan',
+    prompt: 'Inspect this project',
+  },
+  'http://127.0.0.1:9999',
+)
+```
+
+Resume an existing Codex thread:
+
+```js
+frame.contentWindow.postMessage(
+  {
+    type: 'yier:codex-resume',
+    threadId: 'thread-id-here',
+    mode: 'plan',
+  },
+  'http://127.0.0.1:9999',
+)
+```
+
+For host messages, send either `yier:codex-start` with `cwd` or
+`yier:codex-resume` with `threadId`. `mode` is optional and accepts `build` or
+`plan`; omit it to use the thread's current/default mode. `prompt` is optional
+and is only allowed with `yier:codex-start`; when present, the iframe creates the
+thread, applies `mode`, then sends the initial prompt. `cwd` is resolved by the
+backend as the Codex working directory. If authentication is enabled, the iframe
+page is public, but the Codex WebSocket still requires a valid `embed_token`
+unless the browser already has an authenticated Yier session.
+
+The iframe posts lifecycle messages to its parent window:
+
+```js
+window.addEventListener('message', (event) => {
+  if (event.data?.type === 'yier:codex-ready') {
+    console.log('Codex iframe is ready')
+  }
+  if (event.data?.type === 'yier:codex-thread-created') {
+    console.log(event.data.threadId, event.data.cwd, event.data.mode)
+  }
+  if (event.data?.type === 'yier:codex-thread-resumed') {
+    console.log(event.data.threadId, event.data.cwd, event.data.mode)
+  }
+  if (event.data?.type === 'yier:codex-prompt-sent') {
+    console.log(event.data.threadId, event.data.cwd, event.data.mode)
+  }
+  if (event.data?.type === 'yier:codex-error') {
+    console.error(event.data.message)
+  }
+})
+```
 
 ## Development Startup
 

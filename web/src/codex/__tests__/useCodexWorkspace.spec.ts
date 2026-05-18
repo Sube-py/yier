@@ -7,12 +7,7 @@ import {
   type CodexRealtimeClient,
   type UseCodexWorkspaceOptions,
 } from '../composables/useCodexWorkspace'
-import type {
-  CodexClientCommand,
-  CodexServerEvent,
-  CodexSocketStatus,
-  JsonRecord,
-} from '../types'
+import type { CodexClientCommand, CodexServerEvent, CodexSocketStatus, JsonRecord } from '../types'
 
 type CommandCall = {
   type: CodexClientCommand
@@ -215,6 +210,82 @@ describe('useCodexWorkspace', () => {
         response: { answers: { mode: { answers: ['Plan'] } } },
       },
     })
+  })
+
+  it('implements plan requests by returning to build mode and sending the plan prompt', async () => {
+    const socket = new FakeCodexSocket()
+    const { workspace } = mountHarness(socket)
+    await flushPromises()
+
+    socket.emit({
+      type: 'thread_state',
+      payload: {
+        thread_id: 'thread-a',
+        state: {
+          id: 'thread-a',
+          latestCollaborationMode: {
+            mode: 'plan',
+            settings: {
+              model: 'gpt-5.4',
+              reasoning_effort: 'medium',
+              developer_instructions: null,
+            },
+          },
+          latestModel: 'gpt-5.4',
+          latestReasoningEffort: 'medium',
+          turns: [],
+          requests: [
+            {
+              id: 'implement-plan:turn-1',
+              method: 'item/plan/requestImplementation',
+              params: {
+                threadId: 'thread-a',
+                turnId: 'turn-1',
+                planContent: '1. Update composer\n2. Add tests',
+              },
+            },
+          ],
+        },
+        queued_followups: [],
+      },
+    })
+    await nextTick()
+
+    expect(workspace.activeMode.value).toBe('plan')
+    expect(workspace.activeUserInputRequest.value?.method).toBe('item/plan/requestImplementation')
+
+    await workspace.submitUserInputResponse('implement-plan:turn-1', {
+      decision: 'accept',
+      planContent: '1. Update composer\n2. Add tests',
+    })
+
+    const defaultCollaborationMode = {
+      mode: 'default',
+      settings: {
+        model: 'gpt-5.4',
+        reasoning_effort: 'medium',
+        developer_instructions: null,
+      },
+    }
+    expect(socket.commands.slice(-2)).toEqual([
+      {
+        type: 'set_collaboration_mode',
+        payload: {
+          thread_id: 'thread-a',
+          collaboration_mode: defaultCollaborationMode,
+        },
+      },
+      {
+        type: 'send_prompt',
+        payload: {
+          thread_id: 'thread-a',
+          prompt: 'PLEASE IMPLEMENT THIS PLAN:\n1. Update composer\n2. Add tests',
+          collaboration_mode: defaultCollaborationMode,
+        },
+      },
+    ])
+    expect(workspace.activeMode.value).toBe('build')
+    expect(workspace.activeUserInputRequest.value).toBeNull()
   })
 
   it('forks a thread, refreshes the workspace, and selects the forked thread', async () => {

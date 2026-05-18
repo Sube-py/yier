@@ -115,6 +115,37 @@ class FakeCodexIpcSession:
         return SimpleNamespace(id=self.thread_id)
 
     async def hydrate_initial_state(self, *, owner_wait_seconds: float = 0.4) -> None:
+        if self.thread_id == "thread-plan":
+            self.state = {
+                "id": "thread-plan",
+                "turns": [
+                    {
+                        "turnId": "turn-1",
+                        "status": "completed",
+                        "items": [
+                            {"id": "plan-1", "type": "plan", "text": "Step 1"},
+                            {
+                                "id": "implement-plan:turn-1",
+                                "type": "planImplementation",
+                                "turnId": "turn-1",
+                                "planContent": "Step 1",
+                                "isCompleted": False,
+                            },
+                        ],
+                    }
+                ],
+                "requests": [
+                    {
+                        "id": "implement-plan:turn-1",
+                        "method": "item/plan/requestImplementation",
+                        "params": {
+                            "threadId": "thread-plan",
+                            "turnId": "turn-1",
+                            "planContent": "Step 1",
+                        },
+                    }
+                ],
+            }
         return None
 
     async def list_threads(self, params: dict[str, Any] | None = None) -> ThreadListResponse:
@@ -333,13 +364,30 @@ def test_codex_manager_keeps_separate_sessions_alive(tmp_path: Path) -> None:
 
         queue_a: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         queue_b: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        queue_plan: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         await manager.subscribe("thread-a", queue_a)
         await manager.subscribe("thread-created", queue_b)
+        await manager.subscribe("thread-plan", queue_plan)
 
         snapshot_a = await _wait_for_event(queue_a, lambda event: event["type"] == "thread_snapshot")
         snapshot_b = await _wait_for_event(queue_b, lambda event: event["type"] == "thread_snapshot")
+        snapshot_plan = await _wait_for_event(
+            queue_plan,
+            lambda event: event["type"] == "thread_snapshot",
+        )
         assert snapshot_a["payload"]["thread_id"] == "thread-a"
         assert snapshot_b["payload"]["thread_id"] == "thread-created"
+        assert snapshot_plan["payload"]["state"]["requests"] == [
+            {
+                "id": "implement-plan:turn-1",
+                "method": "item/plan/requestImplementation",
+                "params": {
+                    "threadId": "thread-plan",
+                    "turnId": "turn-1",
+                    "planContent": "Step 1",
+                },
+            }
+        ]
 
         factory.by_thread_id("thread-a").emit_state(
             {"id": "thread-a", "phase": "working", "turns": []}
@@ -361,14 +409,17 @@ def test_codex_manager_keeps_separate_sessions_alive(tmp_path: Path) -> None:
 
         manager.unsubscribe("thread-a", queue_a)
         manager.unsubscribe("thread-created", queue_b)
+        manager.unsubscribe("thread-plan", queue_plan)
 
         assert factory.by_thread_id("thread-a").stopped is False
         assert factory.by_thread_id("thread-created").stopped is False
+        assert factory.by_thread_id("thread-plan").stopped is False
 
         await manager.stop()
 
         assert factory.by_thread_id("thread-a").stopped is True
         assert factory.by_thread_id("thread-created").stopped is True
+        assert factory.by_thread_id("thread-plan").stopped is True
         assert factory.workspace_session().stopped is True
 
     asyncio.run(scenario())
@@ -487,6 +538,35 @@ def test_codex_controller_http_and_websocket_contract(tmp_path: Path) -> None:
                 "hello",
                 False,
                 {"mode": "build"},
+            )
+
+            default_collaboration_mode = {
+                "mode": "default",
+                "settings": {
+                    "model": "gpt-5.4",
+                    "reasoning_effort": "medium",
+                    "developer_instructions": None,
+                },
+            }
+            ws.send_json(
+                {
+                    "id": "prompt-default",
+                    "type": "send_prompt",
+                    "payload": {
+                        "thread_id": "thread-a",
+                        "prompt": "implement",
+                        "collaboration_mode": default_collaboration_mode,
+                    },
+                }
+            )
+            receive_until(
+                lambda message: message.get("type") == "ack"
+                and message.get("id") == "prompt-default"
+            )
+            assert factory.by_thread_id("thread-a").run_prompt_calls[-1] == (
+                "implement",
+                False,
+                default_collaboration_mode,
             )
 
             ws.send_json(

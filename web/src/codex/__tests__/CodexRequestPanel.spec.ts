@@ -157,4 +157,37 @@ describe('CodexRequestPanel', () => {
       ],
     ])
   })
+
+  it('submits plan implementation requests with optional feedback', async () => {
+    const request: CodexPendingRequest = {
+      id: 'implement-plan:turn-1',
+      method: 'item/plan/requestImplementation',
+      params: {
+        turnId: 'turn-1',
+        planContent: '1. Update composer\n2. Add tests',
+      },
+    }
+    const wrapper = mount(CodexRequestPanel, { props: { request } })
+
+    expect(wrapper.text()).toContain('Plan ready')
+    expect(wrapper.text()).toContain('Implement this plan?')
+    expect(wrapper.text()).toContain('1. Update composer')
+
+    await wrapper.find('textarea').setValue('Please keep the patch focused.')
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text().includes('Implement plan'))!
+      .trigger('click')
+
+    expect(wrapper.emitted('submitResponse')).toEqual([
+      [
+        'implement-plan:turn-1',
+        {
+          decision: 'accept',
+          planContent: '1. Update composer\n2. Add tests',
+          followupMessage: 'Please keep the patch focused.',
+        },
+      ],
+    ])
+  })
 })

@@ -17,6 +17,8 @@ import type {
 } from '../types'
 
 const ACTIVE_THREAD_STORAGE_KEY = 'yier.codex.active-thread-id'
+const PLAN_IMPLEMENTATION_REQUEST_METHOD = 'item/plan/requestImplementation'
+const IMPLEMENT_PLAN_PROMPT_PREFIX = 'PLEASE IMPLEMENT THIS PLAN:'
 
 export interface CodexRealtimeClient {
   connect: () => Promise<void>
@@ -141,6 +143,32 @@ function isPendingUserInputRequest(value: unknown): value is CodexPendingRequest
   )
 }
 
+function isPendingPlanImplementationRequest(value: unknown): value is CodexPendingRequest {
+  return (
+    Boolean(value) &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    (value as CodexPendingRequest).method === PLAN_IMPLEMENTATION_REQUEST_METHOD &&
+    typeof (value as CodexPendingRequest).id === 'string' &&
+    Boolean((value as CodexPendingRequest).id)
+  )
+}
+
+function isPendingComposerRequest(value: unknown): value is CodexPendingRequest {
+  return isPendingUserInputRequest(value) || isPendingPlanImplementationRequest(value)
+}
+
+function defaultCollaborationMode(state: CodexConversationState | null): CodexCollaborationMode {
+  return {
+    mode: 'default',
+    settings: {
+      model: state?.latestModel ?? '',
+      reasoning_effort: state?.latestReasoningEffort ?? null,
+      developer_instructions: null,
+    },
+  }
+}
+
 function planCollaborationMode(state: CodexConversationState | null): CodexCollaborationMode {
   return {
     mode: 'plan',
@@ -156,7 +184,7 @@ function buildCollaborationPayload(
   mode: CodexWorkMode,
   state: CodexConversationState | null,
 ) {
-  return mode === 'plan' ? planCollaborationMode(state) : null
+  return mode === 'plan' ? planCollaborationMode(state) : defaultCollaborationMode(state)
 }
 
 export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
@@ -209,7 +237,13 @@ export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
       : []
     ).filter(isPendingUserInputRequest),
   )
-  const activeUserInputRequest = computed(() => pendingUserInputRequests.value[0] ?? null)
+  const activeComposerRequest = computed(
+    () =>
+      (Array.isArray(activeThreadState.value?.requests)
+        ? activeThreadState.value.requests
+        : []
+      ).find(isPendingComposerRequest) ?? null,
+  )
   const queuedFollowups = computed<CodexQueuedFollowup[]>(() => {
     const fromPayload = activeThreadPayload.value?.queued_followups
     if (Array.isArray(fromPayload) && fromPayload.length) {
@@ -526,14 +560,7 @@ export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
       })
       updateActiveState({
         latestCollaborationMode:
-          collaborationMode ?? {
-            mode: 'default',
-            settings: {
-              model: activeThreadState.value?.latestModel ?? '',
-              reasoning_effort: activeThreadState.value?.latestReasoningEffort ?? null,
-              developer_instructions: null,
-            },
-          },
+          collaborationMode ?? defaultCollaborationMode(activeThreadState.value),
       })
       return true
     })
@@ -656,6 +683,14 @@ export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
     if (!threadId || !requestId) {
       return
     }
+    const state = activeThreadState.value
+    const request = Array.isArray(state?.requests)
+      ? state.requests.find((request) => request.id === requestId) ?? null
+      : null
+    if (isPendingPlanImplementationRequest(request)) {
+      await submitPlanImplementationRequest(request, response)
+      return
+    }
     await runCommand(async () => {
       await socket.sendCommand('submit_user_input_response', {
         thread_id: threadId,
@@ -669,6 +704,59 @@ export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
         })
       }
     })
+  }
+
+  async function submitPlanImplementationRequest(
+    request: CodexPendingRequest,
+    response: JsonRecord,
+  ) {
+    const threadId = activeThreadId.value
+    if (!threadId || response.decision !== 'accept') {
+      removeRequest(request.id)
+      return
+    }
+    await runCommand(async () => {
+      const state = activeThreadState.value
+      const collaborationMode = defaultCollaborationMode(state)
+      const planContent =
+        typeof response.planContent === 'string'
+          ? response.planContent
+          : typeof request.params?.planContent === 'string'
+            ? request.params.planContent
+            : ''
+      const followupMessage =
+        typeof response.followupMessage === 'string' ? response.followupMessage.trim() : ''
+      const message = followupMessage || `${IMPLEMENT_PLAN_PROMPT_PREFIX}\n${planContent}`.trim()
+
+      await socket.sendCommand('set_collaboration_mode', {
+        thread_id: threadId,
+        collaboration_mode: collaborationMode,
+      })
+      updateActiveState({
+        latestCollaborationMode: collaborationMode,
+        requests: Array.isArray(state?.requests)
+          ? state.requests.filter((requestItem) => requestItem.id !== request.id)
+          : [],
+      })
+
+      if (!message) {
+        return
+      }
+      await socket.sendCommand('send_prompt', {
+        thread_id: threadId,
+        prompt: message,
+        collaboration_mode: collaborationMode,
+      })
+    })
+  }
+
+  function removeRequest(requestId: string) {
+    const state = activeThreadState.value
+    if (state && Array.isArray(state.requests)) {
+      updateActiveState({
+        requests: state.requests.filter((request) => request.id !== requestId),
+      })
+    }
   }
 
   let teardown: (() => void) | null = null
@@ -693,7 +781,7 @@ export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
     activeThreadId,
     activeThreadPayload,
     activeThreadState,
-    activeUserInputRequest,
+    activeUserInputRequest: activeComposerRequest,
     archivingThreadId,
     archiveThread,
     compactThread,

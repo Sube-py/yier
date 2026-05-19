@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
+import { useTimelineMarkdown } from '../../composables/useTimelineMarkdown'
 import type { CodexConversationState, CodexTurnState, JsonRecord } from '../types'
 import { compactJson, formatTimestamp, isRecord, statusLabel, textFromInput } from '../lib/format'
 
@@ -11,6 +12,7 @@ const props = defineProps<{
 const turns = computed<CodexTurnState[]>(() =>
   Array.isArray(props.state?.turns) ? props.state.turns : [],
 )
+const { renderMarkdown, onMarkdownClick } = useTimelineMarkdown()
 
 function itemType(item: JsonRecord) {
   return typeof item.type === 'string' && item.type ? item.type : 'unknown'
@@ -54,9 +56,17 @@ function itemTitle(item: JsonRecord) {
 function itemTone(item: JsonRecord) {
   const type = itemType(item)
   if (type === 'userMessage' || type === 'steeringUserMessage') {
-    return 'justify-items-end'
+    return 'justify-end'
   }
-  return 'justify-items-start'
+  return 'justify-start'
+}
+
+function bubbleWidth(item: JsonRecord) {
+  const type = itemType(item)
+  if (type === 'userMessage' || type === 'steeringUserMessage') {
+    return 'w-fit max-w-[min(40rem,88%)]'
+  }
+  return 'w-full max-w-[min(52rem,100%)]'
 }
 
 function bubbleTone(item: JsonRecord) {
@@ -184,13 +194,25 @@ function shouldShowJson(item: JsonRecord) {
   return !knownTypes.has(itemType(item)) || !itemText(item)
 }
 
+function shouldRenderMarkdown(item: JsonRecord) {
+  return (
+    ['userMessage', 'steeringUserMessage', 'agentMessage', 'plan', 'reasoning'].includes(
+      itemType(item),
+    ) && Boolean(itemText(item))
+  )
+}
+
+function shouldRenderRawText(item: JsonRecord) {
+  return Boolean(itemText(item)) && !shouldRenderMarkdown(item) && !shouldShowJson(item)
+}
+
 function turnKey(turn: CodexTurnState, index: number) {
   return turn.turnId || `turn-${index}`
 }
 </script>
 
 <template>
-  <section class="min-h-0 flex-1 overflow-y-auto bg-[rgba(255,253,247,0.38)] px-5 py-4">
+  <section class="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-clip bg-[rgba(255,253,247,0.38)] px-5 py-4 max-sm:px-3">
     <div v-if="!state" class="grid h-full min-h-72 place-items-center text-center text-[color:var(--app-text-soft)]">
       <div class="grid gap-2">
         <i class="pi pi-comments text-xl"></i>
@@ -205,11 +227,11 @@ function turnKey(turn: CodexTurnState, index: number) {
       </div>
     </div>
 
-    <div v-else class="mx-auto grid max-w-5xl gap-5">
+    <div v-else class="mx-auto grid w-full max-w-5xl min-w-0 gap-5 overflow-x-clip">
       <section
         v-for="(turn, turnIndex) in turns"
         :key="turnKey(turn, turnIndex)"
-        class="grid gap-3 border-b border-[color:var(--app-border)] pb-5 last:border-b-0"
+        class="grid min-w-0 gap-3 overflow-x-clip border-b border-[color:var(--app-border)] pb-5 last:border-b-0"
       >
         <div class="flex min-w-0 flex-wrap items-center gap-2 text-[0.74rem] text-[color:var(--app-text-soft)]">
           <span class="font-semibold text-[color:var(--app-text)]">
@@ -220,16 +242,17 @@ function turnKey(turn: CodexTurnState, index: number) {
           <span v-if="turn.turnStartedAtMs">{{ formatTimestamp(turn.turnStartedAtMs) }}</span>
         </div>
 
-        <div class="grid gap-3">
+        <div class="grid min-w-0 gap-3 overflow-x-clip">
           <article
             v-for="(item, itemIndex) in (Array.isArray(turn.items) ? turn.items : [])"
             :key="itemId(item, itemIndex)"
-            class="grid"
+            class="flex min-w-0 w-full"
             :class="itemTone(item)"
           >
             <div
-              class="max-w-[min(48rem,100%)] rounded-xl border px-3.5 py-3 shadow-[0_10px_28px_rgba(24,44,48,0.05)]"
-              :class="bubbleTone(item)"
+              class="min-w-0 overflow-hidden rounded-xl border px-3.5 py-3 shadow-[0_10px_28px_rgba(24,44,48,0.05)]"
+              :class="[bubbleTone(item), bubbleWidth(item)]"
+              data-codex-bubble
             >
               <div class="mb-1.5 flex min-w-0 items-center justify-between gap-3">
                 <p class="m-0 truncate text-[0.76rem] font-bold uppercase tracking-[0.1em] text-[color:var(--app-text-soft)]">
@@ -242,15 +265,21 @@ function turnKey(turn: CodexTurnState, index: number) {
                   {{ statusLabel(item.status) }}
                 </span>
               </div>
-              <p
-                v-if="itemText(item)"
-                class="m-0 whitespace-pre-wrap break-words text-sm leading-6 text-[color:var(--app-text)]"
-              >
-                {{ itemText(item) }}
-              </p>
+              <div
+                v-if="shouldRenderMarkdown(item)"
+                class="markdown-prose min-w-0 [overflow-wrap:anywhere] [&>:first-child]:mt-0 [&>:last-child]:mb-0"
+                v-html="renderMarkdown(itemText(item))"
+                @click="onMarkdownClick"
+              ></div>
+              <pre
+                v-if="shouldRenderRawText(item)"
+                class="m-0 max-h-80 max-w-full overflow-auto overscroll-contain rounded-lg border border-[rgba(34,66,72,0.08)] bg-white/78 p-3 text-xs leading-5 text-[color:var(--app-text-soft)]"
+                data-codex-raw
+              >{{ itemText(item) }}</pre>
               <pre
                 v-if="shouldShowJson(item)"
-                class="mt-2 max-h-80 overflow-auto rounded-lg border border-[rgba(34,66,72,0.08)] bg-white/78 p-3 text-xs leading-5 text-[color:var(--app-text-soft)]"
+                class="m-0 max-h-80 max-w-full overflow-auto overscroll-contain rounded-lg border border-[rgba(34,66,72,0.08)] bg-white/78 p-3 text-xs leading-5 text-[color:var(--app-text-soft)]"
+                data-codex-raw
               >{{ compactJson(item) }}</pre>
             </div>
           </article>
@@ -259,4 +288,3 @@ function turnKey(turn: CodexTurnState, index: number) {
     </div>
   </section>
 </template>
-

@@ -234,6 +234,12 @@ class CodexIpcManager:
             wait_for_completion=False,
             collaboration_mode=collaboration_mode,
         )
+        if collaboration_mode is not None:
+            await self._apply_latest_collaboration_mode(
+                thread_id,
+                managed,
+                collaboration_mode,
+            )
 
     async def steer_prompt(self, thread_id: str, prompt: str) -> None:
         managed = await self._ensure_thread(thread_id)
@@ -254,6 +260,11 @@ class CodexIpcManager:
     ) -> None:
         managed = await self._ensure_thread(thread_id)
         await managed.session.set_collaboration_mode(collaboration_mode)
+        await self._apply_latest_collaboration_mode(
+            thread_id,
+            managed,
+            collaboration_mode,
+        )
 
     async def submit_user_input_response(
         self,
@@ -406,6 +417,39 @@ class CodexIpcManager:
         await self.event_broker.publish(
             "codex_thread_state",
             payload["payload"],
+        )
+
+    async def _apply_latest_collaboration_mode(
+        self,
+        thread_id: str,
+        managed: ManagedCodexThread,
+        collaboration_mode: JsonDict | None,
+    ) -> None:
+        latest_state = managed.session.state
+        if isinstance(latest_state, dict):
+            managed.state = latest_state
+        elif isinstance(managed.state, dict):
+            latest_state = managed.state
+
+        if not isinstance(latest_state, dict):
+            return
+
+        latest_state["latestCollaborationMode"] = (
+            dict(collaboration_mode)
+            if isinstance(collaboration_mode, dict)
+            else {
+                "mode": "default",
+                "settings": {
+                    "model": latest_state.get("latestModel") or "",
+                    "reasoning_effort": latest_state.get("latestReasoningEffort"),
+                    "developer_instructions": None,
+                },
+            }
+        )
+        await self._fanout_thread_state(
+            thread_id,
+            latest_state,
+            session=managed.session,
         )
 
     async def _broadcast_thread_event(self, event_type: str, thread_id: str) -> None:

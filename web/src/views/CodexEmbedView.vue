@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, proxyRefs, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 
 import CodexChatPane from '../codex/components/CodexChatPane.vue'
 import { useCodexWorkspace } from '../codex/composables/useCodexWorkspace'
@@ -26,6 +26,7 @@ type EmbedCommand = {
 }
 
 const route = useRoute()
+const router = useRouter()
 const embedToken = queryText('embed_token')
 const codex = proxyRefs(
   useCodexWorkspace({
@@ -170,6 +171,15 @@ async function startFromPayload({
   }
 }
 
+function consumeQueryMode() {
+  if (!queryText('mode')) {
+    return
+  }
+  const nextQuery = { ...route.query }
+  delete nextQuery.mode
+  void router.replace({ query: nextQuery })
+}
+
 async function initializeFromQuery() {
   const cwd = queryText('cwd')
   const threadId = queryText('thread_id')
@@ -187,6 +197,7 @@ async function initializeFromQuery() {
     return
   }
   await startFromPayload({ cwd, threadId, mode, prompt })
+  consumeQueryMode()
 }
 
 function textFromCommand(value: unknown) {

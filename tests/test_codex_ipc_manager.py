@@ -425,6 +425,67 @@ def test_codex_manager_keeps_separate_sessions_alive(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
+def test_codex_manager_updates_cached_mode_for_future_snapshots(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        config_service = AppConfigService(
+            project_root=tmp_path / "project",
+            home_dir=tmp_path / "home",
+        )
+        factory = FakeSessionFactory()
+        manager = CodexIpcManager(
+            config_service=config_service,
+            event_broker=EventStreamBroker(),
+            session_factory=factory,
+        )
+        default_collaboration_mode = {
+            "mode": "default",
+            "settings": {
+                "model": "gpt-5.4",
+                "reasoning_effort": "medium",
+                "developer_instructions": None,
+            },
+        }
+
+        await manager.start()
+        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        await manager.subscribe("thread-plan", queue)
+        await _wait_for_event(
+            queue,
+            lambda event: event["type"] == "thread_snapshot",
+        )
+
+        await manager.set_collaboration_mode("thread-plan", default_collaboration_mode)
+        state_event = await _wait_for_event(
+            queue,
+            lambda event: event["type"] == "thread_state"
+            and event["payload"]["state"].get("latestCollaborationMode")
+            == default_collaboration_mode,
+        )
+
+        assert state_event["payload"]["state"]["latestCollaborationMode"] == default_collaboration_mode
+        assert (
+            factory.by_thread_id("thread-plan").collaboration_modes[-1]
+            == default_collaboration_mode
+        )
+
+        manager.unsubscribe("thread-plan", queue)
+        refreshed_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        await manager.subscribe("thread-plan", refreshed_queue)
+        refreshed_snapshot = await _wait_for_event(
+            refreshed_queue,
+            lambda event: event["type"] == "thread_snapshot",
+        )
+
+        assert (
+            refreshed_snapshot["payload"]["state"]["latestCollaborationMode"]
+            == default_collaboration_mode
+        )
+
+        await manager.stop()
+
+    asyncio.run(scenario())
+
+
 def test_codex_controller_http_and_websocket_contract(tmp_path: Path) -> None:
     factory = FakeSessionFactory()
     _, client = build_app(tmp_path, factory)

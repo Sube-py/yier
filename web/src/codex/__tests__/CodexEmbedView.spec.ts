@@ -139,11 +139,11 @@ describe('CodexEmbedView', () => {
 
   it('applies plan mode after creating a thread', async () => {
     workspace.activeThreadState.value = { id: 'thread-created', cwd: '/tmp/embed' }
-    await mountEmbed('/codex/embed?embed_token=secret')
-    await sendHostMessage({ type: 'yier:codex-start', cwd: '/tmp/embed', mode: 'plan' })
+    const wrapper = await mountEmbed('/codex/embed?cwd=/tmp/embed&mode=plan&embed_token=secret')
 
     expect(workspace.startEmbedThread).toHaveBeenCalledWith('/tmp/embed')
     expect(workspace.setMode).toHaveBeenCalledWith('plan')
+    expect(wrapper.vm.$route.query.mode).toBeUndefined()
     expect(window.parent.postMessage).toHaveBeenCalledWith(
       {
         type: 'yier:codex-thread-created',

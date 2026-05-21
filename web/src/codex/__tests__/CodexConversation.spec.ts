@@ -1,4 +1,5 @@
-import { mount } from '@vue/test-utils'
+import { mount, type VueWrapper } from '@vue/test-utils'
+import { nextTick } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import CodexConversation from '../components/CodexConversation.vue'
@@ -24,6 +25,29 @@ function mountConversation(items: Record<string, unknown>[]) {
       state: createState(items),
     },
     attachTo: document.body,
+  })
+}
+
+async function flushScrollWatchers() {
+  await nextTick()
+  await nextTick()
+}
+
+function scrollContainer(wrapper: VueWrapper) {
+  return wrapper.get('[data-codex-conversation-body]').element as HTMLElement
+}
+
+function setScrollMetrics(
+  element: HTMLElement,
+  { scrollHeight, clientHeight }: { scrollHeight: number; clientHeight: number },
+) {
+  Object.defineProperty(element, 'scrollHeight', {
+    configurable: true,
+    value: scrollHeight,
+  })
+  Object.defineProperty(element, 'clientHeight', {
+    configurable: true,
+    value: clientHeight,
   })
 }
 
@@ -121,5 +145,91 @@ describe('CodexConversation', () => {
     expect(raw.classes()).toEqual(expect.arrayContaining(['max-w-full', 'overflow-auto']))
     expect(raw.text()).toContain('"type": "newThing"')
     expect(raw.text()).toContain('"ok": true')
+  })
+
+  it('scrolls to the bottom when the conversation opens', async () => {
+    const wrapper = mountConversation([
+      {
+        id: 'agent-1',
+        type: 'agentMessage',
+        text: 'Earlier output',
+      },
+    ])
+    const element = scrollContainer(wrapper)
+    setScrollMetrics(element, { scrollHeight: 1200, clientHeight: 320 })
+
+    await flushScrollWatchers()
+
+    expect(element.scrollTop).toBe(1200)
+  })
+
+  it('does not force-scroll new output after the user scrolls away from the bottom', async () => {
+    const wrapper = mountConversation([
+      {
+        id: 'agent-1',
+        type: 'agentMessage',
+        text: 'Earlier output',
+      },
+    ])
+    const element = scrollContainer(wrapper)
+    setScrollMetrics(element, { scrollHeight: 1200, clientHeight: 320 })
+    await flushScrollWatchers()
+
+    element.scrollTop = 400
+    await wrapper.get('[data-codex-conversation-body]').trigger('scroll')
+
+    setScrollMetrics(element, { scrollHeight: 1400, clientHeight: 320 })
+    await wrapper.setProps({
+      state: createState([
+        {
+          id: 'agent-1',
+          type: 'agentMessage',
+          text: 'Earlier output',
+        },
+        {
+          id: 'agent-2',
+          type: 'agentMessage',
+          text: 'New output',
+        },
+      ]),
+    })
+    await flushScrollWatchers()
+
+    expect(element.scrollTop).toBe(400)
+  })
+
+  it('keeps following new output while the user is near the bottom', async () => {
+    const wrapper = mountConversation([
+      {
+        id: 'agent-1',
+        type: 'agentMessage',
+        text: 'Earlier output',
+      },
+    ])
+    const element = scrollContainer(wrapper)
+    setScrollMetrics(element, { scrollHeight: 1200, clientHeight: 320 })
+    await flushScrollWatchers()
+
+    element.scrollTop = 840
+    await wrapper.get('[data-codex-conversation-body]').trigger('scroll')
+
+    setScrollMetrics(element, { scrollHeight: 1400, clientHeight: 320 })
+    await wrapper.setProps({
+      state: createState([
+        {
+          id: 'agent-1',
+          type: 'agentMessage',
+          text: 'Earlier output',
+        },
+        {
+          id: 'agent-2',
+          type: 'agentMessage',
+          text: 'New output',
+        },
+      ]),
+    })
+    await flushScrollWatchers()
+
+    expect(element.scrollTop).toBe(1400)
   })
 })

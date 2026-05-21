@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 
 import { useTimelineMarkdown } from '../../composables/useTimelineMarkdown'
 import type { CodexConversationState, CodexTurnState, JsonRecord } from '../types'
@@ -13,6 +13,33 @@ const turns = computed<CodexTurnState[]>(() =>
   Array.isArray(props.state?.turns) ? props.state.turns : [],
 )
 const { renderMarkdown, onMarkdownClick } = useTimelineMarkdown()
+const conversationBody = ref<HTMLElement | null>(null)
+const shouldStickToBottom = ref(true)
+const bottomThreshold = 72
+
+function isNearBottom(element: HTMLElement) {
+  return element.scrollHeight - element.scrollTop - element.clientHeight <= bottomThreshold
+}
+
+function onConversationScroll() {
+  if (!conversationBody.value) {
+    return
+  }
+  shouldStickToBottom.value = isNearBottom(conversationBody.value)
+}
+
+async function scrollToBottomIfNeeded() {
+  await nextTick()
+  if (!conversationBody.value || !shouldStickToBottom.value) {
+    return
+  }
+  conversationBody.value.scrollTop = conversationBody.value.scrollHeight
+}
+
+async function resetBottomStickiness() {
+  shouldStickToBottom.value = true
+  await scrollToBottomIfNeeded()
+}
 
 function itemType(item: JsonRecord) {
   return typeof item.type === 'string' && item.type ? item.type : 'unknown'
@@ -209,10 +236,35 @@ function shouldRenderRawText(item: JsonRecord) {
 function turnKey(turn: CodexTurnState, index: number) {
   return turn.turnId || `turn-${index}`
 }
+
+onMounted(async () => {
+  await scrollToBottomIfNeeded()
+})
+
+watch(
+  () => props.state?.id,
+  async () => {
+    await resetBottomStickiness()
+  },
+  { flush: 'post' },
+)
+
+watch(
+  () => props.state?.turns,
+  async () => {
+    await scrollToBottomIfNeeded()
+  },
+  { deep: true, flush: 'post' },
+)
 </script>
 
 <template>
-  <section class="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-clip bg-[rgba(255,253,247,0.38)] px-5 py-4 max-sm:px-3">
+  <section
+    ref="conversationBody"
+    class="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-clip bg-[rgba(255,253,247,0.38)] px-5 py-4 max-sm:px-3"
+    data-codex-conversation-body
+    @scroll="onConversationScroll"
+  >
     <div v-if="!state" class="grid h-full min-h-72 place-items-center text-center text-[color:var(--app-text-soft)]">
       <div class="grid gap-2">
         <i class="pi pi-comments text-xl"></i>

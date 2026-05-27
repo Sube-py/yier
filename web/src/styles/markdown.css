@@ -18,8 +18,9 @@
   }
 
   .markdown-prose p {
-    margin-top: 0.7em;
-    margin-bottom: 0.7em;
+    margin-top: 0.58em;
+    margin-bottom: 0.58em;
+    line-height: 1.68;
   }
 
   .markdown-prose p:first-of-type {
@@ -32,8 +33,8 @@
 
   .markdown-prose ul,
   .markdown-prose ol {
-    margin-top: 0.7em;
-    margin-bottom: 0.7em;
+    margin-top: 0.58em;
+    margin-bottom: 0.58em;
     padding-left: 1.2em;
   }
 
@@ -52,8 +53,46 @@
   }
 
   .markdown-prose li {
-    margin-top: 0.18em;
-    margin-bottom: 0.18em;
+    margin-top: 0.12em;
+    margin-bottom: 0.12em;
+  }
+
+  .markdown-prose-conversation {
+    font-size: 0.96rem;
+    line-height: 1.68;
+  }
+
+  .markdown-prose-conversation h1,
+  .markdown-prose-conversation h2,
+  .markdown-prose-conversation h3,
+  .markdown-prose-conversation h4 {
+    margin-top: 1.1em;
+    margin-bottom: 0.45em;
+    letter-spacing: 0;
+    line-height: 1.24;
+  }
+
+  .markdown-prose-conversation h1 {
+    font-size: 1.32rem;
+  }
+
+  .markdown-prose-conversation h2 {
+    font-size: 1.16rem;
+  }
+
+  .markdown-prose-conversation h3,
+  .markdown-prose-conversation h4 {
+    font-size: 1.02rem;
+  }
+
+  .markdown-prose-compact {
+    font-size: 0.92rem;
+    line-height: 1.55;
+  }
+
+  .markdown-prose-compact p {
+    margin-top: 0.35em;
+    margin-bottom: 0.35em;
   }
 
   .markdown-prose pre {
@@ -219,6 +258,21 @@
     border-radius: 0.95rem;
     background: rgba(17, 38, 42, 0.92);
     box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+  }
+
+  .code-surface-compact {
+    border-radius: 0.75rem;
+    background: rgba(17, 38, 42, 0.9);
+  }
+
+  .code-surface-compact .code-surface-toolbar {
+    padding: 0.32rem 0.62rem 0.06rem;
+  }
+
+  .code-surface-compact .code-surface-scroll pre {
+    padding: 0.08rem 0.62rem 0.62rem;
+    font-size: 0.76rem;
+    line-height: 1.55;
   }
 
   .code-surface-danger {

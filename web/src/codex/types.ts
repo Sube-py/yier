@@ -2,6 +2,12 @@ export type JsonRecord = Record<string, unknown>
 
 export type CodexWorkMode = 'build' | 'plan'
 
+export interface CodexPromptSubmission {
+  prompt: string
+  model?: string | null
+  reasoningEffort?: string | null
+}
+
 export interface CodexNativeSessionSummary {
   thread_id: string
   title: string

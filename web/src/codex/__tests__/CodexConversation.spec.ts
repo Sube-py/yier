@@ -4,9 +4,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import CodexConversation from '../components/CodexConversation.vue'
 
-import type { CodexConversationState } from '../types'
+import type { CodexConversationState, CodexTurnState } from '../types'
 
-function createState(items: Record<string, unknown>[]): CodexConversationState {
+function createState(
+  items: Record<string, unknown>[],
+  turnOverrides: Partial<CodexTurnState> = {},
+): CodexConversationState {
   return {
     id: 'thread-1',
     turns: [
@@ -14,15 +17,19 @@ function createState(items: Record<string, unknown>[]): CodexConversationState {
         turnId: 'turn-1',
         status: 'completed',
         items,
+        ...turnOverrides,
       },
     ],
   }
 }
 
-function mountConversation(items: Record<string, unknown>[]) {
+function mountConversation(
+  items: Record<string, unknown>[],
+  turnOverrides: Partial<CodexTurnState> = {},
+) {
   return mount(CodexConversation, {
     props: {
-      state: createState(items),
+      state: createState(items, turnOverrides),
     },
     attachTo: document.body,
   })
@@ -54,6 +61,7 @@ function setScrollMetrics(
 describe('CodexConversation', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
+    vi.useRealTimers()
     vi.stubGlobal('navigator', {
       clipboard: {
         writeText: vi.fn().mockResolvedValue(undefined),
@@ -96,7 +104,7 @@ describe('CodexConversation', () => {
       },
     ])
 
-    const row = wrapper.get('article')
+    const row = wrapper.get('[data-codex-user-message]')
     const bubble = wrapper.get('[data-codex-bubble]')
     const prose = wrapper.get('.markdown-prose')
 
@@ -110,7 +118,7 @@ describe('CodexConversation', () => {
     )
   })
 
-  it('renders command output as contained raw text instead of markdown prose', () => {
+  it('keeps command output in the collapsed work section until expanded', async () => {
     const wrapper = mountConversation([
       {
         id: 'command-1',
@@ -118,16 +126,130 @@ describe('CodexConversation', () => {
         command: 'printf "**raw**"',
         aggregatedOutput: '**raw** output',
       },
+      {
+        id: 'agent-1',
+        type: 'agentMessage',
+        text: 'Done',
+      },
     ])
 
-    const raw = wrapper.get('[data-codex-raw]')
+    expect(wrapper.get('[data-codex-work-toggle]').text()).toContain('Worked')
+    expect(wrapper.find('[data-codex-command-output]').exists()).toBe(false)
+    expect(wrapper.find('[data-codex-work-items]').exists()).toBe(false)
+    expect(wrapper.find('[data-codex-work-section] .markdown-prose').exists()).toBe(false)
 
-    expect(raw.element.tagName).toBe('PRE')
-    expect(raw.classes()).toEqual(expect.arrayContaining(['max-w-full', 'overflow-auto']))
-    expect(raw.text()).toContain('printf "**raw**"')
-    expect(raw.text()).toContain('**raw** output')
-    expect(wrapper.find('.markdown-prose').exists()).toBe(false)
+    await wrapper.get('[data-codex-work-toggle]').trigger('click')
+    await wrapper.get('[data-codex-work-item] button').trigger('click')
+
+    const output = wrapper.get('[data-codex-command-output]')
+    expect(output.text()).toContain('$ printf "**raw**"')
+    expect(output.text()).toContain('**raw** output')
     expect(wrapper.html()).not.toContain('<strong>raw</strong>')
+  })
+
+  it('shows completed turn work duration before the final assistant response', () => {
+    const wrapper = mountConversation(
+      [
+        {
+          id: 'command-1',
+          type: 'commandExecution',
+          command: 'pnpm test',
+          aggregatedOutput: 'ok',
+        },
+        {
+          id: 'agent-1',
+          type: 'agentMessage',
+          text: 'Ready',
+        },
+      ],
+      {
+        durationMs: 12_000,
+      },
+    )
+
+    expect(wrapper.text()).toContain('Worked for 12s')
+    expect(wrapper.get('[data-codex-work-toggle]').attributes('aria-expanded')).toBe('false')
+    expect(wrapper.get('[data-codex-assistant-message]').text()).toContain('Ready')
+  })
+
+  it('keeps in-progress work expanded and shows working elapsed time', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-05-21T00:00:03.000Z'))
+
+    const wrapper = mountConversation(
+      [
+        {
+          id: 'reasoning-1',
+          type: 'reasoning',
+          status: 'inProgress',
+          content: 'Inspecting the code',
+        },
+      ],
+      {
+        status: 'inProgress',
+        turnStartedAtMs: new Date('2026-05-21T00:00:00.000Z').getTime(),
+      },
+    )
+
+    expect(wrapper.text()).toContain('Working for 3s')
+    expect(wrapper.get('[data-codex-work-toggle]').attributes('aria-expanded')).toBe('true')
+    expect(wrapper.get('[data-codex-work-item]').text()).toContain('Thinking')
+
+    vi.useRealTimers()
+  })
+
+  it('renders dynamic tool calls as lightweight work rows with detail on demand', async () => {
+    const wrapper = mountConversation([
+      {
+        id: 'tool-1',
+        type: 'dynamicToolCall',
+        tool: 'generate_diagram',
+        status: 'completed',
+        aggregatedOutput: '{"ok":true}',
+      },
+      {
+        id: 'agent-1',
+        type: 'agentMessage',
+        text: 'Done',
+      },
+    ])
+
+    await wrapper.get('[data-codex-work-toggle]').trigger('click')
+
+    expect(wrapper.get('[data-codex-work-item]').text()).toContain('Called Generate Diagram')
+    expect(wrapper.find('[data-codex-raw]').exists()).toBe(false)
+
+    await wrapper.get('[data-codex-work-item] button').trigger('click')
+
+    expect(wrapper.get('[data-codex-raw]').text()).toContain('{"ok":true}')
+  })
+
+  it('summarizes final turn work after the assistant response', () => {
+    const wrapper = mountConversation([
+      {
+        id: 'files-1',
+        type: 'fileChange',
+        changes: {
+          'src/App.vue': { type: 'update', linesAdded: 12, linesRemoved: 3 },
+          'src/main.ts': { type: 'update', linesAdded: 2, linesRemoved: 0 },
+        },
+      },
+      {
+        id: 'command-1',
+        type: 'commandExecution',
+        command: 'pnpm test',
+        aggregatedOutput: 'ok',
+      },
+      {
+        id: 'agent-1',
+        type: 'agentMessage',
+        text: 'Done.',
+      },
+    ])
+
+    expect(wrapper.get('[data-codex-turn-summary]').text()).toContain('2 files changed')
+    expect(wrapper.get('[data-codex-turn-summary]').text()).toContain('+14 / -3')
+    expect(wrapper.get('[data-codex-turn-summary]').text()).toContain('1 command')
   })
 
   it('renders unknown items as contained raw json', () => {

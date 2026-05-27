@@ -114,6 +114,25 @@
     box-shadow: none !important;
   }
 
+  .codex-composer-select.p-select {
+    min-height: 1.65rem;
+  }
+
+  .codex-composer-select.p-select .p-select-label {
+    min-width: 0;
+    max-width: 8.5rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--app-text);
+    font-size: 0.82rem;
+    font-weight: 650;
+  }
+
+  .codex-composer-select.p-select .p-select-dropdown {
+    margin-left: 0.25rem;
+  }
+
   .composer-inline-select-danger.p-select .p-select-label,
   .composer-inline-select-danger.p-select .p-select-dropdown {
     color: rgb(146, 64, 14);

@@ -8,6 +8,7 @@ import CodexThreadToolbar from './CodexThreadToolbar.vue'
 import type {
   CodexConversationState,
   CodexPendingRequest,
+  CodexPromptSubmission,
   CodexQueuedFollowup,
   CodexSocketStatus,
   CodexWorkMode,
@@ -43,7 +44,7 @@ const emit = defineEmits<{
   setMode: [mode: CodexWorkMode]
   refresh: []
   submitUserInputResponse: [requestId: string, response: JsonRecord]
-  sendPrompt: [prompt: string]
+  sendPrompt: [submission: CodexPromptSubmission]
   steerPrompt: [prompt: string]
   enqueueFollowup: [prompt: string]
   removeFollowup: [messageId: string]
@@ -61,16 +62,9 @@ function submitUserInputResponse(requestId: string, response: JsonRecord) {
       :thread-id="activeThreadId"
       :state="activeThreadState"
       :status="activeStatus"
-      :mode="activeMode"
       :busy="isCommandBusy"
       :renaming="isRenaming"
-      :archiving="isArchiving"
       @rename-thread="emit('renameThread', $event)"
-      @archive-thread="emit('archiveThread')"
-      @compact-thread="emit('compactThread')"
-      @interrupt-turn="emit('interruptTurn')"
-      @set-mode="emit('setMode', $event)"
-      @refresh="emit('refresh')"
     />
     <header
       v-else-if="showEmptyHeader !== false"
@@ -114,6 +108,7 @@ function submitUserInputResponse(requestId: string, response: JsonRecord) {
       :is-working="isActiveTurnInProgress"
       :mode="activeMode"
       :queued-followups="queuedFollowups"
+      :state="activeThreadState"
       @send-prompt="emit('sendPrompt', $event)"
       @steer-prompt="emit('steerPrompt', $event)"
       @enqueue-followup="emit('enqueueFollowup', $event)"

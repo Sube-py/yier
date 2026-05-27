@@ -212,6 +212,34 @@ describe('useCodexWorkspace', () => {
     })
   })
 
+  it('sends model and reasoning overrides with prompt submissions', async () => {
+    const socket = new FakeCodexSocket()
+    const { workspace } = mountHarness(socket)
+    await flushPromises()
+
+    await workspace.sendPrompt({
+      prompt: 'Use the selected model',
+      model: 'gpt-5.4-mini',
+      reasoningEffort: 'high',
+    })
+
+    expect(socket.commands[socket.commands.length - 1]).toEqual({
+      type: 'send_prompt',
+      payload: {
+        thread_id: 'thread-a',
+        prompt: 'Use the selected model',
+        collaboration_mode: {
+          mode: 'default',
+          settings: {
+            model: 'gpt-5.4-mini',
+            reasoning_effort: 'high',
+            developer_instructions: null,
+          },
+        },
+      },
+    })
+  })
+
   it('implements plan requests by returning to build mode and sending the plan prompt', async () => {
     const socket = new FakeCodexSocket()
     const { workspace } = mountHarness(socket)

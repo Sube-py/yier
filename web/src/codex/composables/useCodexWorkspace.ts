@@ -6,6 +6,7 @@ import type {
   CodexConversationState,
   CodexNativeSessionSummary,
   CodexPendingRequest,
+  CodexPromptSubmission,
   CodexQueuedFollowup,
   CodexSocketStatus,
   CodexThreadCreateResponse,
@@ -158,23 +159,33 @@ function isPendingComposerRequest(value: unknown): value is CodexPendingRequest 
   return isPendingUserInputRequest(value) || isPendingPlanImplementationRequest(value)
 }
 
-function defaultCollaborationMode(state: CodexConversationState | null): CodexCollaborationMode {
+function promptSubmissionFromInput(input: string | CodexPromptSubmission): CodexPromptSubmission {
+  return typeof input === 'string' ? { prompt: input } : input
+}
+
+function defaultCollaborationMode(
+  state: CodexConversationState | null,
+  submission: Partial<CodexPromptSubmission> = {},
+): CodexCollaborationMode {
   return {
     mode: 'default',
     settings: {
-      model: state?.latestModel ?? '',
-      reasoning_effort: state?.latestReasoningEffort ?? null,
+      model: submission.model ?? state?.latestModel ?? '',
+      reasoning_effort: submission.reasoningEffort ?? state?.latestReasoningEffort ?? null,
       developer_instructions: null,
     },
   }
 }
 
-function planCollaborationMode(state: CodexConversationState | null): CodexCollaborationMode {
+function planCollaborationMode(
+  state: CodexConversationState | null,
+  submission: Partial<CodexPromptSubmission> = {},
+): CodexCollaborationMode {
   return {
     mode: 'plan',
     settings: {
-      model: state?.latestModel ?? '',
-      reasoning_effort: state?.latestReasoningEffort ?? null,
+      model: submission.model ?? state?.latestModel ?? '',
+      reasoning_effort: submission.reasoningEffort ?? state?.latestReasoningEffort ?? null,
       developer_instructions: null,
     },
   }
@@ -183,8 +194,11 @@ function planCollaborationMode(state: CodexConversationState | null): CodexColla
 function buildCollaborationPayload(
   mode: CodexWorkMode,
   state: CodexConversationState | null,
+  submission: Partial<CodexPromptSubmission> = {},
 ) {
-  return mode === 'plan' ? planCollaborationMode(state) : defaultCollaborationMode(state)
+  return mode === 'plan'
+    ? planCollaborationMode(state, submission)
+    : defaultCollaborationMode(state, submission)
 }
 
 export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
@@ -452,9 +466,10 @@ export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
     })
   }
 
-  async function sendPrompt(prompt: string) {
+  async function sendPrompt(input: string | CodexPromptSubmission) {
     const threadId = activeThreadId.value
-    const message = prompt.trim()
+    const submission = promptSubmissionFromInput(input)
+    const message = submission.prompt.trim()
     if (!threadId || !message) {
       return
     }
@@ -462,7 +477,11 @@ export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
       await socket.sendCommand('send_prompt', {
         thread_id: threadId,
         prompt: message,
-        collaboration_mode: buildCollaborationPayload(activeMode.value, activeThreadState.value),
+        collaboration_mode: buildCollaborationPayload(
+          activeMode.value,
+          activeThreadState.value,
+          submission,
+        ),
       })
     })
   }

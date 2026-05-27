@@ -1,26 +1,19 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 
-import type { CodexConversationState, CodexWorkMode } from '../types'
+import type { CodexConversationState } from '../types'
 import { activeThreadTitle, displayPath, shortId, statusLabel, statusTone } from '../lib/format'
 
 const props = defineProps<{
   threadId: string
   state: CodexConversationState | null
   status: string
-  mode: CodexWorkMode
   busy?: boolean
   renaming?: boolean
-  archiving?: boolean
 }>()
 
 const emit = defineEmits<{
   renameThread: [name: string]
-  archiveThread: []
-  compactThread: []
-  interruptTurn: []
-  setMode: [mode: CodexWorkMode]
-  refresh: []
 }>()
 
 const renameDraft = ref('')
@@ -53,76 +46,23 @@ function submitRename() {
 
 <template>
   <header class="grid gap-3 border-b border-[color:var(--app-border)] bg-[rgba(255,253,247,0.88)] px-4 py-3">
-    <div class="flex items-start justify-between gap-4 max-lg:flex-col max-lg:items-stretch">
-      <div class="min-w-0">
-        <p class="m-0 text-xs font-bold uppercase tracking-[0.14em] text-[color:var(--app-text-soft)]">
-          {{ displayPath(cwd) || 'Codex workspace' }}
-        </p>
-        <h2 class="m-0 truncate text-xl font-semibold text-[color:var(--app-text)]">
-          {{ title }}
-        </h2>
-        <div class="mt-1 flex min-w-0 flex-wrap items-center gap-2 text-[0.76rem] text-[color:var(--app-text-soft)]">
-          <span
-            class="inline-flex items-center rounded-full border px-2 py-0.5 font-semibold"
-            :class="statusTone(status)"
-          >
-            {{ statusLabel(status) }}
-          </span>
-          <code v-if="threadId" class="truncate">{{ shortId(threadId, 12) }}</code>
-          <span class="truncate">model {{ modelLabel }}</span>
-          <span class="truncate">effort {{ effortLabel }}</span>
-        </div>
-      </div>
-
-      <div class="flex shrink-0 flex-wrap items-center justify-end gap-2">
-        <div class="inline-flex rounded-lg border border-[color:var(--app-border)] bg-white p-0.5">
-          <button
-            type="button"
-            class="h-8 rounded-md px-3 text-sm font-semibold transition"
-            :class="mode === 'build' ? 'bg-[color:var(--app-accent)] text-white' : 'text-[color:var(--app-text-soft)] hover:text-[color:var(--app-text)]'"
-            :disabled="busy || !threadId"
-            @click="emit('setMode', 'build')"
-          >
-            Build
-          </button>
-          <button
-            type="button"
-            class="h-8 rounded-md px-3 text-sm font-semibold transition"
-            :class="mode === 'plan' ? 'bg-[color:var(--app-accent)] text-white' : 'text-[color:var(--app-text-soft)] hover:text-[color:var(--app-text)]'"
-            :disabled="busy || !threadId"
-            @click="emit('setMode', 'plan')"
-          >
-            Plan
-          </button>
-        </div>
-
-        <button
-          type="button"
-          class="inline-flex h-9 items-center gap-2 rounded-lg border border-[color:var(--app-border)] bg-white px-3 text-sm font-semibold text-[color:var(--app-text)] transition hover:border-[color:var(--app-accent)]"
-          :disabled="busy || !threadId"
-          @click="emit('interruptTurn')"
+    <div class="min-w-0">
+      <p class="m-0 text-xs font-bold uppercase tracking-[0.14em] text-[color:var(--app-text-soft)]">
+        {{ displayPath(cwd) || 'Codex workspace' }}
+      </p>
+      <h2 class="m-0 truncate text-xl font-semibold text-[color:var(--app-text)]">
+        {{ title }}
+      </h2>
+      <div class="mt-1 flex min-w-0 flex-wrap items-center gap-2 text-[0.76rem] text-[color:var(--app-text-soft)]">
+        <span
+          class="inline-flex items-center rounded-full border px-2 py-0.5 font-semibold"
+          :class="statusTone(status)"
         >
-          <i class="pi pi-stop-circle text-xs"></i>
-          <span>Interrupt</span>
-        </button>
-        <button
-          type="button"
-          class="inline-flex h-9 items-center gap-2 rounded-lg border border-[color:var(--app-border)] bg-white px-3 text-sm font-semibold text-[color:var(--app-text)] transition hover:border-[color:var(--app-accent)]"
-          :disabled="busy || !threadId"
-          @click="emit('compactThread')"
-        >
-          <i class="pi pi-compress text-xs"></i>
-          <span>Compact</span>
-        </button>
-        <button
-          type="button"
-          class="inline-flex h-9 items-center gap-2 rounded-lg border border-red-200 bg-white px-3 text-sm font-semibold text-red-700 transition hover:bg-red-50"
-          :disabled="busy || archiving || !threadId"
-          @click="emit('archiveThread')"
-        >
-          <i class="pi pi-archive text-xs"></i>
-          <span>Archive</span>
-        </button>
+          {{ statusLabel(status) }}
+        </span>
+        <code v-if="threadId" class="truncate">{{ shortId(threadId, 12) }}</code>
+        <span class="truncate">model {{ modelLabel }}</span>
+        <span class="truncate">effort {{ effortLabel }}</span>
       </div>
     </div>
 
@@ -144,4 +84,3 @@ function submitRename() {
     </form>
   </header>
 </template>
-

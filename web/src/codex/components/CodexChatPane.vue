@@ -56,7 +56,7 @@ function submitUserInputResponse(requestId: string, response: JsonRecord) {
 </script>
 
 <template>
-  <section class="flex min-h-0 flex-1 flex-col overflow-hidden">
+  <section class="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
     <CodexThreadToolbar
       v-if="activeThreadId"
       :thread-id="activeThreadId"
@@ -68,7 +68,7 @@ function submitUserInputResponse(requestId: string, response: JsonRecord) {
     />
     <header
       v-else-if="showEmptyHeader !== false"
-      class="grid gap-1 border-b border-[color:var(--app-border)] bg-[rgba(255,253,247,0.88)] px-4 py-4"
+      class="grid gap-1 border-b border-[color:var(--app-border)] bg-[rgba(255,253,247,0.88)] px-4 py-4 max-sm:px-3"
     >
       <p class="m-0 text-xs font-bold uppercase tracking-[0.14em] text-[color:var(--app-text-soft)]">
         {{ emptyEyebrow || 'Codex workspace' }}
@@ -78,7 +78,7 @@ function submitUserInputResponse(requestId: string, response: JsonRecord) {
       </h2>
     </header>
 
-    <div v-if="errorMessage || successMessage" class="grid gap-2 px-4 pt-3">
+    <div v-if="errorMessage || successMessage" class="grid gap-2 px-4 pt-3 max-sm:px-3">
       <p
         v-if="errorMessage"
         class="m-0 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700"

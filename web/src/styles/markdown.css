@@ -108,6 +108,7 @@
 
   .markdown-prose .markdown-code-block {
     margin: 0.65rem 0;
+    max-width: 100%;
     overflow: hidden;
     border-radius: 0.95rem;
     background: rgba(17, 38, 42, 0.92);
@@ -117,6 +118,7 @@
   .markdown-prose .markdown-code-toolbar,
   .code-surface-toolbar {
     display: flex;
+    min-width: 0;
     align-items: center;
     justify-content: space-between;
     gap: 0.55rem;
@@ -148,6 +150,7 @@
   .markdown-prose pre code,
   .code-surface-scroll code {
     display: block;
+    min-width: max-content;
     white-space: pre;
     word-break: normal;
     overflow-wrap: normal;
@@ -172,6 +175,25 @@
     overflow-y: auto;
     border-collapse: collapse;
     -webkit-overflow-scrolling: touch;
+  }
+
+  @media (max-width: 640px) {
+    .markdown-prose-conversation {
+      font-size: 0.93rem;
+      line-height: 1.62;
+    }
+
+    .markdown-prose .markdown-code-toolbar,
+    .code-surface-toolbar {
+      align-items: flex-start;
+      padding-right: 0.55rem;
+      padding-left: 0.55rem;
+    }
+
+    .markdown-prose .markdown-code-block pre {
+      padding-right: 0.6rem;
+      padding-left: 0.6rem;
+    }
   }
 
   .markdown-prose thead,

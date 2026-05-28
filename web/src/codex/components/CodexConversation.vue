@@ -550,7 +550,7 @@ watch(
 <template>
   <section
     ref="conversationBody"
-    class="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-clip bg-[rgba(255,253,247,0.38)] px-5 py-4 max-sm:px-3"
+    class="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-clip bg-[rgba(255,253,247,0.38)] px-5 py-4 max-sm:px-2.5"
     data-codex-conversation-body
     @scroll="onConversationScroll"
   >
@@ -574,7 +574,7 @@ watch(
       </div>
     </div>
 
-    <div v-else class="mx-auto grid w-full max-w-5xl min-w-0 gap-6 overflow-x-clip">
+    <div v-else class="mx-auto grid w-full max-w-5xl min-w-0 gap-6 overflow-x-clip max-sm:gap-5">
       <section
         v-for="(turnView, turnIndex) in turnViews"
         :key="turnView.key"
@@ -601,7 +601,7 @@ watch(
           data-codex-user-message
         >
           <div
-            class="min-w-0 w-fit max-w-[min(40rem,88%)] overflow-hidden rounded-2xl border border-[rgba(21,94,99,0.18)] bg-[rgba(21,94,99,0.08)] px-3.5 py-2.5 shadow-[0_10px_28px_rgba(24,44,48,0.04)]"
+            class="min-w-0 w-fit max-w-[min(40rem,88%)] overflow-hidden rounded-2xl border border-[rgba(21,94,99,0.18)] bg-[rgba(21,94,99,0.08)] px-3.5 py-2.5 shadow-[0_10px_28px_rgba(24,44,48,0.04)] max-sm:max-w-[96%]"
             data-codex-bubble
           >
             <div
@@ -632,7 +632,7 @@ watch(
 
           <div
             v-if="isWorkExpanded(turnView)"
-            class="grid min-w-0 gap-1.5 border-l border-[rgba(34,66,72,0.12)] pl-3"
+            class="grid min-w-0 gap-1.5 border-l border-[rgba(34,66,72,0.12)] pl-3 max-sm:pl-2"
             data-codex-work-items
           >
             <div
@@ -672,10 +672,10 @@ watch(
                 ></i>
               </button>
 
-              <div v-if="isItemExpanded(workItem.id)" class="min-w-0 pl-6" data-codex-work-detail>
+              <div v-if="isItemExpanded(workItem.id)" class="min-w-0 pl-6 max-sm:pl-0" data-codex-work-detail>
                 <div
                   v-if="itemType(workItem.item) === 'commandExecution'"
-                  class="code-surface code-surface-compact"
+                  class="code-surface code-surface-compact min-w-0"
                   data-codex-command-output
                 >
                   <div class="code-surface-toolbar">

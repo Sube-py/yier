@@ -132,6 +132,34 @@ describe('CodexComposer', () => {
     expect(wrapper.get('[data-codex-context-window]').text()).toContain('25% context')
   })
 
+  it('keeps secondary composer controls horizontally scrollable on mobile', () => {
+    const wrapper = mountCodexComposer({
+      modelValue: '',
+      disabled: false,
+      busy: false,
+      isWorking: false,
+      mode: buildMode,
+      queuedFollowups: [],
+      state: { id: 'thread-1', turns: [] },
+    })
+
+    expect(wrapper.get('[data-codex-composer]').classes()).toEqual(
+      expect.arrayContaining(['min-w-0', 'max-sm:rounded-xl']),
+    )
+    expect(wrapper.get('[data-codex-composer-footer]').classes()).toEqual(
+      expect.arrayContaining(['grid', 'grid-cols-[minmax(0,1fr)_auto]']),
+    )
+    expect(wrapper.get('[data-codex-composer-controls]').classes()).toEqual(
+      expect.arrayContaining([
+        'min-w-0',
+        'flex-wrap',
+        'max-sm:flex-nowrap',
+        'max-sm:overflow-x-auto',
+      ]),
+    )
+    expect(wrapper.get('[data-codex-context-window]').classes()).toContain('max-sm:shrink-0')
+  })
+
   it('can steer or remove a queued follow-up from the attached queue', async () => {
     const wrapper = mountCodexComposer({
       modelValue: '',

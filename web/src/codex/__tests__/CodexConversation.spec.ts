@@ -110,12 +110,40 @@ describe('CodexConversation', () => {
 
     expect(row.classes()).toEqual(expect.arrayContaining(['flex', 'min-w-0', 'w-full', 'justify-end']))
     expect(bubble.classes()).toEqual(
-      expect.arrayContaining(['min-w-0', 'overflow-hidden', 'w-fit', 'max-w-[min(40rem,88%)]']),
+      expect.arrayContaining([
+        'min-w-0',
+        'overflow-hidden',
+        'w-fit',
+        'max-w-[min(40rem,88%)]',
+        'max-sm:max-w-[96%]',
+      ]),
     )
     expect(prose.classes()).toContain('[overflow-wrap:anywhere]')
     expect(wrapper.find('section').classes()).toEqual(
       expect.arrayContaining(['min-w-0', 'overflow-x-clip']),
     )
+  })
+
+  it('keeps expanded work details mobile-safe', async () => {
+    const wrapper = mountConversation([
+      {
+        id: 'command-1',
+        type: 'commandExecution',
+        command: 'pnpm test',
+        aggregatedOutput: 'ok',
+      },
+    ])
+
+    await wrapper.get('[data-codex-work-toggle]').trigger('click')
+    await wrapper.get('[data-codex-work-item] button').trigger('click')
+
+    expect(wrapper.get('[data-codex-work-items]').classes()).toEqual(
+      expect.arrayContaining(['min-w-0', 'max-sm:pl-2']),
+    )
+    expect(wrapper.get('[data-codex-work-detail]').classes()).toEqual(
+      expect.arrayContaining(['min-w-0', 'max-sm:pl-0']),
+    )
+    expect(wrapper.get('[data-codex-command-output]').classes()).toContain('min-w-0')
   })
 
   it('keeps command output in the collapsed work section until expanded', async () => {

@@ -45,12 +45,12 @@ function submitRename() {
 </script>
 
 <template>
-  <header class="grid gap-3 border-b border-[color:var(--app-border)] bg-[rgba(255,253,247,0.88)] px-4 py-3">
+  <header class="grid gap-3 border-b border-[color:var(--app-border)] bg-[rgba(255,253,247,0.88)] px-4 py-3 max-sm:px-3">
     <div class="min-w-0">
       <p class="m-0 text-xs font-bold uppercase tracking-[0.14em] text-[color:var(--app-text-soft)]">
         {{ displayPath(cwd) || 'Codex workspace' }}
       </p>
-      <h2 class="m-0 truncate text-xl font-semibold text-[color:var(--app-text)]">
+      <h2 class="m-0 truncate text-xl font-semibold text-[color:var(--app-text)] max-sm:text-lg">
         {{ title }}
       </h2>
       <div class="mt-1 flex min-w-0 flex-wrap items-center gap-2 text-[0.76rem] text-[color:var(--app-text-soft)]">
@@ -66,7 +66,7 @@ function submitRename() {
       </div>
     </div>
 
-    <form class="grid grid-cols-[minmax(0,1fr)_auto] gap-2" @submit.prevent="submitRename">
+    <form class="grid grid-cols-[minmax(0,1fr)_auto] gap-2 max-sm:grid-cols-1" @submit.prevent="submitRename">
       <input
         v-model="renameDraft"
         class="h-9 min-w-0 rounded-lg border border-[color:var(--app-border)] bg-white px-3 text-sm outline-none transition focus:border-[color:var(--app-accent)]"
@@ -75,7 +75,7 @@ function submitRename() {
       />
       <button
         type="submit"
-        class="inline-flex h-9 items-center gap-2 rounded-lg border border-[color:var(--app-border)] bg-white px-3 text-sm font-semibold text-[color:var(--app-text)] transition hover:border-[color:var(--app-accent)] disabled:cursor-not-allowed disabled:opacity-45"
+        class="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-[color:var(--app-border)] bg-white px-3 text-sm font-semibold text-[color:var(--app-text)] transition hover:border-[color:var(--app-accent)] disabled:cursor-not-allowed disabled:opacity-45"
         :disabled="busy || renaming || !canSubmitName"
       >
         <i class="pi pi-check text-xs"></i>

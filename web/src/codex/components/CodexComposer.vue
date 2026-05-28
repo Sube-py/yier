@@ -244,15 +244,15 @@ function formatTokenCount(value: number) {
 </script>
 
 <template>
-  <section class="border-t border-[color:var(--app-border)] bg-[rgba(255,253,247,0.94)] px-4 py-3">
+  <section class="border-t border-[color:var(--app-border)] bg-[rgba(255,253,247,0.94)] px-4 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-3 max-sm:px-2.5">
     <div class="mx-auto grid max-w-5xl gap-2">
       <div
-        class="grid gap-2 rounded-2xl border border-[color:var(--app-border)] bg-white/95 p-2 shadow-[0_14px_34px_rgba(24,44,48,0.08)] transition"
+        class="grid min-w-0 gap-2 rounded-2xl border border-[color:var(--app-border)] bg-white/95 p-2 shadow-[0_14px_34px_rgba(24,44,48,0.08)] transition max-sm:rounded-xl"
         data-codex-composer
       >
         <div
           v-if="queuedFollowups.length"
-          class="vertical-scroll-fade-mask hide-scrollbar -mx-1 -mt-1 flex max-h-[30dvh] flex-col gap-px overflow-x-hidden overflow-y-auto rounded-t-xl border-b border-[rgba(34,66,72,0.1)] px-3 py-2"
+          class="vertical-scroll-fade-mask hide-scrollbar -mx-1 -mt-1 flex max-h-[30dvh] flex-col gap-px overflow-x-hidden overflow-y-auto rounded-t-xl border-b border-[rgba(34,66,72,0.1)] px-3 py-2 max-sm:px-2"
           data-codex-queued-followups
         >
           <article
@@ -301,15 +301,15 @@ function formatTokenCount(value: number) {
 
         <textarea
           v-model="draft"
-          class="min-h-24 w-full resize-y rounded-xl border-0 bg-transparent px-2 py-2 text-sm leading-6 text-[color:var(--app-text)] outline-none placeholder:text-[color:var(--app-text-soft)]"
+          class="min-h-24 w-full min-w-0 resize-y rounded-xl border-0 bg-transparent px-2 py-2 text-sm leading-6 text-[color:var(--app-text)] outline-none placeholder:text-[color:var(--app-text-soft)] max-sm:min-h-20"
           :disabled="disabled"
           :placeholder="props.isWorking ? 'Add a follow-up for the queue...' : 'Ask Codex to work in this thread...'"
           @keydown="onKeydown"
         ></textarea>
 
-        <div class="composer-footer flex min-w-0 flex-wrap items-center justify-between gap-2">
-          <div class="flex min-w-0 flex-wrap items-center gap-1.5">
-            <div class="inline-flex rounded-lg border border-[color:var(--app-border)] bg-[rgba(255,253,247,0.86)] p-0.5">
+        <div class="composer-footer grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-end gap-2 max-sm:items-start" data-codex-composer-footer>
+          <div class="hide-scrollbar flex min-w-0 flex-wrap items-center gap-1.5 max-sm:flex-nowrap max-sm:overflow-x-auto max-sm:overscroll-x-contain max-sm:pb-0.5" data-codex-composer-controls>
+            <div class="inline-flex rounded-lg border border-[color:var(--app-border)] bg-[rgba(255,253,247,0.86)] p-0.5 max-sm:shrink-0">
               <button
                 type="button"
                 class="h-8 rounded-md px-2.5 text-sm font-semibold transition"
@@ -330,7 +330,7 @@ function formatTokenCount(value: number) {
               </button>
             </div>
 
-            <label class="inline-flex h-8 min-w-0 items-center gap-1.5 rounded-lg border border-[color:var(--app-border)] bg-white px-2 text-sm text-[color:var(--app-text-soft)]">
+            <label class="inline-flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-lg border border-[color:var(--app-border)] bg-white px-2 text-sm text-[color:var(--app-text-soft)] max-sm:w-max max-sm:max-w-none max-sm:shrink-0">
               <i class="pi pi-microchip text-[0.72rem]"></i>
               <span class="composer-footer__label--sm">Model</span>
               <Select
@@ -342,14 +342,14 @@ function formatTokenCount(value: number) {
                 size="small"
                 append-to="self"
                 checkmark
-                class="composer-inline-select codex-composer-select max-w-36"
+                class="composer-inline-select codex-composer-select max-w-36 max-sm:max-w-24"
                 :disabled="busy || disabled"
                 aria-label="Choose model"
                 data-codex-model-select
               />
             </label>
 
-            <label class="inline-flex h-8 min-w-0 items-center gap-1.5 rounded-lg border border-[color:var(--app-border)] bg-white px-2 text-sm text-[color:var(--app-text-soft)]">
+            <label class="inline-flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-lg border border-[color:var(--app-border)] bg-white px-2 text-sm text-[color:var(--app-text-soft)] max-sm:w-max max-sm:max-w-none max-sm:shrink-0">
               <i class="pi pi-sparkles text-[0.72rem]"></i>
               <span class="composer-footer__label--sm">Reasoning</span>
               <Select
@@ -361,7 +361,7 @@ function formatTokenCount(value: number) {
                 size="small"
                 append-to="self"
                 checkmark
-                class="composer-inline-select codex-composer-select max-w-28 capitalize"
+                class="composer-inline-select codex-composer-select max-w-28 capitalize max-sm:max-w-20"
                 :disabled="busy || disabled"
                 aria-label="Choose reasoning effort"
                 data-codex-reasoning-select
@@ -369,7 +369,7 @@ function formatTokenCount(value: number) {
             </label>
 
             <div
-              class="inline-flex h-8 min-w-36 items-center gap-2 rounded-lg border border-[color:var(--app-border)] bg-white px-2 text-xs text-[color:var(--app-text-soft)]"
+              class="inline-flex h-8 min-w-36 max-w-full items-center gap-2 rounded-lg border border-[color:var(--app-border)] bg-white px-2 text-xs text-[color:var(--app-text-soft)] max-sm:shrink-0"
               :title="`${context.detail}${context.estimated ? ' estimated' : ''}`"
               data-codex-context-window
             >
@@ -385,7 +385,7 @@ function formatTokenCount(value: number) {
             </div>
           </div>
 
-          <div class="flex shrink-0 items-center gap-1.5">
+          <div class="flex shrink-0 items-center justify-end gap-1.5">
             <button
               type="button"
               class="inline-flex h-9 min-w-9 items-center justify-center rounded-lg px-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-45"

@@ -202,9 +202,9 @@ function submitJson() {
 </script>
 
 <template>
-  <section v-if="request" class="border-t border-[color:var(--app-border)] bg-blue-50/70 px-4 py-3">
+  <section v-if="request" class="border-t border-[color:var(--app-border)] bg-blue-50/70 px-4 py-3 max-sm:px-2.5">
     <div class="mx-auto grid max-w-5xl gap-3">
-      <div class="flex items-start justify-between gap-3">
+      <div class="flex items-start justify-between gap-3 max-sm:flex-wrap">
         <div class="min-w-0">
           <p class="m-0 text-xs font-bold uppercase tracking-[0.14em] text-blue-700">
             {{ requestLabel }}
@@ -226,11 +226,11 @@ function submitJson() {
       </div>
 
       <div v-if="isPlanImplementationRequest" class="grid gap-3">
-        <div class="grid gap-2 rounded-lg border border-blue-100 bg-white/76 px-3 py-2.5">
+        <div class="grid min-w-0 gap-2 rounded-lg border border-blue-100 bg-white/76 px-3 py-2.5">
           <p class="m-0 text-sm font-semibold text-[color:var(--app-text)]">Implement this plan?</p>
           <pre
             v-if="planContent"
-            class="m-0 max-h-64 overflow-auto whitespace-pre-wrap rounded-lg border border-[rgba(34,66,72,0.08)] bg-white/78 p-3 font-inherit text-sm leading-6 text-[color:var(--app-text)]"
+            class="m-0 max-h-64 max-w-full overflow-auto whitespace-pre-wrap rounded-lg border border-[rgba(34,66,72,0.08)] bg-white/78 p-3 font-inherit text-sm leading-6 text-[color:var(--app-text)]"
             >{{ planContent }}</pre
           >
           <textarea
@@ -243,8 +243,8 @@ function submitJson() {
       </div>
 
       <div v-else-if="!visibleAsJson && currentQuestion" class="grid gap-3">
-        <div class="grid gap-2 rounded-lg border border-blue-100 bg-white/76 px-3 py-2.5">
-          <div class="flex items-start justify-between gap-3">
+        <div class="grid min-w-0 gap-2 rounded-lg border border-blue-100 bg-white/76 px-3 py-2.5">
+          <div class="flex items-start justify-between gap-3 max-sm:grid max-sm:grid-cols-1">
             <div class="grid min-w-0 gap-0.5">
               <p class="m-0 text-[0.7rem] font-bold uppercase tracking-[0.12em] text-blue-700">
                 Question {{ currentQuestionIndex + 1 }} of {{ questions.length }}
@@ -259,7 +259,7 @@ function submitJson() {
                 {{ questionPrompt(currentQuestion) }}
               </p>
             </div>
-            <div class="flex max-w-36 shrink-0 flex-wrap justify-end gap-1 pt-1" aria-hidden="true">
+            <div class="flex max-w-36 shrink-0 flex-wrap justify-end gap-1 pt-1 max-sm:max-w-full max-sm:justify-start" aria-hidden="true">
               <span
                 v-for="(question, questionIndex) in questions"
                 :key="question.id"
@@ -311,11 +311,11 @@ function submitJson() {
       <div v-else class="grid gap-2">
         <textarea
           v-model="jsonDraft"
-          class="min-h-32 w-full resize-y rounded-lg border border-blue-100 bg-white px-3 py-2 font-mono text-xs leading-5 outline-none focus:border-blue-300"
+          class="min-h-32 w-full min-w-0 resize-y rounded-lg border border-blue-100 bg-white px-3 py-2 font-mono text-xs leading-5 outline-none focus:border-blue-300"
           :disabled="disabled"
         ></textarea>
         <pre
-          class="max-h-44 overflow-auto rounded-lg bg-white/72 p-3 text-xs leading-5 text-[color:var(--app-text-soft)]"
+          class="max-h-44 max-w-full overflow-auto rounded-lg bg-white/72 p-3 text-xs leading-5 text-[color:var(--app-text-soft)]"
           v-text="compactJson(request)"
         ></pre>
       </div>
@@ -324,21 +324,21 @@ function submitJson() {
         {{ validationError }}
       </p>
 
-      <div class="flex flex-wrap items-center justify-between gap-2">
+      <div class="flex flex-wrap items-center justify-between gap-2 max-sm:grid max-sm:grid-cols-1">
         <button
           type="button"
-          class="inline-flex h-9 items-center gap-2 rounded-lg border border-blue-200 bg-white px-3 text-sm font-semibold text-blue-700 transition hover:bg-blue-50"
+          class="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-blue-200 bg-white px-3 text-sm font-semibold text-blue-700 transition hover:bg-blue-50"
           :disabled="disabled"
           @click="submitEmpty"
         >
           <i class="pi pi-times text-xs"></i>
           <span>Dismiss</span>
         </button>
-        <div class="flex flex-wrap items-center justify-end gap-2">
+        <div class="flex flex-wrap items-center justify-end gap-2 max-sm:grid max-sm:grid-cols-1">
           <button
             v-if="!isPlanImplementationRequest && !visibleAsJson && !isFirstQuestion"
             type="button"
-            class="inline-flex h-9 items-center gap-2 rounded-lg border border-blue-200 bg-white px-3 text-sm font-semibold text-blue-700 transition hover:bg-blue-50"
+            class="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-blue-200 bg-white px-3 text-sm font-semibold text-blue-700 transition hover:bg-blue-50"
             :disabled="disabled"
             @click="goBack"
           >
@@ -348,7 +348,7 @@ function submitJson() {
           <button
             v-if="!isPlanImplementationRequest && !visibleAsJson && !isLastQuestion"
             type="button"
-            class="inline-flex h-9 items-center gap-2 rounded-lg bg-blue-700 px-3 text-sm font-semibold text-white transition hover:brightness-95 disabled:opacity-55"
+            class="inline-flex h-9 items-center justify-center gap-2 rounded-lg bg-blue-700 px-3 text-sm font-semibold text-white transition hover:brightness-95 disabled:opacity-55"
             :disabled="disabled"
             @click="advanceQuestion"
           >
@@ -358,7 +358,7 @@ function submitJson() {
           <button
             v-else
             type="button"
-            class="inline-flex h-9 items-center gap-2 rounded-lg bg-blue-700 px-3 text-sm font-semibold text-white transition hover:brightness-95 disabled:opacity-55"
+            class="inline-flex h-9 items-center justify-center gap-2 rounded-lg bg-blue-700 px-3 text-sm font-semibold text-white transition hover:brightness-95 disabled:opacity-55"
             :disabled="disabled"
             @click="
               isPlanImplementationRequest

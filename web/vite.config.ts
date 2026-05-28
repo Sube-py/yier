@@ -3,7 +3,7 @@ import { fileURLToPath, URL } from 'node:url'
 import { defineConfig } from 'vite'
 import tailwindcss from '@tailwindcss/vite'
 import vue from '@vitejs/plugin-vue'
-import vueDevTools from 'vite-plugin-vue-devtools'
+// import vueDevTools from 'vite-plugin-vue-devtools'
 
 const backendOrigin = process.env.VITE_BACKEND_ORIGIN ?? 'http://127.0.0.1:9999'
 
@@ -11,7 +11,7 @@ const backendOrigin = process.env.VITE_BACKEND_ORIGIN ?? 'http://127.0.0.1:9999'
 export default defineConfig({
   plugins: [
     vue(),
-    vueDevTools(),
+    // vueDevTools(),
     tailwindcss(),
   ],
   server: {

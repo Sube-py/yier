@@ -55,8 +55,8 @@ function startMobileThread(projectPath: string) {
       @start-thread="codex.startThread"
       @archive-thread="codex.archiveThread"
       @fork-thread="codex.forkThread"
+      @rename-thread="codex.renameThread"
       @copy-error="showCodexError"
-      @refresh="codex.refreshWorkspace"
     />
 
     <main class="flex min-h-0 flex-col overflow-hidden">
@@ -157,26 +157,6 @@ function startMobileThread(projectPath: string) {
           aria-label="Codex threads"
           data-codex-mobile-thread-drawer
         >
-          <div class="flex items-center justify-between gap-3 border-b border-[color:var(--app-border)] px-4 py-3 pt-[calc(0.75rem+env(safe-area-inset-top))]">
-            <div class="min-w-0">
-              <p class="m-0 text-xs font-bold uppercase tracking-[0.14em] text-[color:var(--app-text-soft)]">
-                Codex
-              </p>
-              <h2 class="m-0 truncate text-lg font-semibold text-[color:var(--app-text)]">
-                Threads
-              </h2>
-            </div>
-            <button
-              type="button"
-              class="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[color:var(--app-border)] bg-white text-[color:var(--app-text-soft)] transition hover:text-[color:var(--app-text)]"
-              aria-label="Close Codex threads"
-              data-codex-mobile-thread-drawer-close
-              @click="closeMobileThreadDrawer"
-            >
-              <i class="pi pi-times text-xs"></i>
-            </button>
-          </div>
-
           <CodexSidebar
             v-model:project-path="codex.projectPathDraft"
             class="min-h-0 flex-1 border-r-0"
@@ -191,8 +171,8 @@ function startMobileThread(projectPath: string) {
             @start-thread="startMobileThread"
             @archive-thread="codex.archiveThread"
             @fork-thread="codex.forkThread"
+            @rename-thread="codex.renameThread"
             @copy-error="showCodexError"
-            @refresh="codex.refreshWorkspace"
           />
         </div>
       </Transition>

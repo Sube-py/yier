@@ -149,6 +149,7 @@ describe('Codex route separation', () => {
     await wrapper.get('[data-codex-mobile-thread-drawer-open]').trigger('click')
 
     expect(wrapper.find('[data-codex-mobile-thread-drawer]').exists()).toBe(true)
+    expect(wrapper.find('[data-codex-mobile-thread-drawer-close]').exists()).toBe(false)
 
     const sidebars = wrapper.findAllComponents({ name: 'CodexSidebar' })
     expect(sidebars).toHaveLength(2)
@@ -188,5 +189,21 @@ describe('Codex route separation', () => {
 
     expect(workspaceMock.startThread).toHaveBeenCalledWith('/tmp/mobile-project')
     expect(wrapper.find('[data-codex-mobile-thread-drawer]').exists()).toBe(false)
+  })
+
+  it('passes sidebar rename events to the Codex workspace', async () => {
+    const router = createTestRouter()
+    await router.push('/codex')
+    await router.isReady()
+    const wrapper = mountCodexView(router)
+
+    const desktopSidebar = wrapper.findAllComponents({ name: 'CodexSidebar' })[0]
+    if (!desktopSidebar) {
+      throw new Error('Expected Codex desktop sidebar to render.')
+    }
+
+    await desktopSidebar.vm.$emit('rename-thread', 'thread-a', 'Renamed')
+
+    expect(workspaceMock.renameThread).toHaveBeenCalledWith('thread-a', 'Renamed')
   })
 })

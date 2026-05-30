@@ -1,10 +1,16 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 
 import Button from 'primevue/button'
+import InputText from 'primevue/inputtext'
+import Menu from 'primevue/menu'
 
-import type { CodexProjectGroup, CodexWorkspaceResponse } from '../types'
-import { displayPath, formatTimestamp, statusLabel, statusTone } from '../lib/format'
+import type {
+  CodexNativeSessionSummary,
+  CodexProjectGroup,
+  CodexWorkspaceResponse,
+} from '../types'
+import { displayPath } from '../lib/format'
 import CodexHostPathPicker from './CodexHostPathPicker.vue'
 
 const EXPANDED_PROJECTS_STORAGE_KEY = 'yier.codex.sidebar.expanded-projects'
@@ -25,16 +31,24 @@ const emit = defineEmits<{
   startThread: [projectPath: string]
   archiveThread: [threadId: string]
   forkThread: [threadId: string]
+  renameThread: [threadId: string, name: string]
   copyError: [message: string]
-  refresh: []
 }>()
 
 type ProjectWithKey = CodexProjectGroup & {
   key: string
 }
 
+type MenuRef = {
+  toggle: (event: Event) => void
+}
+
 const copiedThreadId = ref('')
+const editingThreadId = ref('')
 const pathPickerVisible = ref(false)
+const renameDraft = ref('')
+const threadActionMenu = ref<MenuRef | null>(null)
+const threadActionTarget = ref<CodexNativeSessionSummary | null>(null)
 const userExpandedProjects = ref<Record<string, boolean>>(readExpandedProjects())
 
 const projects = computed<ProjectWithKey[]>(() =>
@@ -62,6 +76,35 @@ const activeProjectKey = computed(() => {
       project.sessions.some((thread) => thread.thread_id === props.activeThreadId),
     )?.key ?? ''
   )
+})
+const threadActionItems = computed(() => {
+  const thread = threadActionTarget.value
+  return [
+    {
+      label: 'Fork',
+      icon: 'pi pi-sitemap',
+      disabled:
+        !thread ||
+        props.busy ||
+        props.forkingThreadId === thread.thread_id ||
+        isThreadWorking(thread),
+      command: () => {
+        if (thread) {
+          emit('forkThread', thread.thread_id)
+        }
+      },
+    },
+    {
+      label: thread && copiedThreadId.value === thread.thread_id ? 'Copied ID' : 'Copy ID',
+      icon: thread && copiedThreadId.value === thread.thread_id ? 'pi pi-check' : 'pi pi-copy',
+      disabled: !thread,
+      command: () => {
+        if (thread) {
+          void copyThreadId(thread.thread_id)
+        }
+      },
+    },
+  ]
 })
 
 watch(
@@ -138,6 +181,41 @@ function projectTitle(project: CodexProjectGroup) {
   return project.project || displayPath(project.project_path) || 'Untitled project'
 }
 
+function threadTitle(thread: CodexNativeSessionSummary) {
+  return thread.title || thread.preview || thread.thread_id
+}
+
+function compactTimestamp(value: number | null | undefined) {
+  if (!value) {
+    return ''
+  }
+  const milliseconds = value > 10_000_000_000 ? value : value * 1000
+  const deltaSeconds = Math.max(0, Math.floor((Date.now() - milliseconds) / 1000))
+  if (deltaSeconds < 60) {
+    return 'now'
+  }
+  if (deltaSeconds < 3600) {
+    return `${Math.floor(deltaSeconds / 60)}m`
+  }
+  if (deltaSeconds < 86400) {
+    return `${Math.floor(deltaSeconds / 3600)}h`
+  }
+  if (deltaSeconds < 604800) {
+    return `${Math.floor(deltaSeconds / 86400)}d`
+  }
+  if (deltaSeconds < 2_592_000) {
+    return `${Math.floor(deltaSeconds / 604800)}w`
+  }
+  if (deltaSeconds < 31_536_000) {
+    return `${Math.floor(deltaSeconds / 2_592_000)}mo`
+  }
+  return `${Math.floor(deltaSeconds / 31_536_000)}y`
+}
+
+function isThreadWorking(thread: CodexNativeSessionSummary) {
+  return thread.status === 'inProgress' || thread.status === 'active'
+}
+
 function isProjectExpanded(project: ProjectWithKey) {
   if (project.key in userExpandedProjects.value) {
     return userExpandedProjects.value[project.key]
@@ -152,16 +230,57 @@ function toggleProject(project: ProjectWithKey) {
   }
 }
 
-function startThread() {
-  const normalizedProjectPath = projectPath.value.trim()
+function selectProjectPath(path: string) {
+  const normalizedPath = path.trim()
+  projectPath.value = normalizedPath
+  pathPickerVisible.value = false
+  if (normalizedPath && !props.busy) {
+    emit('startThread', normalizedPath)
+  }
+}
+
+function startProjectThread(project: ProjectWithKey) {
+  const normalizedProjectPath = project.project_path.trim()
   if (!normalizedProjectPath || props.busy) {
     return
   }
+  projectPath.value = normalizedProjectPath
   emit('startThread', normalizedProjectPath)
 }
 
-function selectProjectPath(path: string) {
-  projectPath.value = path
+function toggleThreadMenu(event: Event, thread: CodexNativeSessionSummary) {
+  threadActionTarget.value = thread
+  threadActionMenu.value?.toggle(event)
+}
+
+async function beginRename(thread: CodexNativeSessionSummary) {
+  if (props.busy) {
+    return
+  }
+  editingThreadId.value = thread.thread_id
+  renameDraft.value = threadTitle(thread)
+  await nextTick()
+  const input = document.querySelector<HTMLInputElement>('[data-codex-thread-rename-input]')
+  input?.focus()
+  input?.select()
+}
+
+function cancelRename() {
+  editingThreadId.value = ''
+  renameDraft.value = ''
+}
+
+function submitRename(thread: CodexNativeSessionSummary) {
+  if (editingThreadId.value !== thread.thread_id) {
+    return
+  }
+  const nextName = renameDraft.value.trim()
+  if (!nextName || nextName === threadTitle(thread).trim()) {
+    cancelRename()
+    return
+  }
+  emit('renameThread', thread.thread_id, nextName)
+  cancelRename()
 }
 
 async function copyThreadId(threadId: string) {
@@ -176,73 +295,38 @@ async function copyThreadId(threadId: string) {
 
 <template>
   <aside class="flex min-h-0 flex-col border-r border-[color:var(--app-border)] bg-[rgba(255,253,247,0.82)]">
-    <div class="grid gap-3 border-b border-[color:var(--app-border)] p-4">
-      <div class="flex items-start justify-between gap-3">
-        <div class="min-w-0">
-          <p class="m-0 text-xs font-bold uppercase tracking-[0.14em] text-[color:var(--app-text-soft)]">
-            Codex
-          </p>
-          <h1 class="m-0 truncate text-xl font-semibold text-[color:var(--app-text)]">
-            Threads
-          </h1>
-        </div>
-        <button
-          type="button"
-          class="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[color:var(--app-border)] bg-white text-[color:var(--app-text-soft)] transition hover:text-[color:var(--app-text)]"
-          aria-label="Refresh Codex threads"
-          :disabled="busy"
-          @click="emit('refresh')"
-        >
-          <i class="pi pi-refresh text-sm"></i>
-        </button>
+    <header class="flex items-center justify-between gap-3 border-b border-[color:var(--app-border)] px-4 py-3">
+      <div class="min-w-0">
+        <h1 class="m-0 truncate text-base font-semibold text-[color:var(--app-text)]">
+          Threads
+        </h1>
+        <p class="m-0 mt-0.5 truncate text-[0.72rem] text-[color:var(--app-text-soft)]">
+          Projects
+        </p>
       </div>
-
-      <div class="grid gap-2">
-        <div
-          class="flex h-10 min-w-0 items-center gap-2 rounded-lg border border-[color:var(--app-border)] bg-white px-3 text-sm"
-          data-codex-project-path-display
-          :class="
-            projectPath.trim()
-              ? 'text-[color:var(--app-text)]'
-              : 'text-[color:var(--app-text-soft)]'
-          "
-        >
-          <i class="pi pi-folder text-xs text-[color:var(--app-text-soft)]"></i>
-          <span class="truncate">{{ projectPath.trim() || 'Select project folder' }}</span>
-        </div>
-
-        <div class="grid grid-cols-2 gap-2">
-          <Button
-            label="Choose folder"
-            icon="pi pi-folder-open"
-            severity="secondary"
-            outlined
-            class="h-10 min-w-0"
-            data-codex-choose-project-folder
-            :disabled="busy"
-            @click="pathPickerVisible = true"
-          />
-          <Button
-            label="New thread"
-            icon="pi pi-plus"
-            class="h-10 min-w-0"
-            data-codex-start-thread
-            :disabled="busy || !projectPath.trim()"
-            @click="startThread"
-          />
-        </div>
-
-        <CodexHostPathPicker
-          v-model:visible="pathPickerVisible"
-          :selected-path="projectPath"
-          :disabled="busy"
-          @select="selectProjectPath"
-        />
-      </div>
-    </div>
+      <Button
+        icon="pi pi-folder-plus"
+        severity="secondary"
+        text
+        rounded
+        aria-label="Add Codex project"
+        data-codex-add-project
+        :disabled="busy"
+        @click="pathPickerVisible = true"
+      />
+      <CodexHostPathPicker
+        v-model:visible="pathPickerVisible"
+        :selected-path="projectPath"
+        :disabled="busy"
+        @select="selectProjectPath"
+      />
+    </header>
 
     <div class="min-h-0 flex-1 overflow-y-auto p-3">
-      <div v-if="!projects.length" class="grid place-items-center gap-2 p-6 text-center text-sm text-[color:var(--app-text-soft)]">
+      <div
+        v-if="!projects.length"
+        class="grid place-items-center gap-2 p-6 text-center text-sm text-[color:var(--app-text-soft)]"
+      >
         <i class="pi pi-inbox text-lg"></i>
         <p class="m-0">No threads yet.</p>
       </div>
@@ -250,112 +334,147 @@ async function copyThreadId(threadId: string) {
       <section
         v-for="project in projects"
         :key="project.key"
-        class="mb-3 grid gap-1.5"
+        class="mb-2 grid gap-1"
       >
-        <button
-          type="button"
-          class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-lg px-2 py-1.5 text-left transition hover:bg-white/65"
-          :aria-expanded="isProjectExpanded(project)"
-          @click="toggleProject(project)"
+        <div
+          class="group/project grid grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-lg transition hover:bg-white/65 focus-within:bg-white/65"
         >
-          <span class="min-w-0">
-            <span class="flex min-w-0 items-center gap-2">
-              <span class="truncate text-sm font-semibold text-[color:var(--app-text)]">
-                {{ projectTitle(project) }}
-              </span>
-              <span class="shrink-0 rounded-full bg-[rgba(21,94,99,0.08)] px-2 py-0.5 text-[0.68rem] font-semibold text-[color:var(--app-text-soft)]">
-                {{ project.session_count }}
-              </span>
+          <button
+            type="button"
+            class="grid min-w-0 grid-cols-[1.15rem_minmax(0,1fr)] items-center gap-2 px-2 py-1.5 text-left"
+            data-codex-project-toggle
+            :aria-expanded="isProjectExpanded(project)"
+            @click="toggleProject(project)"
+          >
+            <i
+              class="pi text-sm text-[color:var(--app-text-soft)]"
+              :class="isProjectExpanded(project) ? 'pi-folder-open' : 'pi-folder'"
+            ></i>
+            <span class="truncate text-sm font-semibold text-[color:var(--app-text)]">
+              {{ projectTitle(project) }}
             </span>
-            <span class="mt-0.5 block truncate text-[0.72rem] text-[color:var(--app-text-soft)]">
-              {{ project.project_path || 'No project path' }}
-            </span>
-          </span>
-          <i
-            class="pi text-xs text-[color:var(--app-text-soft)]"
-            :class="isProjectExpanded(project) ? 'pi-chevron-down' : 'pi-chevron-right'"
-          ></i>
-        </button>
+          </button>
+          <Button
+            icon="pi pi-pen-to-square"
+            severity="secondary"
+            text
+            rounded
+            size="small"
+            class="mr-1 opacity-0 transition group-hover/project:opacity-100 group-focus-within/project:opacity-100"
+            :aria-label="`Start Codex thread in ${projectTitle(project)}`"
+            data-codex-project-start-thread
+            :disabled="busy || !project.project_path.trim()"
+            @click.stop="startProjectThread(project)"
+          />
+        </div>
 
-        <div v-show="isProjectExpanded(project)" class="grid gap-1">
+        <div
+          v-show="isProjectExpanded(project)"
+          class="grid gap-0.5"
+        >
           <article
             v-for="thread in project.sessions"
             :key="thread.thread_id"
-            class="group grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-lg border px-2 py-2 transition focus-within:border-[color:var(--app-border)] focus-within:bg-white/80"
-            :class="
-              thread.thread_id === activeThreadId
-                ? 'border-[rgba(21,94,99,0.24)] bg-[rgba(21,94,99,0.08)]'
-                : 'border-transparent hover:border-[color:var(--app-border)] hover:bg-white/72'
-            "
+            class="group/thread grid grid-cols-[1.15rem_minmax(0,1fr)_auto] items-center gap-2 rounded-lg border px-2 py-1.5 transition"
+            data-codex-thread-row
+            :class="thread.thread_id === activeThreadId
+              ? 'border-[rgba(21,94,99,0.24)] bg-[rgba(21,94,99,0.08)]'
+              : 'border-transparent hover:border-[rgba(21,94,99,0.24)] hover:bg-[rgba(21,94,99,0.08)] focus-within:border-[rgba(21,94,99,0.24)] focus-within:bg-[rgba(21,94,99,0.08)]'
+              "
           >
+            <span aria-hidden="true"></span>
+            <InputText
+              v-if="editingThreadId === thread.thread_id"
+              v-model="renameDraft"
+              class="h-8 min-w-0 text-sm"
+              data-codex-thread-rename-input
+              :disabled="busy"
+              @click.stop
+              @dblclick.stop
+              @keydown.enter.prevent="submitRename(thread)"
+              @keydown.esc.prevent="cancelRename"
+              @blur="submitRename(thread)"
+            />
             <button
+              v-else
               type="button"
-              class="min-w-0 text-left"
+              class="min-w-0 truncate text-left text-sm disabled:cursor-wait disabled:opacity-60"
+              :class="
+                thread.thread_id === activeThreadId
+                  ? 'font-semibold text-[color:var(--app-text)]'
+                  : 'font-medium text-[color:var(--app-text-soft)] group-hover/thread:text-[color:var(--app-text)] group-focus-within/thread:text-[color:var(--app-text)]'
+              "
+              data-codex-thread-name
+              :title="threadTitle(thread)"
               :disabled="busy || openingThreadId === thread.thread_id"
               @click="emit('selectThread', thread.thread_id)"
+              @dblclick.stop="beginRename(thread)"
             >
-              <span class="block truncate text-sm font-semibold text-[color:var(--app-text)]">
-                {{ thread.title || thread.preview || thread.thread_id }}
-              </span>
-              <span class="mt-1 block truncate text-[0.76rem] text-[color:var(--app-text-soft)]">
-                {{ thread.preview || thread.cwd }}
-              </span>
-              <span class="mt-2 flex min-w-0 items-center gap-2">
-                <span
-                  class="inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-[0.68rem] font-semibold"
-                  :class="statusTone(thread.status)"
-                >
-                  {{ statusLabel(thread.status) }}
-                </span>
-                <span class="truncate text-[0.7rem] text-[color:var(--app-text-soft)]">
-                  {{ formatTimestamp(thread.updated_at || thread.started_at) }}
-                </span>
-              </span>
+              {{ threadTitle(thread) }}
             </button>
 
-            <div class="flex shrink-0 items-center gap-0.5 opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100">
-              <button
-                type="button"
-                class="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[color:var(--app-text-soft)] transition hover:bg-white hover:text-[color:var(--app-accent)] disabled:opacity-40"
-                :aria-label="`Fork Codex thread ${thread.thread_id}`"
-                :title="`Fork ${thread.thread_id}`"
-                :disabled="busy || forkingThreadId === thread.thread_id"
-                @click="emit('forkThread', thread.thread_id)"
+            <div class="relative h-5 w-[3.25rem] shrink-0">
+              <span
+                v-if="isThreadWorking(thread)"
+                class="absolute inset-y-0 right-0 inline-flex h-5 w-5 items-center justify-center text-[color:var(--app-text-soft)] group-hover/thread:hidden group-focus-within/thread:hidden"
+                aria-label="Thread is working"
+                data-codex-thread-working-indicator
               >
-                <i
-                  class="pi text-xs"
-                  :class="forkingThreadId === thread.thread_id ? 'pi-spinner pi-spin' : 'pi-sitemap'"
-                ></i>
-              </button>
-              <button
-                type="button"
-                class="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[color:var(--app-text-soft)] transition hover:bg-white hover:text-[color:var(--app-text)] disabled:opacity-40"
-                :aria-label="copiedThreadId === thread.thread_id ? 'Copied thread id' : `Copy thread id ${thread.thread_id}`"
-                :title="copiedThreadId === thread.thread_id ? 'Copied' : 'Copy thread id'"
-                @click="copyThreadId(thread.thread_id)"
+                <i class="pi pi-spinner pi-spin text-[0.68rem]"></i>
+              </span>
+              <span
+                v-else
+                class="absolute inset-y-0 right-0 inline-flex max-w-full items-center truncate text-[0.72rem] font-semibold text-[color:var(--app-text-soft)] group-hover/thread:hidden group-focus-within/thread:hidden"
+                data-codex-thread-time
               >
-                <i
-                  class="pi text-xs"
-                  :class="copiedThreadId === thread.thread_id ? 'pi-check' : 'pi-copy'"
-                ></i>
-              </button>
-              <button
-                type="button"
-                class="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[color:var(--app-text-soft)] transition hover:bg-white hover:text-red-700 disabled:opacity-40"
-                aria-label="Archive Codex thread"
-                title="Archive thread"
-                :disabled="busy || archivingThreadId === thread.thread_id"
-                @click="emit('archiveThread', thread.thread_id)"
-              >
-                <i
-                  class="pi text-xs"
-                  :class="archivingThreadId === thread.thread_id ? 'pi-spinner pi-spin' : 'pi-archive'"
-                ></i>
-              </button>
+                {{ compactTimestamp(thread.updated_at || thread.started_at) }}
+              </span>
+
+              <div class="absolute inset-y-0 right-0 hidden h-5 shrink-0 items-center gap-0.5 group-hover/thread:flex group-focus-within/thread:flex">
+                <Button
+                  icon="pi pi-ellipsis-h"
+                  severity="secondary"
+                  text
+                  rounded
+                  size="small"
+                  class="!h-5 !w-5 !min-w-5 !p-0 !text-[0.68rem]"
+                  :aria-label="`Open Codex thread actions ${thread.thread_id}`"
+                  data-codex-thread-actions
+                  :disabled="busy"
+                  @click.stop="toggleThreadMenu($event, thread)"
+                />
+                <Button
+                  v-if="!isThreadWorking(thread)"
+                  icon="pi pi-inbox"
+                  severity="secondary"
+                  text
+                  rounded
+                  size="small"
+                  class="!h-5 !w-5 !min-w-5 !p-0 !text-[0.68rem]"
+                  aria-label="Archive Codex thread"
+                  data-codex-archive-thread
+                  :disabled="busy || archivingThreadId === thread.thread_id"
+                  @click.stop="emit('archiveThread', thread.thread_id)"
+                />
+                <span
+                  v-else
+                  class="inline-flex h-5 w-5 items-center justify-center text-[color:var(--app-text-soft)]"
+                  aria-label="Thread is working"
+                >
+                  <i class="pi pi-spinner pi-spin text-[0.68rem]"></i>
+                </span>
+              </div>
             </div>
           </article>
         </div>
       </section>
     </div>
+
+    <Menu
+      ref="threadActionMenu"
+      :model="threadActionItems"
+      popup
+      data-codex-thread-action-menu
+    />
   </aside>
 </template>

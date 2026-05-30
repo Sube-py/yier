@@ -586,23 +586,31 @@ export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
     return result === true
   }
 
-  async function renameThread(name: string) {
-    const threadId = activeThreadId.value
-    const trimmedName = name.trim()
+  async function renameThread(name: string): Promise<void>
+  async function renameThread(threadId: string, name: string): Promise<void>
+  async function renameThread(threadIdOrName: string, name?: string) {
+    const hasExplicitThreadId = name !== undefined
+    const threadId = hasExplicitThreadId ? threadIdOrName.trim() : activeThreadId.value
+    const trimmedName = (hasExplicitThreadId ? (name ?? '') : threadIdOrName).trim()
     if (!threadId || !trimmedName) {
       return
     }
     isRenaming.value = true
-    await runCommand(async () => {
-      await socket.sendCommand('rename_thread', {
-        thread_id: threadId,
-        name: trimmedName,
+    try {
+      await runCommand(async () => {
+        await socket.sendCommand('rename_thread', {
+          thread_id: threadId,
+          name: trimmedName,
+        })
+        if (activeThreadId.value === threadId) {
+          updateActiveState({ title: trimmedName })
+        }
+        await refreshWorkspace()
+        successMessage.value = 'Thread renamed.'
       })
-      updateActiveState({ title: trimmedName })
-      await refreshWorkspace()
-      successMessage.value = 'Thread renamed.'
-    })
-    isRenaming.value = false
+    } finally {
+      isRenaming.value = false
+    }
   }
 
   async function archiveThread(threadId = activeThreadId.value) {

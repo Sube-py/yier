@@ -316,6 +316,51 @@ describe('useCodexWorkspace', () => {
     expect(workspace.activeUserInputRequest.value).toBeNull()
   })
 
+  it('renames the active thread with the existing single-argument call shape', async () => {
+    const socket = new FakeCodexSocket()
+    const { workspace } = mountHarness(socket)
+    await flushPromises()
+
+    await workspace.renameThread('Renamed active thread')
+    await flushPromises()
+
+    expect(socket.commands.slice(-2)).toEqual([
+      {
+        type: 'rename_thread',
+        payload: {
+          thread_id: 'thread-a',
+          name: 'Renamed active thread',
+        },
+      },
+      { type: 'list_threads', payload: {} },
+    ])
+    expect(workspace.activeThreadState.value?.title).toBe('Renamed active thread')
+    expect(workspace.successMessage.value).toBe('Thread renamed.')
+  })
+
+  it('renames a specified thread without changing the active thread title', async () => {
+    const socket = new FakeCodexSocket()
+    const { workspace } = mountHarness(socket)
+    await flushPromises()
+
+    await workspace.renameThread('thread-b', 'Renamed inactive thread')
+    await flushPromises()
+
+    expect(socket.commands.slice(-2)).toEqual([
+      {
+        type: 'rename_thread',
+        payload: {
+          thread_id: 'thread-b',
+          name: 'Renamed inactive thread',
+        },
+      },
+      { type: 'list_threads', payload: {} },
+    ])
+    expect(workspace.activeThreadId.value).toBe('thread-a')
+    expect(workspace.activeThreadState.value?.title).toBeUndefined()
+    expect(workspace.successMessage.value).toBe('Thread renamed.')
+  })
+
   it('forks a thread, refreshes the workspace, and selects the forked thread', async () => {
     const socket = new FakeCodexSocket()
     const { workspace } = mountHarness(socket)

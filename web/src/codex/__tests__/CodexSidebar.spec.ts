@@ -1,15 +1,17 @@
 import { mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { defineComponent, h, ref } from 'vue'
 import PrimeVue from 'primevue/config'
 
 import CodexSidebar from '../components/CodexSidebar.vue'
-import type { CodexWorkspaceResponse } from '../types'
+import type { CodexNativeSessionSummary, CodexWorkspaceResponse } from '../types'
 
 function thread(
   threadId: string,
   project: string,
   projectPath: string,
   updatedAt: number,
+  overrides: Partial<CodexNativeSessionSummary> = {},
 ) {
   return {
     thread_id: threadId,
@@ -22,6 +24,7 @@ function thread(
     project,
     project_path: projectPath,
     source: 'appServer',
+    ...overrides,
   }
 }
 
@@ -48,6 +51,43 @@ function workspace(): CodexWorkspaceResponse {
   }
 }
 
+const MenuStub = defineComponent({
+  name: 'Menu',
+  props: {
+    model: {
+      type: Array,
+      default: () => [],
+    },
+  },
+  setup(props, { expose }) {
+    const visible = ref(false)
+    expose({
+      toggle: () => {
+        visible.value = !visible.value
+      },
+    })
+    return () =>
+      h(
+        'div',
+        { 'data-codex-thread-action-menu': '' },
+        visible.value
+          ? (props.model as Array<{ label: string; disabled?: boolean; command?: () => void }>).map(
+              (item) =>
+                h(
+                  'button',
+                  {
+                    disabled: item.disabled,
+                    'data-codex-thread-menu-item': item.label,
+                    onClick: item.command,
+                  },
+                  item.label,
+                ),
+            )
+          : [],
+      )
+  },
+})
+
 function mountSidebar(props: Partial<InstanceType<typeof CodexSidebar>['$props']> = {}) {
   let wrapper: ReturnType<typeof mount>
   wrapper = mount(CodexSidebar, {
@@ -68,6 +108,7 @@ function mountSidebar(props: Partial<InstanceType<typeof CodexSidebar>['$props']
           template:
             '<div data-codex-host-path-picker-stub><button data-codex-picker-select @click="$emit(\'select\', \'/tmp/selected\')">Select</button></div>',
         },
+        Menu: MenuStub,
       },
     },
   })
@@ -87,7 +128,7 @@ describe('CodexSidebar', () => {
 
   it('sorts project groups and threads by latest usage time', () => {
     const wrapper = mountSidebar()
-    const projectButtons = wrapper.findAll('button[aria-expanded]')
+    const projectButtons = wrapper.findAll('[data-codex-project-toggle]')
 
     expect(projectButtons[0]?.text()).toContain('alpha')
     expect(projectButtons[1]?.text()).toContain('beta')
@@ -100,7 +141,7 @@ describe('CodexSidebar', () => {
 
   it('expands the latest project and the active thread project by default', () => {
     const wrapper = mountSidebar({ activeThreadId: 'thread-beta' })
-    const projectButtons = wrapper.findAll('button[aria-expanded]')
+    const projectButtons = wrapper.findAll('[data-codex-project-toggle]')
 
     expect(projectButtons[0]?.attributes('aria-expanded')).toBe('true')
     expect(projectButtons[1]?.attributes('aria-expanded')).toBe('true')
@@ -110,7 +151,7 @@ describe('CodexSidebar', () => {
 
   it('persists project collapse toggles', async () => {
     const wrapper = mountSidebar()
-    const alphaButton = wrapper.findAll('button[aria-expanded]')[0]!
+    const alphaButton = wrapper.findAll('[data-codex-project-toggle]')[0]!
 
     await alphaButton.trigger('click')
 
@@ -120,46 +161,71 @@ describe('CodexSidebar', () => {
     })
   })
 
-  it('uses a selected host folder instead of a manual path input', async () => {
+  it('starts a thread immediately after selecting a host folder', async () => {
     const wrapper = mountSidebar()
 
     expect(wrapper.find('input[placeholder="Project path"]').exists()).toBe(false)
-    expect(wrapper.get('[data-codex-project-path-display]').text()).toContain(
-      'Select project folder',
-    )
-    expect(wrapper.get('[data-codex-start-thread]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-codex-project-path-display]').exists()).toBe(false)
+    expect(wrapper.find('[data-codex-start-thread]').exists()).toBe(false)
+    expect(wrapper.find('[aria-label="Refresh Codex threads"]').exists()).toBe(false)
 
     await wrapper.get('[data-codex-picker-select]').trigger('click')
-
-    expect(wrapper.get('[data-codex-project-path-display]').text()).toContain(
-      '/tmp/selected',
-    )
-    await wrapper.get('[data-codex-start-thread]').trigger('click')
 
     expect(wrapper.emitted('startThread')).toEqual([['/tmp/selected']])
   })
 
-  it('emits fork and archive actions from hover controls', async () => {
+  it('starts new threads from project row actions', async () => {
     const wrapper = mountSidebar()
 
-    await wrapper
-      .get('button[aria-label="Fork Codex thread thread-alpha-new"]')
-      .trigger('click')
-    await wrapper.get('button[aria-label="Archive Codex thread"]').trigger('click')
+    await wrapper.findAll('[data-codex-project-start-thread]')[0]!.trigger('click')
 
-    expect(wrapper.emitted('forkThread')).toEqual([['thread-alpha-new']])
-    expect(wrapper.emitted('archiveThread')).toEqual([['thread-alpha-new']])
+    expect(wrapper.emitted('startThread')).toEqual([['/tmp/alpha']])
   })
 
-  it('copies thread ids and marks the copied row', async () => {
+  it('renders compact thread rows under project names', () => {
+    const recentUpdatedAt = Math.floor(Date.now() / 1000) - 180
+    const wrapper = mountSidebar({
+      workspace: {
+        projects: [
+          {
+            project: 'gamma',
+            project_path: '/tmp/gamma',
+            session_count: 1,
+            sessions: [
+              thread('thread-gamma', 'gamma', '/tmp/gamma', recentUpdatedAt, {
+                title: 'Investigate bug',
+              }),
+            ],
+          },
+        ],
+        paired_editors: [],
+      },
+    })
+
+    expect(wrapper.get('[data-codex-project-toggle]').text()).toContain('gamma')
+    const threadRow = wrapper.get('[data-codex-thread-row]')
+    expect(threadRow.text()).toContain('Investigate bug')
+    expect(threadRow.text()).toContain('3m')
+    expect(threadRow.text()).not.toContain('/tmp/gamma')
+  })
+
+  it('emits fork, copy, and archive actions from thread controls', async () => {
     const wrapper = mountSidebar()
 
     await wrapper
-      .get('button[aria-label="Copy thread id thread-alpha-new"]')
+      .get('button[aria-label="Open Codex thread actions thread-alpha-new"]')
       .trigger('click')
+    await wrapper
+      .get('[data-codex-thread-menu-item="Fork"]')
+      .trigger('click')
+    await wrapper
+      .get('[data-codex-thread-menu-item="Copy ID"]')
+      .trigger('click')
+    await wrapper.get('[data-codex-archive-thread]').trigger('click')
 
+    expect(wrapper.emitted('forkThread')).toEqual([['thread-alpha-new']])
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith('thread-alpha-new')
-    expect(wrapper.find('button[aria-label="Copied thread id"]').exists()).toBe(true)
+    expect(wrapper.emitted('archiveThread')).toEqual([['thread-alpha-new']])
   })
 
   it('emits a copy error when clipboard access fails', async () => {
@@ -167,9 +233,66 @@ describe('CodexSidebar', () => {
     const wrapper = mountSidebar()
 
     await wrapper
-      .get('button[aria-label="Copy thread id thread-alpha-new"]')
+      .get('button[aria-label="Open Codex thread actions thread-alpha-new"]')
+      .trigger('click')
+    await wrapper
+      .get('[data-codex-thread-menu-item="Copy ID"]')
       .trigger('click')
 
     expect(wrapper.emitted('copyError')).toEqual([['Unable to copy thread id.']])
+  })
+
+  it('shows a spinner and hides archive controls for working threads', async () => {
+    const wrapper = mountSidebar({
+      workspace: {
+        projects: [
+          {
+            project: 'alpha',
+            project_path: '/tmp/alpha',
+            session_count: 1,
+            sessions: [
+              thread('thread-working', 'alpha', '/tmp/alpha', 30, {
+                status: 'inProgress',
+              }),
+            ],
+          },
+        ],
+        paired_editors: [],
+      },
+    })
+
+    expect(wrapper.find('[data-codex-thread-working-indicator]').exists()).toBe(true)
+    expect(wrapper.find('[data-codex-thread-time]').exists()).toBe(false)
+    expect(wrapper.find('[data-codex-archive-thread]').exists()).toBe(false)
+
+    await wrapper
+      .get('button[aria-label="Open Codex thread actions thread-working"]')
+      .trigger('click')
+
+    expect(wrapper.get('[data-codex-thread-menu-item="Fork"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-codex-thread-menu-item="Copy ID"]').attributes('disabled')).toBeUndefined()
+  })
+
+  it('renames threads inline from the thread row', async () => {
+    const wrapper = mountSidebar()
+
+    await wrapper.get('[data-codex-thread-name]').trigger('dblclick')
+    await wrapper.get('[data-codex-thread-rename-input]').setValue('Renamed thread')
+    await wrapper.get('[data-codex-thread-rename-input]').trigger('keydown.enter')
+
+    expect(wrapper.emitted('renameThread')).toEqual([
+      ['thread-alpha-new', 'Renamed thread'],
+    ])
+  })
+
+  it('cancels inline thread rename with Escape', async () => {
+    const wrapper = mountSidebar()
+
+    await wrapper.get('[data-codex-thread-name]').trigger('dblclick')
+    await wrapper.get('[data-codex-thread-rename-input]').setValue('Renamed thread')
+    await wrapper.get('[data-codex-thread-rename-input]').trigger('keydown.esc')
+
+    expect(wrapper.find('[data-codex-thread-rename-input]').exists()).toBe(false)
+    expect(wrapper.emitted('renameThread')).toBeUndefined()
   })
 })

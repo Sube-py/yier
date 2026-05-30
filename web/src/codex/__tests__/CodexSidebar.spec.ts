@@ -1,5 +1,6 @@
 import { mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import PrimeVue from 'primevue/config'
 
 import CodexSidebar from '../components/CodexSidebar.vue'
 import type { CodexWorkspaceResponse } from '../types'
@@ -48,15 +49,29 @@ function workspace(): CodexWorkspaceResponse {
 }
 
 function mountSidebar(props: Partial<InstanceType<typeof CodexSidebar>['$props']> = {}) {
-  return mount(CodexSidebar, {
+  let wrapper: ReturnType<typeof mount>
+  wrapper = mount(CodexSidebar, {
     props: {
       projectPath: '',
       workspace: workspace(),
       activeThreadId: '',
       ...props,
-      'onUpdate:projectPath': () => null,
+      'onUpdate:projectPath': (value: string) =>
+        wrapper.setProps({ projectPath: value }),
+    },
+    global: {
+      plugins: [PrimeVue],
+      stubs: {
+        CodexHostPathPicker: {
+          props: ['visible', 'selectedPath', 'disabled'],
+          emits: ['update:visible', 'select'],
+          template:
+            '<div data-codex-host-path-picker-stub><button data-codex-picker-select @click="$emit(\'select\', \'/tmp/selected\')">Select</button></div>',
+        },
+      },
     },
   })
+  return wrapper
 }
 
 describe('CodexSidebar', () => {
@@ -103,6 +118,25 @@ describe('CodexSidebar', () => {
     expect(JSON.parse(localStorage.getItem('yier.codex.sidebar.expanded-projects') ?? '{}')).toEqual({
       '/tmp/alpha': false,
     })
+  })
+
+  it('uses a selected host folder instead of a manual path input', async () => {
+    const wrapper = mountSidebar()
+
+    expect(wrapper.find('input[placeholder="Project path"]').exists()).toBe(false)
+    expect(wrapper.get('[data-codex-project-path-display]').text()).toContain(
+      'Select project folder',
+    )
+    expect(wrapper.get('[data-codex-start-thread]').attributes('disabled')).toBeDefined()
+
+    await wrapper.get('[data-codex-picker-select]').trigger('click')
+
+    expect(wrapper.get('[data-codex-project-path-display]').text()).toContain(
+      '/tmp/selected',
+    )
+    await wrapper.get('[data-codex-start-thread]').trigger('click')
+
+    expect(wrapper.emitted('startThread')).toEqual([['/tmp/selected']])
   })
 
   it('emits fork and archive actions from hover controls', async () => {

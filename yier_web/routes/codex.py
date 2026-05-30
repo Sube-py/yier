@@ -2,13 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
+import string
+from pathlib import Path
 from typing import Any, cast
 
 from litestar import Controller, get, post, put, websocket
 from litestar.connection import WebSocket
 from litestar.datastructures import State
 from litestar.exceptions import HTTPException, WebSocketDisconnect
-from litestar.status_codes import HTTP_400_BAD_REQUEST, HTTP_404_NOT_FOUND
+from litestar.status_codes import (
+    HTTP_400_BAD_REQUEST,
+    HTTP_403_FORBIDDEN,
+    HTTP_404_NOT_FOUND,
+)
 
 from yier_web.codex.ipc_manager import CodexIpcManager, CodexSubscriberQueue
 from yier_web.codex.ws_commands import (
@@ -18,6 +25,9 @@ from yier_web.codex.ws_commands import (
 from yier_web.auth import AuthService
 from yier_web.schemas import (
     ArchiveCodexSessionResponse,
+    CodexFilesystemEntry,
+    CodexFilesystemEntryKind,
+    CodexFilesystemResponse,
     CodexThreadCreateRequest,
     CodexThreadCreateResponse,
     CodexThreadNameRequest,
@@ -40,6 +50,110 @@ def _auth_service(state: State) -> AuthService:
     return cast(AuthService, auth_service)
 
 
+def _filesystem_roots() -> list[CodexFilesystemEntry]:
+    if os.name == "nt":
+        return [
+            CodexFilesystemEntry(
+                name=f"{letter}:",
+                path=str(Path(f"{letter}:/")),
+                kind="directory",
+                readable=True,
+            )
+            for letter in string.ascii_uppercase
+            if Path(f"{letter}:/").exists()
+        ]
+    return [
+        CodexFilesystemEntry(
+            name="/",
+            path=str(Path("/")),
+            kind="directory",
+            readable=True,
+        )
+    ]
+
+
+def _entry_from_dir_entry(entry: os.DirEntry[str]) -> CodexFilesystemEntry:
+    path = Path(entry.path)
+    kind: CodexFilesystemEntryKind = "other"
+    readable = True
+    try:
+        if entry.is_dir(follow_symlinks=False):
+            kind = "directory"
+            try:
+                os.scandir(entry.path).close()
+            except OSError:
+                readable = False
+        elif entry.is_file(follow_symlinks=False):
+            kind = "file"
+        else:
+            kind = "other"
+    except OSError:
+        readable = False
+    return CodexFilesystemEntry(
+        name=entry.name,
+        path=str(path),
+        kind=kind,
+        extension=path.suffix.lower() if kind == "file" else "",
+        readable=readable,
+    )
+
+
+def _sort_filesystem_entries(
+    entries: list[CodexFilesystemEntry],
+) -> list[CodexFilesystemEntry]:
+    return sorted(
+        entries,
+        key=lambda entry: (
+            0 if entry.kind == "directory" else 1 if entry.kind == "file" else 2,
+            entry.name.casefold(),
+        ),
+    )
+
+
+def _list_host_filesystem(path: str | None) -> CodexFilesystemResponse:
+    requested_path = Path(path).expanduser() if path else Path.cwd()
+    try:
+        directory = requested_path.resolve()
+    except OSError as exc:
+        raise HTTPException(
+            status_code=HTTP_400_BAD_REQUEST,
+            detail=f"Unable to resolve path: {requested_path}",
+        ) from exc
+
+    if not directory.exists():
+        raise HTTPException(
+            status_code=HTTP_404_NOT_FOUND,
+            detail=f"Path not found: {directory}",
+        )
+    if not directory.is_dir():
+        raise HTTPException(
+            status_code=HTTP_400_BAD_REQUEST,
+            detail=f"Path is not a directory: {directory}",
+        )
+
+    try:
+        with os.scandir(directory) as iterator:
+            entries = [_entry_from_dir_entry(entry) for entry in iterator]
+    except PermissionError as exc:
+        raise HTTPException(
+            status_code=HTTP_403_FORBIDDEN,
+            detail=f"Permission denied: {directory}",
+        ) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code=HTTP_400_BAD_REQUEST,
+            detail=f"Unable to read directory: {directory}",
+        ) from exc
+
+    parent_path = None if directory.parent == directory else str(directory.parent)
+    return CodexFilesystemResponse(
+        path=str(directory),
+        parent_path=parent_path,
+        roots=_filesystem_roots(),
+        entries=_sort_filesystem_entries(entries),
+    )
+
+
 class CodexController(Controller):
     path = "/codex"
     ws_command_factory = CodexWsCommandStrategyFactory()
@@ -47,6 +161,10 @@ class CodexController(Controller):
     @get("/workspace")
     async def get_workspace(self, state: State) -> CodexWorkspaceResponse:
         return await _codex_manager(state).workspace()
+
+    @get("/filesystem")
+    async def get_filesystem(self, path: str | None = None) -> CodexFilesystemResponse:
+        return _list_host_filesystem(path)
 
     @get("/threads/{thread_id:str}/state")
     async def get_thread_state(

@@ -4,8 +4,12 @@ import { nextTick } from 'vue'
 
 import CodexView from '../../views/CodexView.vue'
 import { createTestRouter } from '../../router'
+import type { CodexConversationState } from '../types'
 
-const workspaceMock = {
+const workspaceMock: {
+  activeThreadState: CodexConversationState | null
+  [key: string]: unknown
+} = {
   activeMode: 'build',
   activeStatus: 'idle',
   activeThreadId: '',
@@ -69,6 +73,7 @@ function mountCodexView(router: ReturnType<typeof createTestRouter>) {
 describe('Codex route separation', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    workspaceMock.activeThreadState = null
   })
 
   it('resolves Codex to its own workspace route outside the chat view', () => {
@@ -104,6 +109,33 @@ describe('Codex route separation', () => {
 
     expect(chatLink.attributes('href')).toBe('/chat')
     expect(router.resolve(chatLink.attributes('href') ?? '').name).toBe('chat')
+  })
+
+  it('centers the active thread title in the page header without hover styling', async () => {
+    workspaceMock.activeThreadState = {
+      id: 'thread-title',
+      title: 'A very long Codex thread title that should truncate in the page header',
+      turns: [],
+    }
+    const router = createTestRouter()
+    await router.push('/codex')
+    await router.isReady()
+
+    const wrapper = mountCodexView(router)
+    const title = wrapper.get('[data-codex-page-title]')
+
+    expect(title.text()).toBe(
+      'A very long Codex thread title that should truncate in the page header',
+    )
+    expect(title.classes()).toEqual(
+      expect.arrayContaining(['truncate', 'text-center', 'min-w-0']),
+    )
+
+    const linksAndButtons = [
+      ...wrapper.findAll('a').map((item) => item.classes()),
+      ...wrapper.findAll('button').map((item) => item.classes()),
+    ].flat()
+    expect(linksAndButtons).not.toContain('hover:border-[color:var(--app-accent)]')
   })
 
   it('opens the mobile thread drawer and closes it after selecting a thread', async () => {

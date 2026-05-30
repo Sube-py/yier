@@ -1,8 +1,11 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 
+import Button from 'primevue/button'
+
 import type { CodexProjectGroup, CodexWorkspaceResponse } from '../types'
 import { displayPath, formatTimestamp, statusLabel, statusTone } from '../lib/format'
+import CodexHostPathPicker from './CodexHostPathPicker.vue'
 
 const EXPANDED_PROJECTS_STORAGE_KEY = 'yier.codex.sidebar.expanded-projects'
 
@@ -31,6 +34,7 @@ type ProjectWithKey = CodexProjectGroup & {
 }
 
 const copiedThreadId = ref('')
+const pathPickerVisible = ref(false)
 const userExpandedProjects = ref<Record<string, boolean>>(readExpandedProjects())
 
 const projects = computed<ProjectWithKey[]>(() =>
@@ -149,7 +153,15 @@ function toggleProject(project: ProjectWithKey) {
 }
 
 function startThread() {
-  emit('startThread', projectPath.value)
+  const normalizedProjectPath = projectPath.value.trim()
+  if (!normalizedProjectPath || props.busy) {
+    return
+  }
+  emit('startThread', normalizedProjectPath)
+}
+
+function selectProjectPath(path: string) {
+  projectPath.value = path
 }
 
 async function copyThreadId(threadId: string) {
@@ -186,20 +198,46 @@ async function copyThreadId(threadId: string) {
       </div>
 
       <div class="grid gap-2">
-        <input
-          v-model="projectPath"
-          class="h-10 min-w-0 rounded-lg border border-[color:var(--app-border)] bg-white px-3 text-sm text-[color:var(--app-text)] outline-none transition focus:border-[color:var(--app-accent)]"
-          placeholder="Project path"
-        />
-        <button
-          type="button"
-          class="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-[color:var(--app-accent)] px-3 text-sm font-semibold text-white transition hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-55"
-          :disabled="busy"
-          @click="startThread"
+        <div
+          class="flex h-10 min-w-0 items-center gap-2 rounded-lg border border-[color:var(--app-border)] bg-white px-3 text-sm"
+          data-codex-project-path-display
+          :class="
+            projectPath.trim()
+              ? 'text-[color:var(--app-text)]'
+              : 'text-[color:var(--app-text-soft)]'
+          "
         >
-          <i class="pi pi-plus text-xs"></i>
-          <span>New thread</span>
-        </button>
+          <i class="pi pi-folder text-xs text-[color:var(--app-text-soft)]"></i>
+          <span class="truncate">{{ projectPath.trim() || 'Select project folder' }}</span>
+        </div>
+
+        <div class="grid grid-cols-2 gap-2">
+          <Button
+            label="Choose folder"
+            icon="pi pi-folder-open"
+            severity="secondary"
+            outlined
+            class="h-10 min-w-0"
+            data-codex-choose-project-folder
+            :disabled="busy"
+            @click="pathPickerVisible = true"
+          />
+          <Button
+            label="New thread"
+            icon="pi pi-plus"
+            class="h-10 min-w-0"
+            data-codex-start-thread
+            :disabled="busy || !projectPath.trim()"
+            @click="startThread"
+          />
+        </div>
+
+        <CodexHostPathPicker
+          v-model:visible="pathPickerVisible"
+          :selected-path="projectPath"
+          :disabled="busy"
+          @select="selectProjectPath"
+        />
       </div>
     </div>
 

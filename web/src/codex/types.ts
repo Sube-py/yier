@@ -33,6 +33,23 @@ export interface CodexWorkspaceResponse {
   paired_editors?: JsonRecord[]
 }
 
+export type CodexFilesystemEntryKind = 'directory' | 'file' | 'other'
+
+export interface CodexFilesystemEntry {
+  name: string
+  path: string
+  kind: CodexFilesystemEntryKind
+  extension: string
+  readable: boolean
+}
+
+export interface CodexFilesystemResponse {
+  path: string
+  parent_path?: string | null
+  roots: CodexFilesystemEntry[]
+  entries: CodexFilesystemEntry[]
+}
+
 export interface CodexCollaborationMode extends JsonRecord {
   mode?: string
   settings?: {

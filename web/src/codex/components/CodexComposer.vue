@@ -9,7 +9,7 @@ import type {
   CodexWorkMode,
   JsonRecord,
 } from '../types'
-import { isRecord, statusLabel } from '../lib/format'
+import { isRecord } from '../lib/format'
 
 const draft = defineModel<string>({ required: true })
 
@@ -309,10 +309,13 @@ function formatTokenCount(value: number) {
 
         <div class="composer-footer grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-end gap-2 max-sm:items-start" data-codex-composer-footer>
           <div class="hide-scrollbar flex min-w-0 flex-wrap items-center gap-1.5 max-sm:flex-nowrap max-sm:overflow-x-auto max-sm:overscroll-x-contain max-sm:pb-0.5" data-codex-composer-controls>
-            <div class="inline-flex rounded-lg border border-[color:var(--app-border)] bg-[rgba(255,253,247,0.86)] p-0.5 max-sm:shrink-0">
+            <div
+              class="grid w-[7.25rem] shrink-0 grid-cols-2 rounded-lg border border-[color:var(--app-border)] bg-[rgba(255,253,247,0.86)] p-0.5"
+              data-codex-mode-switch
+            >
               <button
                 type="button"
-                class="h-8 rounded-md px-2.5 text-sm font-semibold transition"
+                class="h-8 min-w-0 rounded-md px-2 text-sm font-semibold transition-colors"
                 :class="mode === 'build' ? 'bg-[color:var(--app-accent)] text-white' : 'text-[color:var(--app-text-soft)] hover:text-[color:var(--app-text)]'"
                 :disabled="busy || disabled"
                 @click="emit('setMode', 'build')"
@@ -321,7 +324,7 @@ function formatTokenCount(value: number) {
               </button>
               <button
                 type="button"
-                class="h-8 rounded-md px-2.5 text-sm font-semibold transition"
+                class="h-8 min-w-0 rounded-md px-2 text-sm font-semibold transition-colors"
                 :class="mode === 'plan' ? 'bg-[color:var(--app-accent)] text-white' : 'text-[color:var(--app-text-soft)] hover:text-[color:var(--app-text)]'"
                 :disabled="busy || disabled"
                 @click="emit('setMode', 'plan')"
@@ -340,7 +343,7 @@ function formatTokenCount(value: number) {
                 option-value="value"
                 :placeholder="latestModel"
                 size="small"
-                append-to="self"
+                append-to="body"
                 checkmark
                 class="composer-inline-select codex-composer-select max-w-36 max-sm:max-w-24"
                 :disabled="busy || disabled"
@@ -359,7 +362,7 @@ function formatTokenCount(value: number) {
                 option-value="value"
                 :placeholder="latestReasoningEffort"
                 size="small"
-                append-to="self"
+                append-to="body"
                 checkmark
                 class="composer-inline-select codex-composer-select max-w-28 capitalize max-sm:max-w-20"
                 :disabled="busy || disabled"
@@ -406,12 +409,6 @@ function formatTokenCount(value: number) {
           </div>
         </div>
 
-        <div
-          v-if="busy"
-          class="px-2 pb-0.5 text-xs font-semibold text-[color:var(--app-text-soft)]"
-        >
-          {{ statusLabel('inProgress') }}
-        </div>
       </div>
     </div>
   </section>

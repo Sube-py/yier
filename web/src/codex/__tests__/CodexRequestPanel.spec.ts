@@ -82,6 +82,42 @@ describe('CodexRequestPanel', () => {
     ])
   })
 
+  it('keeps request actions outside the scrollable body on mobile', () => {
+    const request: CodexPendingRequest = {
+      id: 'request-mobile',
+      method: 'item/tool/requestUserInput',
+      params: {
+        turnId: 'turn-mobile',
+        questions: [
+          {
+            id: 'scope',
+            header: 'Scope',
+            question: 'How broad should the change be?',
+            options: [
+              { label: 'Focused', description: 'Touch the narrowest surface.' },
+              { label: 'Complete', description: 'Cover adjacent cleanup too.' },
+            ],
+          },
+        ],
+      },
+    }
+    const wrapper = mount(CodexRequestPanel, { props: { request } })
+
+    expect(wrapper.get('section').classes()).toEqual(
+      expect.arrayContaining([
+        'flex',
+        'flex-col',
+        'max-sm:max-h-[min(56dvh,26rem)]',
+        'max-sm:overflow-hidden',
+      ]),
+    )
+    expect(wrapper.get('[data-codex-request-body]').classes()).toEqual(
+      expect.arrayContaining(['min-h-0', 'flex-1', 'overflow-y-auto']),
+    )
+    expect(wrapper.get('[data-codex-request-actions]').classes()).toContain('shrink-0')
+    expect(wrapper.get('[data-codex-request-actions]').text()).toContain('Submit')
+  })
+
   it('submits structured codex-ipc question answers', async () => {
     const request: CodexPendingRequest = {
       id: 'request-1',

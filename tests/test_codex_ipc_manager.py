@@ -718,6 +718,72 @@ def test_codex_controller_http_and_websocket_contract(tmp_path: Path) -> None:
             assert error_message["code"] == "bad_request"
 
 
+def test_codex_controller_lists_host_filesystem(tmp_path: Path) -> None:
+    factory = FakeSessionFactory()
+    _, client = build_app(tmp_path, factory)
+    alpha_dir = tmp_path / "alpha"
+    beta_dir = tmp_path / "beta"
+    alpha_dir.mkdir()
+    beta_dir.mkdir()
+    code_file = tmp_path / "main.py"
+    image_file = tmp_path / "preview.PNG"
+    code_file.write_text("print('hello')\n")
+    image_file.write_bytes(b"png")
+
+    with client:
+        response = client.get(
+            "/api/codex/filesystem",
+            params={"path": str(tmp_path)},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["path"] == str(tmp_path.resolve())
+        assert payload["parent_path"] == str(tmp_path.resolve().parent)
+        assert payload["roots"]
+        assert payload["roots"][0]["kind"] == "directory"
+
+        entries = payload["entries"]
+        by_name = {entry["name"]: entry for entry in entries}
+        assert by_name["alpha"]["kind"] == "directory"
+        assert by_name["beta"]["kind"] == "directory"
+        assert by_name["main.py"]["kind"] == "file"
+        assert by_name["main.py"]["extension"] == ".py"
+        assert by_name["preview.PNG"]["extension"] == ".png"
+
+        first_file_index = next(
+            index for index, entry in enumerate(entries) if entry["kind"] == "file"
+        )
+        last_directory_index = max(
+            index
+            for index, entry in enumerate(entries)
+            if entry["kind"] == "directory"
+        )
+        assert last_directory_index < first_file_index
+
+
+def test_codex_controller_rejects_invalid_filesystem_paths(tmp_path: Path) -> None:
+    factory = FakeSessionFactory()
+    _, client = build_app(tmp_path, factory)
+    file_path = tmp_path / "file.txt"
+    file_path.write_text("not a directory\n")
+
+    with client:
+        file_response = client.get(
+            "/api/codex/filesystem",
+            params={"path": str(file_path)},
+        )
+        missing_response = client.get(
+            "/api/codex/filesystem",
+            params={"path": str(tmp_path / "missing")},
+        )
+
+        assert file_response.status_code == 400
+        assert "not a directory" in file_response.json()["detail"]
+        assert missing_response.status_code == 404
+        assert "Path not found" in missing_response.json()["detail"]
+
+
 def test_codex_websocket_embed_token_allows_unauthenticated_access(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

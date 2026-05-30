@@ -566,6 +566,24 @@ class CodexWorkspaceResponse(BaseModel):
     paired_editors: list[CodexPairingExtensionSummary] = Field(default_factory=list)
 
 
+CodexFilesystemEntryKind = Literal["directory", "file", "other"]
+
+
+class CodexFilesystemEntry(BaseModel):
+    name: str
+    path: str
+    kind: CodexFilesystemEntryKind
+    extension: str = ""
+    readable: bool = True
+
+
+class CodexFilesystemResponse(BaseModel):
+    path: str
+    parent_path: str | None = None
+    roots: list[CodexFilesystemEntry] = Field(default_factory=list)
+    entries: list[CodexFilesystemEntry] = Field(default_factory=list)
+
+
 class CodexThreadCreateRequest(BaseModel):
     project_path: str | None = None
 

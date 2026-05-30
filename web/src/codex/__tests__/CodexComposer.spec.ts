@@ -157,7 +157,27 @@ describe('CodexComposer', () => {
         'max-sm:overflow-x-auto',
       ]),
     )
+    expect(wrapper.get('[data-codex-mode-switch]').classes()).toEqual(
+      expect.arrayContaining(['grid', 'w-[7.25rem]', 'grid-cols-2', 'shrink-0']),
+    )
+    const selects = wrapper.findAllComponents(Select)
+    expect(selects[0]?.props('appendTo')).toBe('body')
+    expect(selects[1]?.props('appendTo')).toBe('body')
     expect(wrapper.get('[data-codex-context-window]').classes()).toContain('max-sm:shrink-0')
+  })
+
+  it('does not add transient loading text while busy', () => {
+    const wrapper = mountCodexComposer({
+      modelValue: '',
+      disabled: false,
+      busy: true,
+      isWorking: false,
+      mode: buildMode,
+      queuedFollowups: [],
+      state: { id: 'thread-1', turns: [] },
+    })
+
+    expect(wrapper.text()).not.toContain('Working')
   })
 
   it('can steer or remove a queued follow-up from the attached queue', async () => {

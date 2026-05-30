@@ -545,6 +545,8 @@ watch(
   },
   { deep: true, flush: 'post' },
 )
+
+const justDebug = false
 </script>
 
 <template>
@@ -574,21 +576,25 @@ watch(
       </div>
     </div>
 
-    <div v-else class="mx-auto grid w-full max-w-5xl min-w-0 gap-6 overflow-x-clip max-sm:gap-5">
+    <div
+      v-else
+      class="mx-auto grid w-full max-w-5xl min-w-0 gap-6 overflow-x-clip max-sm:gap-5"
+    >
       <section
         v-for="(turnView, turnIndex) in turnViews"
         :key="turnView.key"
         class="grid min-w-0 gap-3 overflow-x-clip border-b border-[color:var(--app-border)] pb-6 last:border-b-0"
         data-codex-turn
       >
-        <div
-          class="flex min-w-0 flex-wrap items-center gap-2 text-[0.74rem] text-[color:var(--app-text-soft)]"
-        >
+        <div class="flex min-w-0 flex-wrap items-center gap-2 text-[0.74rem] text-[color:var(--app-text-soft)]">
           <span class="font-semibold text-[color:var(--app-text)]">
             Turn {{ turnIndex + 1 }}
           </span>
-          <span>{{ statusLabel(turnView.turn.status) }}</span>
-          <code v-if="turnView.turn.turnId" class="truncate">{{ turnView.turn.turnId }}</code>
+          <span v-if="justDebug">{{ statusLabel(turnView.turn.status) }}</span>
+          <code
+            v-if="justDebug && turnView.turn.turnId"
+            class="truncate"
+          >{{ turnView.turn.turnId }}</code>
           <span v-if="turnView.turn.turnStartedAtMs">
             {{ formatTimestamp(turnView.turn.turnStartedAtMs) }}
           </span>
@@ -612,7 +618,11 @@ watch(
           </div>
         </article>
 
-        <div v-if="turnView.workItems.length" class="grid min-w-0 gap-2" data-codex-work-section>
+        <div
+          v-if="turnView.workItems.length"
+          class="grid min-w-0 gap-2"
+          data-codex-work-section
+        >
           <div class="flex min-w-0 items-center gap-2 text-sm text-[color:var(--app-text-soft)]">
             <button
               type="button"
@@ -672,7 +682,11 @@ watch(
                 ></i>
               </button>
 
-              <div v-if="isItemExpanded(workItem.id)" class="min-w-0 pl-6 max-sm:pl-0" data-codex-work-detail>
+              <div
+                v-if="isItemExpanded(workItem.id)"
+                class="min-w-0 pl-6 max-sm:pl-0"
+                data-codex-work-detail
+              >
                 <div
                   v-if="itemType(workItem.item) === 'commandExecution'"
                   class="code-surface code-surface-compact min-w-0"
@@ -681,7 +695,10 @@ watch(
                   <div class="code-surface-toolbar">
                     <div class="code-surface-toolbar-meta">
                       <span class="code-surface-label">Shell</span>
-                      <span v-if="commandText(workItem.item)" class="code-surface-runtime">
+                      <span
+                        v-if="commandText(workItem.item)"
+                        class="code-surface-runtime"
+                      >
                         $ {{ commandText(workItem.item) }}
                       </span>
                     </div>

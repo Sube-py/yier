@@ -1,14 +1,16 @@
 <script setup lang="ts">
-import { proxyRefs, ref } from 'vue'
+import { computed, proxyRefs, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 
 import CodexChatPane from '../codex/components/CodexChatPane.vue'
 import CodexSidebar from '../codex/components/CodexSidebar.vue'
 import { useCodexWorkspace } from '../codex/composables/useCodexWorkspace'
+import { activeThreadTitle } from '../codex/lib/format'
 import type { JsonRecord } from '../codex/types'
 
 const codex = proxyRefs(useCodexWorkspace())
 const isMobileThreadDrawerOpen = ref(false)
+const pageTitle = computed(() => activeThreadTitle(codex.activeThreadState) || 'Codex')
 
 function submitUserInputResponse(requestId: string, response: JsonRecord) {
   void codex.submitUserInputResponse(requestId, response)
@@ -58,11 +60,11 @@ function startMobileThread(projectPath: string) {
     />
 
     <main class="flex min-h-0 flex-col overflow-hidden">
-      <div class="flex items-center justify-between gap-2 border-b border-[color:var(--app-border)] bg-[rgba(255,253,247,0.94)] px-4 py-2 pt-[calc(0.5rem+env(safe-area-inset-top))] max-sm:px-3">
-        <div class="flex min-w-0 items-center gap-2">
+      <div class="grid grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)_minmax(0,1fr)] items-center gap-2 border-b border-[color:var(--app-border)] bg-[rgba(255,253,247,0.94)] px-4 py-2 pt-[calc(0.5rem+env(safe-area-inset-top))] max-sm:px-3">
+        <div class="flex min-w-0 items-center gap-2 justify-self-start">
           <button
             type="button"
-            class="hidden h-8 shrink-0 items-center gap-2 rounded-lg border border-[color:var(--app-border)] bg-white px-2.5 text-sm font-semibold text-[color:var(--app-text)] transition hover:border-[color:var(--app-accent)] max-lg:inline-flex"
+            class="hidden h-8 shrink-0 items-center gap-2 rounded-lg border border-[color:var(--app-border)] bg-white px-2.5 text-sm font-semibold text-[color:var(--app-text)] max-lg:inline-flex"
             aria-label="Open Codex threads"
             data-codex-mobile-thread-drawer-open
             @click="openMobileThreadDrawer"
@@ -78,17 +80,26 @@ function startMobileThread(projectPath: string) {
             Codex {{ codex.status }}
           </span>
         </div>
-        <nav class="flex shrink-0 items-center gap-2 max-[380px]:gap-1">
+
+        <h1
+          class="m-0 min-w-0 truncate text-center text-base font-semibold text-[color:var(--app-text)] max-sm:text-sm"
+          data-codex-page-title
+          :title="pageTitle"
+        >
+          {{ pageTitle }}
+        </h1>
+
+        <nav class="flex min-w-0 shrink-0 items-center justify-end gap-2 justify-self-end max-[380px]:gap-1">
           <RouterLink
             to="/chat"
-            class="inline-flex h-8 items-center gap-2 rounded-lg border border-[color:var(--app-border)] bg-white px-3 text-sm font-semibold text-[color:var(--app-text)] transition hover:border-[color:var(--app-accent)] max-sm:px-2.5"
+            class="inline-flex h-8 items-center gap-2 rounded-lg border border-[color:var(--app-border)] bg-white px-3 text-sm font-semibold text-[color:var(--app-text)] max-sm:px-2.5"
           >
             <i class="pi pi-comments text-xs"></i>
             <span class="max-[380px]:sr-only">Chat</span>
           </RouterLink>
           <RouterLink
             to="/settings"
-            class="inline-flex h-8 items-center gap-2 rounded-lg border border-[color:var(--app-border)] bg-white px-3 text-sm font-semibold text-[color:var(--app-text)] transition hover:border-[color:var(--app-accent)] max-sm:px-2.5"
+            class="inline-flex h-8 items-center gap-2 rounded-lg border border-[color:var(--app-border)] bg-white px-3 text-sm font-semibold text-[color:var(--app-text)] max-sm:px-2.5"
           >
             <i class="pi pi-cog text-xs"></i>
             <span class="max-[380px]:sr-only">Settings</span>

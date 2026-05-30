@@ -5,6 +5,7 @@ import { useRoute, useRouter } from 'vue-router'
 import CodexChatPane from '../codex/components/CodexChatPane.vue'
 import { useCodexWorkspace } from '../codex/composables/useCodexWorkspace'
 import { codexSocketUrl } from '../codex/lib/codexSocket'
+import { activeThreadTitle } from '../codex/lib/format'
 import type { CodexWorkMode, JsonRecord } from '../codex/types'
 
 type EmbedMessageType =
@@ -43,6 +44,7 @@ const isInitializing = ref(false)
 const hasStarted = ref(false)
 
 const displayError = computed(() => initError.value || codex.errorMessage)
+const pageTitle = computed(() => activeThreadTitle(codex.activeThreadState) || 'Codex embed')
 
 function queryText(key: string) {
   const value = route.query[key]
@@ -247,9 +249,9 @@ onBeforeUnmount(() => {
 <template>
   <main class="flex h-dvh min-h-0 flex-col overflow-hidden bg-[color:var(--app-bg)]">
     <div
-      class="flex items-center justify-between gap-3 border-b border-[color:var(--app-border)] bg-[rgba(255,253,247,0.94)] px-4 py-2 pt-[calc(0.5rem+env(safe-area-inset-top))] max-sm:px-3"
+      class="grid grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)_minmax(0,1fr)] items-center gap-3 border-b border-[color:var(--app-border)] bg-[rgba(255,253,247,0.94)] px-4 py-2 pt-[calc(0.5rem+env(safe-area-inset-top))] max-sm:px-3"
     >
-      <div class="flex min-w-0 items-center gap-2">
+      <div class="flex min-w-0 items-center gap-2 justify-self-start">
         <span
           class="h-2.5 w-2.5 shrink-0 rounded-full"
           :class="codex.status === 'open' ? 'bg-emerald-500' : codex.status === 'connecting' ? 'bg-amber-500' : 'bg-red-500'"
@@ -258,6 +260,13 @@ onBeforeUnmount(() => {
           Codex {{ isInitializing ? 'starting' : codex.status }}
         </span>
       </div>
+      <h1
+        class="m-0 min-w-0 truncate text-center text-base font-semibold text-[color:var(--app-text)] max-sm:text-sm"
+        :title="pageTitle"
+      >
+        {{ pageTitle }}
+      </h1>
+      <div aria-hidden="true"></div>
     </div>
 
     <CodexChatPane

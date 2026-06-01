@@ -178,7 +178,7 @@ function contextWindowState(state: CodexConversationState | null) {
   const totalTokens = 128_000
   const percent = Math.min(Math.round((usedTokens / totalTokens) * 100), 100)
   return {
-    label: `${percent}% context`,
+    label: `${percent}%`,
     detail: `~${formatTokenCount(usedTokens)} / ${formatTokenCount(totalTokens)} tokens`,
     percent,
     estimated: true,
@@ -203,7 +203,7 @@ function explicitContextWindow(state: CodexConversationState | null) {
     if (used != null && total != null && total > 0) {
       const computedPercent = Math.min(Math.round((used / total) * 100), 100)
       return {
-        label: `${computedPercent}% context`,
+        label: `${computedPercent}%`,
         detail: `${formatTokenCount(used)} / ${formatTokenCount(total)} tokens`,
         percent: computedPercent,
         estimated: false,
@@ -212,7 +212,7 @@ function explicitContextWindow(state: CodexConversationState | null) {
     if (percent != null) {
       const normalized = percent <= 1 ? percent * 100 : percent
       return {
-        label: `${Math.round(normalized)}% context`,
+        label: `${Math.round(normalized)}%`,
         detail: 'Context window',
         percent: Math.min(Math.round(normalized), 100),
         estimated: false,
@@ -244,7 +244,9 @@ function formatTokenCount(value: number) {
 </script>
 
 <template>
-  <section class="border-t border-[color:var(--app-border)] bg-[rgba(255,253,247,0.94)] px-4 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-3 max-sm:px-2.5">
+  <section
+    class="border-t border-[color:var(--app-border)] bg-[rgba(255,253,247,0.94)] px-4 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-3 max-sm:px-2.5"
+  >
     <div class="mx-auto grid max-w-5xl gap-2">
       <div
         class="grid min-w-0 gap-2 rounded-2xl border border-[color:var(--app-border)] bg-white/95 p-2 shadow-[0_14px_34px_rgba(24,44,48,0.08)] transition max-sm:rounded-xl"
@@ -265,14 +267,17 @@ function formatTokenCount(value: number) {
                 class="relative -ml-3 flex h-4 shrink-0 cursor-default items-center justify-center pl-3 text-[color:var(--app-text-soft)]/70"
                 aria-hidden="true"
               >
-                <i class="pi pi-bars pointer-events-none absolute left-0 top-1/2 -translate-y-1/2 text-[0.56rem] opacity-0 transition-opacity group-hover:opacity-100"></i>
+                <i
+                  class="pi pi-bars pointer-events-none absolute left-0 top-1/2 -translate-y-1/2 text-[0.56rem] opacity-0 transition-opacity group-hover:opacity-100"></i>
                 <i class="pi pi-clock text-[0.62rem]"></i>
               </span>
               <span class="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap leading-4 text-[color:var(--app-text-soft)]">
                 {{ followupText(followup) }}
               </span>
             </div>
-            <div class="flex shrink-0 items-center gap-1 opacity-80 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 sm:opacity-0">
+            <div
+              class="flex shrink-0 items-center gap-1 opacity-80 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 sm:opacity-0"
+            >
               <button
                 type="button"
                 class="inline-flex h-7 shrink-0 items-center gap-1 rounded-full px-2 text-xs font-semibold text-[color:var(--app-text)] transition hover:bg-[rgba(21,94,99,0.07)] disabled:cursor-not-allowed disabled:opacity-45"
@@ -307,8 +312,14 @@ function formatTokenCount(value: number) {
           @keydown="onKeydown"
         ></textarea>
 
-        <div class="composer-footer grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-end gap-2 max-sm:items-start" data-codex-composer-footer>
-          <div class="hide-scrollbar flex min-w-0 flex-wrap items-center gap-1.5 max-sm:flex-nowrap max-sm:overflow-x-auto max-sm:overscroll-x-contain max-sm:pb-0.5" data-codex-composer-controls>
+        <div
+          class="composer-footer grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-end gap-2 max-sm:items-start"
+          data-codex-composer-footer
+        >
+          <div
+            class="hide-scrollbar flex min-w-0 flex-wrap items-center gap-1.5 max-sm:flex-nowrap max-sm:overflow-x-auto max-sm:overscroll-x-contain max-sm:pb-0.5"
+            data-codex-composer-controls
+          >
             <div
               class="grid w-[7.25rem] shrink-0 grid-cols-2 rounded-lg border border-[color:var(--app-border)] bg-[rgba(255,253,247,0.86)] p-0.5"
               data-codex-mode-switch
@@ -333,9 +344,11 @@ function formatTokenCount(value: number) {
               </button>
             </div>
 
-            <label class="inline-flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-lg border border-[color:var(--app-border)] bg-white px-2 text-sm text-[color:var(--app-text-soft)] max-sm:w-max max-sm:max-w-none max-sm:shrink-0">
-              <i class="pi pi-microchip text-[0.72rem]"></i>
-              <span class="composer-footer__label--sm">Model</span>
+            <label
+              class="inline-flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-lg border border-[color:var(--app-border)] bg-white px-2 text-sm text-[color:var(--app-text-soft)] max-sm:w-max max-sm:max-w-none max-sm:shrink-0"
+            >
+              <i class="pi pi-microchip-ai text-[0.72rem]"></i>
+              <!-- <span class="composer-footer__label--sm">Model</span> -->
               <Select
                 v-model="selectedModel"
                 :options="modelOptions"
@@ -352,9 +365,11 @@ function formatTokenCount(value: number) {
               />
             </label>
 
-            <label class="inline-flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-lg border border-[color:var(--app-border)] bg-white px-2 text-sm text-[color:var(--app-text-soft)] max-sm:w-max max-sm:max-w-none max-sm:shrink-0">
+            <label
+              class="inline-flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-lg border border-[color:var(--app-border)] bg-white px-2 text-sm text-[color:var(--app-text-soft)] max-sm:w-max max-sm:max-w-none max-sm:shrink-0"
+            >
               <i class="pi pi-sparkles text-[0.72rem]"></i>
-              <span class="composer-footer__label--sm">Reasoning</span>
+              <!-- <span class="composer-footer__label--sm">Reasoning</span> -->
               <Select
                 v-model="selectedReasoningEffort"
                 :options="reasoningOptions"
@@ -372,11 +387,11 @@ function formatTokenCount(value: number) {
             </label>
 
             <div
-              class="inline-flex h-8 min-w-36 max-w-full items-center gap-2 rounded-lg border border-[color:var(--app-border)] bg-white px-2 text-xs text-[color:var(--app-text-soft)] max-sm:shrink-0"
+              class="inline-flex h-8 w-fit max-w-full items-center gap-1.5 rounded-lg border border-[color:var(--app-border)] bg-white px-2 text-xs text-[color:var(--app-text-soft)] max-sm:shrink-0"
               :title="`${context.detail}${context.estimated ? ' estimated' : ''}`"
               data-codex-context-window
             >
-              <span class="h-1.5 min-w-12 overflow-hidden rounded-full bg-[rgba(34,66,72,0.12)]">
+              <span class="h-1.5 w-10 overflow-hidden rounded-full bg-[rgba(34,66,72,0.12)]">
                 <span
                   class="block h-full rounded-full bg-[color:var(--app-accent)]"
                   :style="{ width: `${context.percent}%` }"
@@ -392,18 +407,20 @@ function formatTokenCount(value: number) {
             <button
               type="button"
               class="inline-flex h-9 min-w-9 items-center justify-center rounded-lg px-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-45"
-              :class="
-                primaryAction === 'stop'
-                  ? 'border border-red-200 bg-white text-red-700 hover:bg-red-50'
-                  : 'bg-[color:var(--app-accent)] text-white hover:brightness-95'
-              "
+              :class="primaryAction === 'stop'
+                ? 'border border-red-200 bg-white text-red-700 hover:bg-red-50'
+                : 'bg-[color:var(--app-accent)] text-white hover:brightness-95'
+                "
               :disabled="primaryDisabled"
               :aria-label="primaryLabel"
               :title="primaryTitle"
               data-codex-primary-submit
               @click="submitPrimary"
             >
-              <i :class="primaryIcon" class="text-xs"></i>
+              <i
+                :class="primaryIcon"
+                class="text-xs"
+              ></i>
               <span class="sr-only">{{ primaryLabel }}</span>
             </button>
           </div>

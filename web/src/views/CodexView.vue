@@ -60,7 +60,9 @@ function startMobileThread(projectPath: string) {
     />
 
     <main class="flex min-h-0 flex-col overflow-hidden">
-      <div class="grid grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)_minmax(0,1fr)] items-center gap-2 border-b border-[color:var(--app-border)] bg-[rgba(255,253,247,0.94)] px-4 py-2 pt-[calc(0.5rem+env(safe-area-inset-top))] max-sm:px-3">
+      <div
+        class="grid grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)_minmax(0,1fr)] items-center gap-2 border-b border-[color:var(--app-border)] bg-[rgba(255,253,247,0.94)] px-4 py-2 pt-[calc(0.5rem+env(safe-area-inset-top))] max-sm:px-3"
+      >
         <div class="flex min-w-0 items-center gap-2 justify-self-start">
           <button
             type="button"
@@ -70,7 +72,7 @@ function startMobileThread(projectPath: string) {
             @click="openMobileThreadDrawer"
           >
             <i class="pi pi-bars text-xs"></i>
-            <span class="max-[380px]:sr-only">Threads</span>
+            <!-- <span class="max-[380px]:sr-only">Threads</span> -->
           </button>
           <span
             class="h-2.5 w-2.5 shrink-0 rounded-full"
@@ -95,14 +97,12 @@ function startMobileThread(projectPath: string) {
             class="inline-flex h-8 items-center gap-2 rounded-lg border border-[color:var(--app-border)] bg-white px-3 text-sm font-semibold text-[color:var(--app-text)] max-sm:px-2.5"
           >
             <i class="pi pi-comments text-xs"></i>
-            <span class="max-[380px]:sr-only">Chat</span>
           </RouterLink>
           <RouterLink
             to="/settings"
             class="inline-flex h-8 items-center gap-2 rounded-lg border border-[color:var(--app-border)] bg-white px-3 text-sm font-semibold text-[color:var(--app-text)] max-sm:px-2.5"
           >
             <i class="pi pi-cog text-xs"></i>
-            <span class="max-[380px]:sr-only">Settings</span>
           </RouterLink>
         </nav>
       </div>

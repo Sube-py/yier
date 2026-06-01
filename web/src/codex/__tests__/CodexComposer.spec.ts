@@ -129,7 +129,7 @@ describe('CodexComposer', () => {
     })
 
     expect(wrapper.get('[data-codex-queued-followups]').text()).toContain('Run tests next')
-    expect(wrapper.get('[data-codex-context-window]').text()).toContain('25% context')
+    expect(wrapper.get('[data-codex-context-window]').text()).toContain('25%')
   })
 
   it('keeps secondary composer controls horizontally scrollable on mobile', () => {

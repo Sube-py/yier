@@ -1,17 +1,17 @@
 import { flushPromises, shallowMount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ref } from 'vue'
+import { nextTick, ref } from 'vue'
 
 import { createTestRouter } from '../../router'
 import CodexEmbedView from '../../views/CodexEmbedView.vue'
-import type { CodexConversationState } from '../types'
+import type { CodexConversationState, CodexPendingRequest } from '../types'
 
 const workspace = {
   activeMode: ref('build'),
   activeStatus: ref('idle'),
   activeThreadId: ref(''),
   activeThreadState: ref<CodexConversationState | null>(null),
-  activeUserInputRequest: ref(null),
+  activeUserInputRequest: ref<CodexPendingRequest | null>(null),
   archivingThreadId: ref(''),
   archiveThread: vi.fn(),
   compactThread: vi.fn(),
@@ -79,6 +79,8 @@ describe('CodexEmbedView', () => {
     vi.clearAllMocks()
     workspace.activeThreadId.value = ''
     workspace.activeThreadState.value = null
+    workspace.activeUserInputRequest.value = null
+    workspace.activeStatus.value = 'idle'
     workspace.errorMessage.value = ''
     workspace.successMessage.value = ''
     workspace.status.value = 'idle'
@@ -179,6 +181,68 @@ describe('CodexEmbedView', () => {
     )
   })
 
+  it('announces active work status changes to the host', async () => {
+    workspace.activeThreadState.value = { id: 'thread-created', cwd: '/tmp/embed' }
+    await mountEmbed('/codex/embed?embed_token=secret')
+    await sendHostMessage({ type: 'yier:codex-start', cwd: '/tmp/embed' })
+
+    workspace.activeThreadId.value = 'thread-created'
+    workspace.activeStatus.value = 'inProgress'
+    await nextTick()
+
+    expect(window.parent.postMessage).toHaveBeenCalledWith(
+      {
+        type: 'yier:codex-status',
+        status: 'running',
+        threadId: 'thread-created',
+        mode: 'build',
+        codexStatus: 'inProgress',
+        requestId: '',
+        requestMethod: '',
+        message: '',
+      },
+      '*',
+    )
+
+    workspace.activeUserInputRequest.value = {
+      id: 'request-1',
+      method: 'item/tool/requestUserInput',
+    }
+    await nextTick()
+
+    expect(window.parent.postMessage).toHaveBeenCalledWith(
+      {
+        type: 'yier:codex-status',
+        status: 'awaiting_approval',
+        threadId: 'thread-created',
+        mode: 'build',
+        codexStatus: 'inProgress',
+        requestId: 'request-1',
+        requestMethod: 'item/tool/requestUserInput',
+        message: '',
+      },
+      '*',
+    )
+
+    workspace.activeUserInputRequest.value = null
+    workspace.activeStatus.value = 'completed'
+    await nextTick()
+
+    expect(window.parent.postMessage).toHaveBeenCalledWith(
+      {
+        type: 'yier:codex-status',
+        status: 'done',
+        threadId: 'thread-created',
+        mode: 'build',
+        codexStatus: 'completed',
+        requestId: '',
+        requestMethod: '',
+        message: '',
+      },
+      '*',
+    )
+  })
+
   it('applies plan mode after resuming a thread', async () => {
     workspace.activeThreadState.value = { id: 'thread-a', cwd: '/tmp/project' }
     await mountEmbed('/codex/embed?embed_token=secret')
@@ -224,7 +288,9 @@ describe('CodexEmbedView', () => {
   })
 
   it('rejects conflicting cwd and thread_id without sending commands', async () => {
-    const wrapper = await mountEmbed('/codex/embed?cwd=/tmp/embed&thread_id=thread-a&embed_token=secret')
+    const wrapper = await mountEmbed(
+      '/codex/embed?cwd=/tmp/embed&thread_id=thread-a&embed_token=secret',
+    )
 
     expect(workspace.connect).not.toHaveBeenCalled()
     expect(workspace.startEmbedThread).not.toHaveBeenCalled()
@@ -251,10 +317,7 @@ describe('CodexEmbedView', () => {
   it('announces readiness when loaded without a command query', async () => {
     await mountEmbed('/codex/embed?embed_token=secret')
 
-    expect(window.parent.postMessage).toHaveBeenCalledWith(
-      { type: 'yier:codex-ready' },
-      '*',
-    )
+    expect(window.parent.postMessage).toHaveBeenCalledWith({ type: 'yier:codex-ready' }, '*')
     expect(workspace.connect).not.toHaveBeenCalled()
   })
 

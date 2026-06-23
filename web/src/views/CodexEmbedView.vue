@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, proxyRefs, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, proxyRefs, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import CodexChatPane from '../codex/components/CodexChatPane.vue'
@@ -13,9 +13,11 @@ type EmbedMessageType =
   | 'yier:codex-thread-created'
   | 'yier:codex-thread-resumed'
   | 'yier:codex-prompt-sent'
+  | 'yier:codex-status'
   | 'yier:codex-error'
 
 type EmbedCommandType = 'yier:codex-start' | 'yier:codex-resume'
+type EmbedWorkStatus = 'idle' | 'planning' | 'running' | 'awaiting_approval' | 'done' | 'failed'
 
 type EmbedCommand = {
   type?: unknown
@@ -34,9 +36,7 @@ const codex = proxyRefs(
     autoConnect: false,
     persistActiveThread: false,
     selectInitialThread: false,
-    socketUrl: codexSocketUrl(
-      `/api/codex/ws?embed_token=${encodeURIComponent(embedToken)}`,
-    ),
+    socketUrl: codexSocketUrl(`/api/codex/ws?embed_token=${encodeURIComponent(embedToken)}`),
   }),
 )
 const initError = ref('')
@@ -45,6 +45,7 @@ const hasStarted = ref(false)
 
 const displayError = computed(() => initError.value || codex.errorMessage)
 const pageTitle = computed(() => activeThreadTitle(codex.activeThreadState) || 'Codex embed')
+const lastStatusMessageKey = ref('')
 
 function queryText(key: string) {
   const value = route.query[key]
@@ -59,6 +60,67 @@ function postEmbedMessage(type: EmbedMessageType, payload: JsonRecord) {
     return
   }
   window.parent.postMessage({ type, ...payload }, '*')
+}
+
+function normalizeEmbedWorkStatus(): EmbedWorkStatus {
+  if (displayError.value) {
+    return 'failed'
+  }
+  if (codex.activeUserInputRequest) {
+    return 'awaiting_approval'
+  }
+  if (isInitializing.value || codex.isCommandBusy) {
+    return 'running'
+  }
+
+  const status = codex.activeStatus
+  if (status === 'inProgress' || status === 'active' || status === 'working') {
+    return 'running'
+  }
+  if (
+    status === 'completed' ||
+    status === 'complete' ||
+    status === 'succeeded' ||
+    status === 'success'
+  ) {
+    return 'done'
+  }
+  if (status === 'error' || status === 'failed') {
+    return 'failed'
+  }
+  if (status === 'planning') {
+    return 'planning'
+  }
+  return 'idle'
+}
+
+function postStatusMessage() {
+  if (!hasStarted.value && !codex.activeThreadId && !displayError.value) {
+    return
+  }
+
+  const status = normalizeEmbedWorkStatus()
+  const request = codex.activeUserInputRequest
+  const messageKey = JSON.stringify({
+    status,
+    threadId: codex.activeThreadId,
+    rawStatus: codex.activeStatus,
+    requestId: request?.id ?? '',
+    error: displayError.value,
+  })
+  if (messageKey === lastStatusMessageKey.value) {
+    return
+  }
+  lastStatusMessageKey.value = messageKey
+  postEmbedMessage('yier:codex-status', {
+    status,
+    threadId: codex.activeThreadId,
+    mode: codex.activeMode,
+    codexStatus: codex.activeStatus,
+    requestId: request?.id ?? '',
+    requestMethod: request?.method ?? '',
+    message: displayError.value,
+  })
 }
 
 function failEmbedInit(message: string) {
@@ -241,6 +303,22 @@ onMounted(() => {
   void initializeFromQuery()
 })
 
+watch(
+  () => [
+    codex.activeThreadId,
+    codex.activeStatus,
+    codex.activeMode,
+    codex.activeUserInputRequest?.id ?? '',
+    codex.activeUserInputRequest?.method ?? '',
+    codex.isCommandBusy,
+    isInitializing.value,
+    displayError.value,
+  ],
+  () => {
+    postStatusMessage()
+  },
+)
+
 onBeforeUnmount(() => {
   window.removeEventListener('message', handleParentMessage)
 })
@@ -254,7 +332,13 @@ onBeforeUnmount(() => {
       <div class="flex min-w-0 items-center gap-2 justify-self-start">
         <span
           class="h-2.5 w-2.5 shrink-0 rounded-full"
-          :class="codex.status === 'open' ? 'bg-emerald-500' : codex.status === 'connecting' ? 'bg-amber-500' : 'bg-red-500'"
+          :class="
+            codex.status === 'open'
+              ? 'bg-emerald-500'
+              : codex.status === 'connecting'
+                ? 'bg-amber-500'
+                : 'bg-red-500'
+          "
         ></span>
         <span class="truncate text-sm font-semibold text-[color:var(--app-text)]">
           Codex {{ isInitializing ? 'starting' : codex.status }}
@@ -284,7 +368,13 @@ onBeforeUnmount(() => {
       :is-archiving="codex.isArchiving"
       :is-active-turn-in-progress="codex.isActiveTurnInProgress"
       empty-eyebrow="Codex embed"
-      :empty-title="isInitializing ? 'Starting thread' : hasStarted ? 'Waiting for thread' : 'Waiting for host message'"
+      :empty-title="
+        isInitializing
+          ? 'Starting thread'
+          : hasStarted
+            ? 'Waiting for thread'
+            : 'Waiting for host message'
+      "
       @rename-thread="codex.renameThread"
       @archive-thread="codex.archiveThread()"
       @compact-thread="codex.compactThread"

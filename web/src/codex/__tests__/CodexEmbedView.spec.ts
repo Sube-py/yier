@@ -274,16 +274,23 @@ describe('CodexEmbedView', () => {
     )
   })
 
-  it('rejects prompt when resuming a thread', async () => {
-    const wrapper = await mountEmbed('/codex/embed?embed_token=secret')
+  it('sends a follow-up prompt after resuming a thread', async () => {
+    workspace.activeThreadState.value = { id: 'thread-a', cwd: '/tmp/project' }
+    await mountEmbed('/codex/embed?embed_token=secret')
     await sendHostMessage({ type: 'yier:codex-resume', threadId: 'thread-a', prompt: 'Continue' })
 
-    expect(workspace.connect).not.toHaveBeenCalled()
+    expect(workspace.connect).toHaveBeenCalledOnce()
     expect(workspace.startEmbedThread).not.toHaveBeenCalled()
-    expect(workspace.resumeEmbedThread).not.toHaveBeenCalled()
-    expect(workspace.sendPrompt).not.toHaveBeenCalled()
-    expect(wrapper.getComponent({ name: 'CodexChatPane' }).props('errorMessage')).toBe(
-      'prompt is only supported when starting a new thread with cwd.',
+    expect(workspace.resumeEmbedThread).toHaveBeenCalledWith('thread-a')
+    expect(workspace.sendPrompt).toHaveBeenCalledWith('Continue')
+    expect(window.parent.postMessage).toHaveBeenCalledWith(
+      {
+        type: 'yier:codex-prompt-sent',
+        threadId: 'thread-a',
+        cwd: '/tmp/project',
+        mode: 'build',
+      },
+      '*',
     )
   })
 

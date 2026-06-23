@@ -172,10 +172,6 @@ async function startFromPayload({
     failEmbedInit('Pass either cwd or thread_id, not both.')
     return
   }
-  if (threadId && prompt) {
-    failEmbedInit('prompt is only supported when starting a new thread with cwd.')
-    return
-  }
   if (!cwd && !threadId) {
     failEmbedInit('cwd or thread_id is required.')
     return
@@ -230,6 +226,18 @@ async function startFromPayload({
       cwd: codex.activeThreadState?.cwd ?? '',
       mode: mode ?? codex.activeMode,
     })
+    if (prompt) {
+      await codex.sendPrompt(prompt)
+      if (codex.errorMessage) {
+        failEmbedInit(codex.errorMessage || 'Follow-up prompt could not be sent.')
+        return
+      }
+      postEmbedMessage('yier:codex-prompt-sent', {
+        threadId,
+        cwd: codex.activeThreadState?.cwd ?? '',
+        mode: mode ?? codex.activeMode,
+      })
+    }
   } finally {
     isInitializing.value = false
   }

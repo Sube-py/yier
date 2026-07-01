@@ -7,11 +7,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from yier_agents.src.config import (
-    AssistantRunCommandSettings,
-    AssistantSettings,
-    YIERConfig,
-)
+from yier_agents.src.config import YIERConfig
 
 from yier_web.schemas import (
     BackendHealth,
@@ -51,27 +47,12 @@ class AppConfigService:
         self.yier_root = self.home_dir / ".yier"
         self.web_root = self.yier_root / "web"
         self.settings_path = self.web_root / "settings.json"
-        self.sessions_path = self.web_root / "sessions"
-        self.transcripts_path = self.web_root / "transcripts"
-        self.session_ui_path = self.web_root / "session_ui"
-        self.session_meta_path = self.web_root / "session_meta"
-        self.session_conversation_state_path = (
-            self.web_root / "session_conversation_state"
-        )
-        self.uploads_path = self.web_root / "uploads"
-        self.prompt_history_path = self.web_root / "prompt_history.txt"
         self.mcp_config_path = self.yier_root / ".yier.json"
         self.ensure_storage()
 
     def ensure_storage(self) -> None:
         self.yier_root.mkdir(parents=True, exist_ok=True)
         self.web_root.mkdir(parents=True, exist_ok=True)
-        self.sessions_path.mkdir(parents=True, exist_ok=True)
-        self.transcripts_path.mkdir(parents=True, exist_ok=True)
-        self.session_ui_path.mkdir(parents=True, exist_ok=True)
-        self.session_meta_path.mkdir(parents=True, exist_ok=True)
-        self.session_conversation_state_path.mkdir(parents=True, exist_ok=True)
-        self.uploads_path.mkdir(parents=True, exist_ok=True)
 
     def default_allowed_roots(self) -> list[str]:
         defaults = [
@@ -141,30 +122,6 @@ class AppConfigService:
         self._write_json(self.settings_path, settings.model_dump())
         return settings
 
-    def build_assistant_settings(self) -> AssistantSettings:
-        settings = self.load_web_settings()
-        return AssistantSettings(
-            workspace_root=self.project_root,
-            session_storage_path=self.sessions_path,
-            prompt_history_path=self.prompt_history_path,
-            allowed_roots=tuple(
-                Path(root).expanduser().resolve()
-                for root in self._normalize_allowed_roots(settings.allowed_roots)
-            ),
-            include_skill_directories_in_allowed_roots=True,
-            max_iterations=100,
-            system_prompt=(
-                "You are Yier, a lightweight local-first desktop assistant. "
-                "Help the user manage files, inspect code, write code, and operate "
-                "carefully inside the allowed filesystem roots. Be concise, practical, "
-                "and explicit about actions you take."
-            ),
-            run_command=AssistantRunCommandSettings(
-                allow_shell=True,
-                shell_program="/bin/bash",
-            ),
-        )
-
     def load_mcp_root_config(self) -> dict[str, Any]:
         return YIERConfig.load_config(self.yier_root)
 
@@ -222,19 +179,14 @@ class AppConfigService:
 
     def backend_options(self) -> list[BackendOption]:
         return [
-            BackendOption(id="yier", label="Yier Agent"),
+            BackendOption(id="codex", label="Codex App Server"),
         ]
 
     def build_backend_health(self) -> dict[str, BackendHealth]:
-        settings = self.load_web_settings()
         return {
-            "yier": BackendHealth(
-                ready=settings.llm.is_ready,
-                detail=(
-                    None
-                    if settings.llm.is_ready
-                    else "Configure provider/API key/model in Settings to use the built-in Yier backend."
-                ),
+            "codex": BackendHealth(
+                ready=True,
+                detail=None,
             ),
         }
 

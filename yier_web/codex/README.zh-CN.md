@@ -7,7 +7,7 @@
 - 根据 yier 持久化的 Codex 设置构建 `codex_ipc.CodexIpcConfig`。
 - 为每个活跃 thread 保持一个长期存在的 `CodexIpcSession`。
 - 将原始 `ConversationState` 更新分发给 WebSocket 订阅者。
-- 让 Codex 与 Yier chat backend 和 agent tools 解耦。
+- 承载 Web 应用的 Codex-only 后端能力。
 
 ## 主要文件
 
@@ -16,11 +16,10 @@
 ## 说明
 
 - HTTP 与 WebSocket 路由在 `yier_web/routes/codex.py`。
-- 通用 backend 抽象仍保留在 `yier_web/agent_backends`。
 
 ## iframe 嵌入
 
-纯聊天 iframe 路由是 `/codex/embed?embed_token=...`。它复用 Codex
+Codex iframe 路由是 `/codex/embed?embed_token=...`。它复用 Codex
 WebSocket，未登录访问需要配置 `YIER_CODEX_EMBED_TOKEN`。
 
 - 新建会话：父窗口发送 `postMessage({ type: 'yier:codex-start', cwd, mode, prompt })`

@@ -20,7 +20,7 @@ const isSubmitting = ref(false)
 const nextPath = computed(() => {
   const rawNext = typeof route.query.next === 'string' ? route.query.next : ''
   if (!rawNext.startsWith('/') || rawNext.startsWith('//') || rawNext.startsWith('/login')) {
-    return '/chat'
+    return '/codex'
   }
   return rawNext
 })

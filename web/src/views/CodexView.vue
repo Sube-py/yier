@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, proxyRefs, ref } from 'vue'
-import { RouterLink } from 'vue-router'
 
 import CodexChatPane from '../codex/components/CodexChatPane.vue'
 import CodexSidebar from '../codex/components/CodexSidebar.vue'
@@ -91,20 +90,7 @@ function startMobileThread(projectPath: string) {
           {{ pageTitle }}
         </h1>
 
-        <nav class="flex min-w-0 shrink-0 items-center justify-end gap-2 justify-self-end max-[380px]:gap-1">
-          <RouterLink
-            to="/chat"
-            class="inline-flex h-8 items-center gap-2 rounded-lg border border-[color:var(--app-border)] bg-white px-3 text-sm font-semibold text-[color:var(--app-text)] max-sm:px-2.5"
-          >
-            <i class="pi pi-comments text-xs"></i>
-          </RouterLink>
-          <RouterLink
-            to="/settings"
-            class="inline-flex h-8 items-center gap-2 rounded-lg border border-[color:var(--app-border)] bg-white px-3 text-sm font-semibold text-[color:var(--app-text)] max-sm:px-2.5"
-          >
-            <i class="pi pi-cog text-xs"></i>
-          </RouterLink>
-        </nav>
+        <div class="justify-self-end"></div>
       </div>
 
       <div class="grid min-h-0 flex-1 grid-cols-1 overflow-hidden">

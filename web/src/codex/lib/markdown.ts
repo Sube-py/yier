@@ -1,7 +1,7 @@
 import MarkdownIt from 'markdown-it'
 import hljs from 'highlight.js/lib/common'
 
-import { resolveHighlightLanguage } from '../lib/codeHighlight'
+import { resolveHighlightLanguage } from '../../lib/codeHighlight'
 
 const markdown = new MarkdownIt({
   html: false,
@@ -73,7 +73,7 @@ markdown.renderer.rules.code_block = (tokens, idx) => {
   return renderMarkdownCodeBlock(highlightMarkdownCode(token?.content ?? '').content, ' class="hljs"')
 }
 
-export function useTimelineMarkdown() {
+export function useCodexMarkdown() {
   function renderMarkdown(content: string) {
     return markdown.render(content)
   }

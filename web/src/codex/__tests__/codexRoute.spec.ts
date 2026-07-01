@@ -76,39 +76,35 @@ describe('Codex route separation', () => {
     workspaceMock.activeThreadState = null
   })
 
-  it('resolves Codex to its own workspace route outside the chat view', () => {
+  it('resolves Codex as the default workspace route', () => {
     const router = createTestRouter()
+    const rootMatch = router.resolve('/').matched
     const codexMatch = router.resolve('/codex').matched
     const embedMatch = router.resolve('/codex/embed').matched
     const chatMatch = router.resolve('/chat').matched
     const codexComponent = codexMatch[codexMatch.length - 1]?.components?.default
     const embedComponent = embedMatch[embedMatch.length - 1]?.components?.default
-    const chatComponent = chatMatch[chatMatch.length - 1]?.components?.default
 
+    expect(rootMatch[0]?.redirect).toBe('/codex')
     expect(router.resolve('/codex').name).toBe('codex')
     expect(router.resolve('/codex/embed').name).toBe('codex-embed')
-    expect(router.resolve('/chat').name).toBe('chat')
+    expect(router.resolve('/chat').name).toBeUndefined()
     expect(codexMatch).toHaveLength(1)
     expect(embedMatch).toHaveLength(1)
-    expect(chatMatch.length).toBeGreaterThan(1)
-    expect(codexComponent).not.toBe(chatComponent)
+    expect(chatMatch).toHaveLength(0)
     expect(embedComponent).not.toBe(codexComponent)
   })
 
-  it('keeps the Codex header Chat link pointed at the chat route', async () => {
+  it('does not render a Chat route link in the Codex header', async () => {
     const router = createTestRouter()
     await router.push('/codex')
     await router.isReady()
 
     const wrapper = mountCodexView(router)
 
-    const chatLink = wrapper.findAll('a').find((link) => link.text().trim() === 'Chat')
-    if (!chatLink) {
-      throw new Error('Expected Codex header to render a Chat link.')
-    }
-
-    expect(chatLink.attributes('href')).toBe('/chat')
-    expect(router.resolve(chatLink.attributes('href') ?? '').name).toBe('chat')
+    expect(wrapper.findAll('a').map((link) => link.attributes('href'))).not.toContain(
+      '/chat',
+    )
   })
 
   it('centers the active thread title in the page header without hover styling', async () => {

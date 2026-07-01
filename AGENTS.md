@@ -58,7 +58,7 @@
 
 - Codex behavior is implemented through the published `codex-ipc` package.
 - The standalone Codex workspace is served from `/codex` and `/api/codex/ws`.
-- `ChatService` owns Yier chat only. Codex thread state and commands belong in
+- Codex thread state and commands belong in
   [`yier_web/codex/ipc_manager.py`](/Users/sube/me/yier/yier_web/codex/ipc_manager.py)
   and [`yier_web/routes/codex.py`](/Users/sube/me/yier/yier_web/routes/codex.py).
 - Keep one `CodexIpcSession` per active Codex thread so UI subscription changes

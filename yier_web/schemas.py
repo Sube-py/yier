@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 MCPRuntimeStatus = Literal[
@@ -13,20 +13,15 @@ MCPRuntimeStatus = Literal[
     "needs_client_registration",
 ]
 FrontendMode = Literal["proxy", "static", "missing"]
-SessionSource = Literal["chat", "channel"]
 LLMProvider = Literal["", "zai", "zai-coding-plan"]
 BackendId = Literal["yier", "codex"]
 WorkspaceSurface = Literal["yier", "codex", "claude"]
-CodexWorkMode = Literal["plan", "build"]
 CodexApprovalPolicy = Literal["untrusted", "on-failure", "on-request", "never"]
 CodexSandboxMode = Literal["read-only", "workspace-write", "danger-full-access"]
 CodexPersonality = Literal["none", "friendly", "pragmatic"]
 CodexReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "xhigh"]
 CodexServiceTier = Literal["", "fast", "flex"]
 CodexApprovalsReviewer = Literal["user", "guardian_subagent"]
-ApprovalDecision = Literal["accept", "accept_for_session", "decline", "cancel"]
-CodexInputItemType = Literal["text", "image", "localImage", "skill", "mention"]
-CodexAttachmentKind = Literal["image", "text", "binary"]
 
 
 class StoredLLMSettings(BaseModel):
@@ -48,32 +43,23 @@ class StoredLLMSettings(BaseModel):
         return bool(self.base_url.strip() and has_model and has_api_key)
 
 
-class WebSettings(BaseModel):
-    llm: StoredLLMSettings = Field(default_factory=StoredLLMSettings)
-    session_defaults: "SessionDefaultsSettings" = Field(
-        default_factory=lambda: SessionDefaultsSettings()
-    )
-    codex: "StoredCodexSettings" = Field(default_factory=lambda: StoredCodexSettings())
-    allowed_roots: list[str] = Field(default_factory=list)
-
-
 class SessionDefaultsSettings(BaseModel):
-    default_backend_id: BackendId = "yier"
+    default_backend_id: BackendId = "codex"
     default_project_path: str = ""
-    channel_backend_id: BackendId = "yier"
+    channel_backend_id: BackendId = "codex"
     channel_project_path: str = ""
     channel_auto_approve_codex_requests: bool = True
-    workspace_surface: WorkspaceSurface = "yier"
+    workspace_surface: WorkspaceSurface = "codex"
 
     @field_validator("default_backend_id", "channel_backend_id")
     @classmethod
-    def normalize_chat_backend_id(cls, value: BackendId) -> BackendId:
-        return "yier" if value == "codex" else value
+    def normalize_backend_id(cls, value: str) -> BackendId:
+        return "codex"
 
     @field_validator("workspace_surface")
     @classmethod
-    def normalize_workspace_surface(cls, value: WorkspaceSurface) -> WorkspaceSurface:
-        return "yier" if value == "codex" else value
+    def normalize_workspace_surface(cls, value: str) -> WorkspaceSurface:
+        return "codex"
 
 
 class StoredCodexSettings(BaseModel):
@@ -91,6 +77,15 @@ class StoredCodexSettings(BaseModel):
     @classmethod
     def strip_string_fields(cls, value: str) -> str:
         return value.strip()
+
+
+class WebSettings(BaseModel):
+    llm: StoredLLMSettings = Field(default_factory=StoredLLMSettings)
+    session_defaults: SessionDefaultsSettings = Field(
+        default_factory=SessionDefaultsSettings
+    )
+    codex: StoredCodexSettings = Field(default_factory=StoredCodexSettings)
+    allowed_roots: list[str] = Field(default_factory=list)
 
 
 class BackendHealth(BaseModel):
@@ -215,53 +210,6 @@ class SaveAppSettingsRequest(BaseModel):
     codex: StoredCodexSettings = Field(default_factory=StoredCodexSettings)
 
 
-class ChannelMetaPayload(BaseModel):
-    platform: str
-    account_id: str
-    peer_id: str
-
-
-class ApprovalOption(BaseModel):
-    value: ApprovalDecision
-    label: str
-
-
-class PendingApproval(BaseModel):
-    request_id: str | int
-    method: str
-    kind: str
-    title: str
-    detail: str
-    options: list[ApprovalOption] = Field(default_factory=list)
-    payload: dict[str, Any] = Field(default_factory=dict)
-
-
-class PendingRequest(PendingApproval):
-    item_id: str | None = None
-
-
-class BackendRuntimePayload(BaseModel):
-    backend_id: BackendId
-    label: str
-    ready: bool = True
-    status: str = "idle"
-    thread_id: str | None = None
-    active_flags: list[str] = Field(default_factory=list)
-    detail: str | None = None
-    pending_request_count: int = 0
-    pending_approval_count: int = 0
-    ipc_owner_client_id: str | None = None
-
-
-class CreateSessionRequest(BaseModel):
-    backend_id: BackendId | None = None
-    project_path: str | None = None
-
-
-class CreateSessionResponse(BaseModel):
-    session_id: str
-
-
 class SelectDirectoryRequest(BaseModel):
     initial_path: str | None = None
 
@@ -279,250 +227,9 @@ class SelectDirectoryResponse(BaseModel):
     project_path: str = ""
 
 
-class SessionSummary(BaseModel):
-    session_id: str
-    title: str
-    preview: str
-    updated_at: float
-    message_count: int = 0
-    source: SessionSource = "chat"
-    backend_id: BackendId = "yier"
-    project_path: str = ""
-    channel_meta: ChannelMetaPayload | None = None
-    codex_work_mode: CodexWorkMode | None = None
-
-
-class SessionListResponse(BaseModel):
-    sessions: list[SessionSummary] = Field(default_factory=list)
-
-
-class DeleteSessionResponse(BaseModel):
-    session_id: str
-    deleted: bool
-
-
-class StoredActivityEvent(BaseModel):
-    event: str
-    data: dict[str, Any] = Field(default_factory=dict)
-
-
-class ActivityHistoryPayload(BaseModel):
-    total_count: int = 0
-    returned_count: int = 0
-    next_before: int | None = None
-
-
-class MessageAttachmentPayload(BaseModel):
-    id: str | None = None
-    name: str = ""
-    mime_type: str = "application/octet-stream"
-    size: int | None = None
-    kind: CodexAttachmentKind = "binary"
-    preview_url: str | None = None
-    content_url: str | None = None
-    path: str | None = None
-
-
-class StoredSessionMessage(BaseModel):
-    role: Literal["system", "user", "assistant", "tool"]
-    content: str | None = None
-    reasoning_content: str | None = None
-    tool_call_id: str | None = None
-    sequence: int | None = None
-    source: SessionSource = "chat"
-    channel_meta: ChannelMetaPayload | None = None
-    attachments: list[MessageAttachmentPayload] = Field(default_factory=list)
-
-
-class CodexTurnTimingPayload(BaseModel):
-    turn_id: str = ""
-    turn_started_at_ms: int | None = None
-    final_assistant_started_at_ms: int | None = None
-
-
-class SessionTranscriptResponse(BaseModel):
-    session_id: str
-    source: SessionSource = "chat"
-    backend_id: BackendId = "yier"
-    project_path: str = ""
-    channel_meta: ChannelMetaPayload | None = None
-    codex_work_mode: CodexWorkMode | None = None
-    backend_runtime: BackendRuntimePayload | None = None
-    pending_requests: list[PendingRequest] = Field(default_factory=list)
-    pending_approvals: list[PendingApproval] = Field(default_factory=list)
-    messages: list[StoredSessionMessage] = Field(default_factory=list)
-    activity_events: list[StoredActivityEvent] = Field(default_factory=list)
-    activity_history: ActivityHistoryPayload = Field(
-        default_factory=ActivityHistoryPayload
-    )
-    codex_turn_timings: list[CodexTurnTimingPayload] = Field(default_factory=list)
-
-
-class SessionActivityPageResponse(BaseModel):
-    session_id: str
-    activity_events: list[StoredActivityEvent] = Field(default_factory=list)
-    activity_history: ActivityHistoryPayload = Field(
-        default_factory=ActivityHistoryPayload
-    )
-
-
-class CodexInputItem(BaseModel):
-    type: CodexInputItemType
-    text: str | None = None
-    url: str | None = None
-    path: str | None = None
-    name: str | None = None
-    text_elements: list[dict[str, Any]] = Field(default_factory=list)
-
-    @field_validator("text", "url", "path", "name")
-    @classmethod
-    def strip_optional_string(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        stripped = value.strip()
-        return stripped or None
-
-
-class AttachmentUploadResponse(BaseModel):
-    id: str
-    name: str
-    mime_type: str
-    size: int
-    kind: CodexAttachmentKind
-    preview_url: str | None = None
-    input_items: list[CodexInputItem] = Field(default_factory=list)
-
-
-class ChatStreamRequest(BaseModel):
-    session_id: str
-    message: str | None = None
-    input_items: list[CodexInputItem] = Field(default_factory=list)
-    attachment_ids: list[str] = Field(default_factory=list)
-
-    @field_validator("session_id")
-    @classmethod
-    def strip_session_id(cls, value: str) -> str:
-        return value.strip()
-
-    @field_validator("message")
-    @classmethod
-    def strip_message(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        stripped = value.strip()
-        return stripped or None
-
-    @field_validator("attachment_ids")
-    @classmethod
-    def strip_attachment_ids(cls, value: list[str]) -> list[str]:
-        return [item.strip() for item in value if item.strip()]
-
-    @model_validator(mode="after")
-    def validate_input(self) -> "ChatStreamRequest":
-        if self.message or self.input_items or self.attachment_ids:
-            return self
-        raise ValueError("message, input_items, or attachment_ids is required.")
-
-
-class CodexTurnControlRequest(BaseModel):
-    turn_id: str | None = None
-    message: str | None = None
-    input_items: list[CodexInputItem] = Field(default_factory=list)
-
-    @field_validator("turn_id", "message")
-    @classmethod
-    def strip_optional_fields(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        stripped = value.strip()
-        return stripped or None
-
-
-class CodexTurnControlResponse(BaseModel):
-    ok: bool = True
-    result: dict[str, Any] = Field(default_factory=dict)
-
-
-class ChannelWorkspaceResponse(BaseModel):
-    platforms: list[dict[str, Any]] = Field(default_factory=list)
-    accounts: list[dict[str, Any]] = Field(default_factory=list)
-
-
-class ChannelPlatformsResponse(BaseModel):
-    platforms: list[dict[str, Any]] = Field(default_factory=list)
-
-
-class ChannelAccountsResponse(BaseModel):
-    accounts: list[dict[str, Any]] = Field(default_factory=list)
-
-
-class ChannelConfigResponse(BaseModel):
-    enabled_platforms: list[str] = Field(default_factory=list)
-    weixin: dict[str, Any] = Field(default_factory=dict)
-
-
-class SaveChannelConfigRequest(BaseModel):
-    enabled_platforms: list[str] = Field(default_factory=list)
-    weixin: dict[str, Any] = Field(default_factory=dict)
-
-
-class ChannelLoginRequest(BaseModel):
-    account_id: str | None = None
-
-
-class ChannelAccountActionResponse(BaseModel):
-    account: dict[str, Any]
-
-
-class ApprovalResponseRequest(BaseModel):
-    request_id: str | int
-    decision: ApprovalDecision
-    content: dict[str, Any] | None = None
-
-
-class UpdateCodexSessionModeRequest(BaseModel):
-    codex_work_mode: CodexWorkMode
-
-
-class OpenCodexSessionRequest(BaseModel):
-    thread_id: str
-
-    @field_validator("thread_id")
-    @classmethod
-    def strip_thread_id(cls, value: str) -> str:
-        return value.strip()
-
-
-class OpenCodexSessionResponse(BaseModel):
-    session_id: str
-
-
-class ArchiveCodexSessionRequest(BaseModel):
-    thread_id: str
-
-    @field_validator("thread_id")
-    @classmethod
-    def strip_thread_id(cls, value: str) -> str:
-        return value.strip()
-
-
 class ArchiveCodexSessionResponse(BaseModel):
     thread_id: str
     archived: bool = True
-
-
-class CodexPairedEditorStateRequest(BaseModel):
-    session_id: str = ""
-    content: str = ""
-    selection_start: int = Field(default=0, ge=0)
-    selection_end: int = Field(default=0, ge=0)
-
-    @field_validator("session_id", mode="before")
-    @classmethod
-    def normalize_session_id(cls, value: Any) -> str:
-        if not isinstance(value, str):
-            return ""
-        return value.strip()
 
 
 class CodexNativeSessionSummary(BaseModel):

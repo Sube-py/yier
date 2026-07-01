@@ -17,8 +17,6 @@ from litestar.response import Response
 from litestar.status_codes import HTTP_404_NOT_FOUND
 
 from yier_web.auth import AuthService
-from yier_web.chat import ChatService
-from yier_web.channel_workspace import IntegratedChannelWorkspaceService
 from yier_web.config import AppConfigService
 from yier_web.codex.ipc_manager import CodexIpcManager
 from yier_web.directory_picker import LocalDirectoryPickerService
@@ -26,8 +24,6 @@ from yier_web.event_stream import EventStreamBroker
 from yier_web.frontend import FrontendService
 from yier_web.routes import (
     AuthController,
-    ChannelController,
-    ChatController,
     CodexController,
     ConfigController,
     EventsController,
@@ -40,8 +36,6 @@ from yier_web.routes.core import wait_for_event_stream_item
 @dataclass(slots=True)
 class AppServices:
     config_service: AppConfigService
-    chat_service: ChatService
-    channel_workspace_service: IntegratedChannelWorkspaceService
     codex_ipc_manager: CodexIpcManager
     event_broker: EventStreamBroker
     frontend_service: FrontendService
@@ -122,19 +116,8 @@ def build_services(
     resolved_root = (project_root or Path.cwd()).resolve()
     config_service = AppConfigService(project_root=resolved_root, home_dir=home_dir)
     event_broker = EventStreamBroker()
-    chat_service = ChatService(
-        project_root=resolved_root,
-        config_service=config_service,
-        event_broker=event_broker,
-    )
     return AppServices(
         config_service=config_service,
-        chat_service=chat_service,
-        channel_workspace_service=IntegratedChannelWorkspaceService(
-            project_root=resolved_root,
-            chat_service=chat_service,
-            event_broker=event_broker,
-        ),
         codex_ipc_manager=CodexIpcManager(
             config_service=config_service,
             event_broker=event_broker,
@@ -156,9 +139,7 @@ api_router = Router(
         HealthController,
         ConfigController,
         SystemController,
-        ChatController,
         CodexController,
-        ChannelController,
         EventsController,
     ],
 )
@@ -217,23 +198,17 @@ def create_app(
         install_shutdown_signal_bridge(shutdown_event)
         app.state.shutdown_event = shutdown_event
         app.state.config_service = app_services.config_service
-        app.state.chat_service = app_services.chat_service
-        app.state.channel_workspace_service = app_services.channel_workspace_service
         app.state.codex_ipc_manager = app_services.codex_ipc_manager
         app.state.event_broker = app_services.event_broker
         app.state.frontend_service = app_services.frontend_service
         app.state.directory_picker_service = app_services.directory_picker_service
         app.state.auth_service = app_services.auth_service
-        await app_services.chat_service.start()
-        await app_services.channel_workspace_service.start()
         await app_services.codex_ipc_manager.start()
         try:
             yield
         finally:
             shutdown_event.set()
             await app_services.codex_ipc_manager.stop()
-            await app_services.channel_workspace_service.stop()
-            await app_services.chat_service.stop()
 
     return Litestar(
         route_handlers=[api_router, frontend_entry, frontend_entry_websocket],

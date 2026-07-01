@@ -36,8 +36,8 @@ describe('CodexRequestPanel', () => {
     const wrapper = mount(CodexRequestPanel, { props: { request } })
 
     expect(wrapper.text()).toContain('Question 1 of 2')
-    expect(wrapper.text()).toContain('Mode')
-    expect(wrapper.text()).not.toContain('Scope')
+    expect(wrapper.text()).toContain('How should Codex proceed?')
+    expect(wrapper.text()).not.toContain('How broad should the change be?')
 
     await wrapper
       .findAll('button')
@@ -45,8 +45,8 @@ describe('CodexRequestPanel', () => {
       .trigger('click')
 
     expect(wrapper.text()).toContain('Question 2 of 2')
-    expect(wrapper.text()).toContain('Scope')
-    expect(wrapper.text()).not.toContain('Mode')
+    expect(wrapper.text()).toContain('How broad should the change be?')
+    expect(wrapper.text()).not.toContain('How should Codex proceed?')
 
     await wrapper
       .findAll('button')

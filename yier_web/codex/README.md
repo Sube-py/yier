@@ -8,7 +8,7 @@ This package contains the Codex-specific backend integration for the standalone
 - Build `codex_ipc.CodexIpcConfig` from stored yier Codex settings.
 - Keep one long-lived `CodexIpcSession` per active thread.
 - Fan out raw `ConversationState` updates to WebSocket subscribers.
-- Keep Codex separate from the Yier chat backend and agent tools.
+- Own the Codex-only backend surface for the web app.
 
 ## Main Files
 
@@ -18,11 +18,10 @@ This package contains the Codex-specific backend integration for the standalone
 ## Notes
 
 - HTTP and WebSocket routes live in `yier_web/routes/codex.py`.
-- Generic backend abstractions still live in `yier_web/agent_backends`.
 
 ## Iframe Embed
 
-The chat-only embed route is `/codex/embed?embed_token=...`. It reuses the Codex
+The Codex embed route is `/codex/embed?embed_token=...`. It reuses the Codex
 WebSocket and requires `YIER_CODEX_EMBED_TOKEN` for unauthenticated access.
 
 - New thread: parent sends `postMessage({ type: 'yier:codex-start', cwd, mode, prompt })`

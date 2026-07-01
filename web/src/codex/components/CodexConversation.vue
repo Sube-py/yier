@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 
-import { useTimelineMarkdown } from '../../composables/useTimelineMarkdown'
 import type { CodexConversationState, CodexTurnState, JsonRecord } from '../types'
 import { compactJson, formatTimestamp, isRecord, statusLabel, textFromInput } from '../lib/format'
+import { useCodexMarkdown } from '../lib/markdown'
 
 const props = defineProps<{
   state: CodexConversationState | null
@@ -80,7 +80,7 @@ const turnViews = computed<TurnView[]>(() =>
     }
   }),
 )
-const { renderMarkdown, onMarkdownClick } = useTimelineMarkdown()
+const { renderMarkdown, onMarkdownClick } = useCodexMarkdown()
 const conversationBody = ref<HTMLElement | null>(null)
 const shouldStickToBottom = ref(true)
 const expandedWorkByTurnKey = ref<Record<string, boolean>>({})

@@ -20,7 +20,6 @@ from litestar.testing import TestClient
 
 from yier_web.app import AppServices, create_app
 from yier_web.auth import AuthService
-from yier_web.channel_workspace import IntegratedChannelWorkspaceService
 from yier_web.codex.ipc_manager import CodexIpcManager
 from yier_web.config import AppConfigService
 from yier_web.event_stream import EventStreamBroker
@@ -255,25 +254,6 @@ class FakeSessionFactory:
         raise KeyError("workspace")
 
 
-class FakeChatService:
-    async def start(self) -> None:
-        return None
-
-    async def stop(self) -> None:
-        return None
-
-
-class FakeChannelWorkspaceService:
-    async def start(self) -> None:
-        return None
-
-    async def stop(self) -> None:
-        return None
-
-    async def get_workspace_snapshot(self):
-        return SimpleNamespace(platforms=[], accounts=[])
-
-
 class FakeDirectoryPickerService:
     def select_directory(self, initial_path: str | None = None) -> str | None:
         return None
@@ -317,8 +297,6 @@ def build_app(tmp_path: Path, factory: FakeSessionFactory) -> tuple[AppConfigSer
         home_dir=tmp_path / "home",
         services=AppServices(
             config_service=config_service,
-            chat_service=FakeChatService(),  # type: ignore[arg-type]
-            channel_workspace_service=FakeChannelWorkspaceService(),  # type: ignore[arg-type]
             codex_ipc_manager=manager,
             event_broker=EventStreamBroker(),
             frontend_service=frontend_service,

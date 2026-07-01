@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+    <defs>
+        <!-- 1. App底板阴影 -->
+        <filter id="bgShadow" x="-10%" y="-10%" width="120%" height="120%">
+            <feDropShadow dx="0" dy="12" stdDeviation="16" flood-color="#000000" flood-opacity="0.08"/>
+            <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000000" flood-opacity="0.04"/>
+        </filter>
+
+        <!-- 2. 云朵的深邃立体阴影 -->
+        <filter id="cloudDropShadow" x="-20%" y="-20%" width="140%" height="140%">
+            <feDropShadow dx="0" dy="16" stdDeviation="20" flood-color="#3143eb" flood-opacity="0.3"/>
+        </filter>
+
+        <!-- 3. 毛玻璃终端元素的内发光与投影 -->
+        <filter id="glassShadow" x="-20%" y="-20%" width="140%" height="140%">
+            <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#000000" flood-opacity="0.12"/>
+        </filter>
+
+        <!-- 4. 移动端角标的悬浮阴影 -->
+        <filter id="badgeShadow" x="-20%" y="-20%" width="140%" height="140%">
+            <feDropShadow dx="-4" dy="10" stdDeviation="14" flood-color="#000000" flood-opacity="0.2"/>
+        </filter>
+
+        <!-- 5. 还原 Codex 经典的紫蓝高光渐变 -->
+        <linearGradient id="cloudGrad" x1="10%" y1="10%" x2="90%" y2="90%">
+            <stop offset="0%" stop-color="#b993ff" />
+            <stop offset="45%" stop-color="#7366ff" />
+            <stop offset="100%" stop-color="#2c42ea" />
+        </linearGradient>
+
+        <!-- 6. 云朵顶部的高光 (提升3D凝胶质感) -->
+        <linearGradient id="rimLight" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#ffffff" stop-opacity="0.8"/>
+            <stop offset="50%" stop-color="#ffffff" stop-opacity="0.1"/>
+            <stop offset="100%" stop-color="#ffffff" stop-opacity="0.0"/>
+        </linearGradient>
+
+        <!-- 7. 移动端设备的毛玻璃材质 -->
+        <linearGradient id="phoneGlass" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#ffffff" stop-opacity="0.4" />
+            <stop offset="100%" stop-color="#ffffff" stop-opacity="0.05" />
+        </linearGradient>
+    </defs>
+
+    <!-- ================= 底板层 ================= -->
+    <rect x="36" y="36" width="440" height="440" rx="100" fill="#fdfdfd" filter="url(#bgShadow)" />
+
+    <!-- ================= 远程信号层 (新增: 强调远程连接，不干扰主体) ================= -->
+    <g fill="none" stroke="#e4e7fa" stroke-width="2" stroke-linecap="round">
+        <!-- 以云端为中心向外发射的连接网络 -->
+        <circle cx="256" cy="256" r="165" stroke-dasharray="8 16" />
+        <circle cx="256" cy="256" r="215" stroke-dasharray="12 24" stroke-opacity="0.6"/>
+    </g>
+
+    <!-- ================= 核心云朵层 (完全保留原汁原味) ================= -->
+    <g filter="url(#cloudDropShadow)">
+        <path d="M 220 140
+                 C 260 110, 310 120, 330 150
+                 C 380 140, 420 170, 410 230
+                 C 430 260, 420 320, 370 350
+                 C 380 400, 310 410, 260 380
+                 C 210 410, 150 390, 140 340
+                 C 90 330, 90 260, 130 220
+                 C 110 160, 170 130, 220 140 Z"
+              fill="url(#cloudGrad)" />
+        
+        <!-- 云朵边缘 3D 高光 -->
+        <path d="M 220 140 C 260 110, 310 120, 330 150 C 380 140, 420 170, 410 230 C 430 260, 420 320, 370 350 C 380 400, 310 410, 260 380 C 210 410, 150 390, 140 340 C 90 330, 90 260, 130 220 C 110 160, 170 130, 220 140 Z"
+              fill="none" stroke="url(#rimLight)" stroke-width="3" />
+    </g>
+
+    <!-- ================= 终端提示符层 (完全保留原汁原味) ================= -->
+    <g filter="url(#glassShadow)">
+        <!-- 终端箭头 ">" -->
+        <path d="M 175 215 L 215 255 L 175 295" fill="none" stroke="#ffffff" stroke-opacity="0.95" stroke-width="22" stroke-linecap="round" stroke-linejoin="round"/>
+        <!-- 终端下划线 "_" -->
+        <line x1="250" y1="295" x2="315" y2="295" stroke="#ffffff" stroke-opacity="0.95" stroke-width="22" stroke-linecap="round"/>
+    </g>
+
+    <!-- ================= 移动端角标层 (新增: 突出移动端支持) ================= -->
+    <!-- 放置在右下角，带有略微的倾斜和毛玻璃叠加质感 -->
+    <g transform="translate(375, 360) rotate(-12)" filter="url(#badgeShadow)">
+        <!-- 手机外壳 (毛玻璃) -->
+        <rect x="-35" y="-65" width="70" height="130" rx="16" fill="url(#phoneGlass)" />
+        <rect x="-35" y="-65" width="70" height="130" rx="16" fill="none" stroke="#ffffff" stroke-opacity="0.95" stroke-width="4"/>
+        
+        <!-- 手机屏幕内嵌阴影 -->
+        <rect x="-27" y="-57" width="54" height="114" rx="8" fill="#ffffff" fill-opacity="0.15"/>
+
+        <!-- 手机顶部听筒细节 -->
+        <line x1="-10" y1="-48" x2="10" y2="-48" stroke="#ffffff" stroke-width="3" stroke-linecap="round"/>
+
+        <!-- 屏幕内的远程无线符号 (呼应终端风格) -->
+        <path d="M -16 6 A 24 24 0 0 1 16 6" fill="none" stroke="#ffffff" stroke-opacity="0.95" stroke-width="4" stroke-linecap="round"/>
+        <path d="M -8 16 A 12 12 0 0 1 8 16" fill="none" stroke="#ffffff" stroke-opacity="0.95" stroke-width="4" stroke-linecap="round"/>
+        <circle cx="0" cy="26" r="4" fill="#ffffff" fill-opacity="0.95"/>
+    </g>
+
+</svg>

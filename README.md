@@ -1,6 +1,10 @@
+<p align="center">
+  <img src="web/public/brand/yier-logo.svg" alt="Yier" width="520">
+</p>
+
 # yier
 
-Local-first chat workspace with a Python backend and a Vue frontend.
+Remote-friendly Codex web workspace for continuing sessions from desktop and mobile browsers.
 
 ## Resume
 [一二Resume](https://baike.baidu.com/item/%E4%B8%80%E4%BA%8C/23434669)

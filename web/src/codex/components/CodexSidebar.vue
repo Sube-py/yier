@@ -297,13 +297,20 @@ async function copyThreadId(threadId: string) {
 <template>
   <aside class="flex min-h-0 flex-col border-r border-[color:var(--app-border)] bg-[rgba(255,253,247,0.82)]">
     <header class="flex items-center justify-between gap-3 border-b border-[color:var(--app-border)] px-4 py-3">
-      <div class="min-w-0">
-        <h1 class="m-0 truncate text-base font-semibold text-[color:var(--app-text)]">
-          Threads
-        </h1>
-        <p class="m-0 mt-0.5 truncate text-[0.72rem] text-[color:var(--app-text-soft)]">
-          Projects
-        </p>
+      <div class="flex min-w-0 items-center gap-3">
+        <img
+          src="/brand/yier-icon.svg"
+          alt=""
+          class="h-9 w-9 shrink-0 rounded-xl"
+        >
+        <div class="min-w-0">
+          <h1 class="m-0 truncate text-base font-semibold text-[color:var(--app-text)]">
+            Yier
+          </h1>
+          <p class="m-0 mt-0.5 truncate text-[0.72rem] text-[color:var(--app-text-soft)]">
+            Codex anywhere
+          </p>
+        </div>
       </div>
       <Button
         icon="pi pi-folder-plus"

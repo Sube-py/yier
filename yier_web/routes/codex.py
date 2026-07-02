@@ -28,6 +28,7 @@ from yier_web.schemas import (
     CodexFilesystemEntry,
     CodexFilesystemEntryKind,
     CodexFilesystemResponse,
+    CodexRemoteConnectionChatGptLoginResponse,
     CodexRemoteConnectionPayload,
     CodexRemoteConnectionApiKeyLoginPayload,
     CodexRemoteConnectionResponse,
@@ -272,6 +273,23 @@ class CodexController(Controller):
             connection_id,
             data.api_key,
         )
+
+    @post("/remote-connections/{connection_id:str}/login-chatgpt")
+    async def login_remote_chatgpt(
+        self,
+        connection_id: str,
+        state: State,
+    ) -> CodexRemoteConnectionChatGptLoginResponse:
+        return await _codex_manager(state).start_remote_chatgpt_login(connection_id)
+
+    @post("/remote-connections/{connection_id:str}/login-chatgpt/stop")
+    async def stop_remote_chatgpt_login(
+        self,
+        connection_id: str,
+        state: State,
+    ) -> dict[str, bool]:
+        await _codex_manager(state).stop_remote_chatgpt_login(connection_id)
+        return {"ok": True}
 
     @post("/remote-connections/{connection_id:str}/test")
     async def test_remote_connection(

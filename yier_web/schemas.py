@@ -156,6 +156,13 @@ class CodexRemoteConnectionApiKeyLoginPayload(BaseModel):
         return stripped
 
 
+class CodexRemoteConnectionChatGptLoginResponse(BaseModel):
+    ok: bool
+    auth_url: str = ""
+    login_id: str = ""
+    detail: str = ""
+
+
 class CodexRemoteConnectionResponse(BaseModel):
     connection: CodexRemoteConnection
 

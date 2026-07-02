@@ -1048,6 +1048,109 @@ def test_codex_remote_connection_api_key_login_uses_remote_app_server(
     asyncio.run(scenario())
 
 
+def test_codex_remote_chatgpt_login_starts_port_forward(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        factory = FakeSessionFactory()
+        config_service = AppConfigService(
+            project_root=tmp_path / "project",
+            home_dir=tmp_path / "home",
+        )
+        connection = config_service.save_codex_remote_connection(
+            CodexRemoteConnectionPayload(
+                display_name="Build host",
+                ssh_host="builder.example.com",
+                ssh_port=2222,
+                auto_connect=False,
+            )
+        )
+        manager = CodexIpcManager(
+            config_service=config_service,
+            event_broker=EventStreamBroker(),
+            session_factory=factory,
+        )
+        client_calls: list[tuple[str, Any]] = []
+        subprocess_calls: list[tuple[str, ...]] = []
+
+        class FakeLoginResponse:
+            root = SimpleNamespace(
+                type="chatgpt",
+                auth_url="https://chatgpt.com/login",
+                login_id="login-1",
+            )
+
+        class FakeAsyncAppServerClient:
+            def __init__(self, *, config: Any) -> None:
+                client_calls.append(("config", config))
+
+            async def __aenter__(self) -> "FakeAsyncAppServerClient":
+                return self
+
+            async def __aexit__(self, _exc_type: Any, _exc: Any, _tb: Any) -> None:
+                return None
+
+            async def initialize(self) -> None:
+                client_calls.append(("initialize", None))
+
+            async def request(
+                self,
+                method: str,
+                params: dict[str, Any],
+                *,
+                response_model: Any,
+            ) -> FakeLoginResponse:
+                client_calls.append((method, params))
+                return FakeLoginResponse()
+
+        class FakeProcess:
+            returncode = None
+            stderr = None
+
+            def terminate(self) -> None:
+                self.returncode = -15
+
+            def kill(self) -> None:
+                self.returncode = -9
+
+            async def wait(self) -> None:
+                if self.returncode is not None:
+                    return None
+                await asyncio.sleep(10)
+
+        async def fake_create_subprocess_exec(*args: str, **_kwargs: Any) -> FakeProcess:
+            subprocess_calls.append(args)
+            return FakeProcess()
+
+        monkeypatch.setattr(
+            "yier_web.codex.ipc_manager.AsyncAppServerClient",
+            FakeAsyncAppServerClient,
+        )
+        monkeypatch.setattr(
+            "yier_web.codex.ipc_manager.asyncio.create_subprocess_exec",
+            fake_create_subprocess_exec,
+        )
+
+        result = await manager.start_remote_chatgpt_login(connection.id)
+
+        assert result.ok is True
+        assert result.auth_url == "https://chatgpt.com/login"
+        assert ("account/login/start", {"type": "chatgpt", "codexStreamlinedLogin": True}) in client_calls
+        assert subprocess_calls
+        args = subprocess_calls[0]
+        assert "-N" in args
+        assert "-L" in args
+        assert "1455:127.0.0.1:1455" in args
+        assert "ExitOnForwardFailure=yes" in args
+        statuses = manager.remote_connections().statuses
+        assert statuses[connection.id].status == "connecting"
+
+        await manager.stop_remote_chatgpt_login(connection.id)
+
+    asyncio.run(scenario())
+
+
 def test_codex_controller_lists_host_filesystem(tmp_path: Path) -> None:
     factory = FakeSessionFactory()
     _, client = build_app(tmp_path, factory)

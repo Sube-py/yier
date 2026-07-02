@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import logging
 from pathlib import Path
 import shlex
+import uuid
 from typing import Any, Callable
 
 from codex_ipc import (
@@ -30,6 +31,7 @@ from codex_app_server.generated.v2_all import (
     Thread,
     ThreadListResponse,
     ThreadStatus,
+    LoginAccountResponse,
 )
 from yier_web.config import AppConfigService
 from yier_web.event_stream import EventStreamBroker
@@ -37,6 +39,7 @@ from yier_web.schemas import (
     CodexNativeSessionSummary,
     CodexProjectGroup,
     CodexRemoteConnection,
+    CodexRemoteConnectionChatGptLoginResponse,
     CodexRemoteConnectionStatus,
     CodexRemoteConnectionTestResponse,
     CodexRemoteConnectionsResponse,
@@ -141,6 +144,7 @@ class CodexIpcManager:
         self._subscribers: dict[str, set[CodexSubscriberQueue]] = {}
         self._workspace_session: CodexIpcSession | None = None
         self._remote_connection_statuses: dict[str, CodexRemoteConnectionStatus] = {}
+        self._remote_login_forwards: dict[str, asyncio.subprocess.Process] = {}
         self._lock = asyncio.Lock()
         self._started = False
 
@@ -161,6 +165,7 @@ class CodexIpcManager:
         if self._workspace_session is not None:
             await self._workspace_session.stop()
             self._workspace_session = None
+        await self._stop_all_remote_login_forwards()
 
     async def workspace(self) -> CodexWorkspaceResponse:
         settings = self.config_service.load_web_settings().codex
@@ -199,6 +204,7 @@ class CodexIpcManager:
         )
         self.config_service.set_active_codex_remote_connection(connection_id)
         if previous_active_id and previous_active_id != connection_id:
+            await self.stop_remote_chatgpt_login(previous_active_id)
             self._set_remote_connection_status(
                 previous_active_id,
                 "disconnected",
@@ -211,6 +217,7 @@ class CodexIpcManager:
     async def restart_remote_connection(self, connection_id: str) -> None:
         if self._remote_connection_by_id(connection_id) is None:
             raise ValueError("Remote connection not found.")
+        await self.stop_remote_chatgpt_login(connection_id)
         self.config_service.set_active_codex_remote_connection(connection_id)
         self._set_remote_connection_status(
             connection_id,
@@ -268,6 +275,69 @@ class CodexIpcManager:
             ok=ok,
             detail=detail or ("Codex installed." if ok else "Codex install failed."),
         )
+
+    async def start_remote_chatgpt_login(
+        self,
+        connection_id: str,
+    ) -> CodexRemoteConnectionChatGptLoginResponse:
+        connection = self._remote_connection_by_id(connection_id)
+        if connection is None:
+            raise ValueError("Remote connection not found.")
+        self._set_remote_connection_status(
+            connection_id,
+            "connecting",
+            "Starting ChatGPT login",
+        )
+        login_id = uuid.uuid4().hex
+        try:
+            async with AsyncAppServerClient(
+                config=self._remote_app_server_config(connection)
+            ) as client:
+                await client.initialize()
+                response = await client.request(
+                    "account/login/start",
+                    {
+                        "type": "chatgpt",
+                        "codexStreamlinedLogin": True,
+                    },
+                    response_model=LoginAccountResponse,
+                )
+        except Exception as exc:
+            detail = _compact_text(exc, limit=180) or exc.__class__.__name__
+            self._set_remote_connection_status(connection_id, "error", detail)
+            return CodexRemoteConnectionChatGptLoginResponse(ok=False, detail=detail)
+        if response.root.type != "chatgpt":
+            detail = f"Unexpected login response type: {response.root.type}."
+            self._set_remote_connection_status(connection_id, "error", detail)
+            return CodexRemoteConnectionChatGptLoginResponse(ok=False, detail=detail)
+        login_id = response.root.login_id
+        try:
+            await self._start_remote_chatgpt_login_forward(connection, connection_id)
+        except Exception as exc:
+            detail = _compact_text(exc, limit=180) or exc.__class__.__name__
+            self._set_remote_connection_status(connection_id, "error", detail)
+            return CodexRemoteConnectionChatGptLoginResponse(ok=False, detail=detail)
+        self._set_remote_connection_status(
+            connection_id,
+            "connecting",
+            "Waiting for ChatGPT login",
+        )
+        return CodexRemoteConnectionChatGptLoginResponse(
+            ok=True,
+            auth_url=response.root.auth_url,
+            login_id=login_id,
+        )
+
+    async def stop_remote_chatgpt_login(self, connection_id: str) -> None:
+        process = self._remote_login_forwards.pop(connection_id, None)
+        if process is None:
+            return
+        process.terminate()
+        try:
+            await asyncio.wait_for(process.wait(), timeout=2)
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.wait()
 
     async def login_remote_api_key(
         self,
@@ -842,10 +912,15 @@ class CodexIpcManager:
             detail=detail,
         )
 
-    def _ssh_base_args(self, connection: CodexRemoteConnection) -> tuple[str, ...]:
+    def _ssh_base_args(
+        self,
+        connection: CodexRemoteConnection,
+        *,
+        use_tty: bool = False,
+    ) -> tuple[str, ...]:
         args = [
             "ssh",
-            "-T",
+            "-tt" if use_tty else "-T",
             "-v",
             "-o",
             "BatchMode=yes",
@@ -867,6 +942,38 @@ class CodexIpcManager:
     def _remote_login_shell_command(self, script: str) -> str:
         path_prefix = 'PATH="${CODEX_INSTALL_DIR:-$HOME/.local/bin}:$PATH"; export PATH; '
         return f'exec "${{SHELL:-sh}}" -l -i -c {shlex.quote(path_prefix + script)}'
+
+    async def _start_remote_chatgpt_login_forward(
+        self,
+        connection: CodexRemoteConnection,
+        connection_id: str,
+    ) -> None:
+        await self.stop_remote_chatgpt_login(connection_id)
+        process = await asyncio.create_subprocess_exec(
+            *self._ssh_base_args(connection, use_tty=False),
+            "-N",
+            "-L",
+            "1455:127.0.0.1:1455",
+            "-o",
+            "ExitOnForwardFailure=yes",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            await asyncio.wait_for(process.wait(), timeout=0.4)
+        except asyncio.TimeoutError:
+            self._remote_login_forwards[connection_id] = process
+            return
+        stderr = b""
+        if process.stderr is not None:
+            with contextlib.suppress(Exception):
+                stderr = await process.stderr.read()
+        detail = stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(detail or f"SSH port forward exited with {process.returncode}.")
+
+    async def _stop_all_remote_login_forwards(self) -> None:
+        for connection_id in list(self._remote_login_forwards):
+            await self.stop_remote_chatgpt_login(connection_id)
 
     def _thread_start_params(self, *, project_path: str | None) -> JsonDict:
         settings = self.config_service.load_web_settings().codex

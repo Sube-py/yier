@@ -7,6 +7,7 @@ import InputText from 'primevue/inputtext'
 import { apiPost, apiPut } from '../../lib/api'
 import type {
   CodexRemoteConnection,
+  CodexRemoteConnectionChatGptLoginResponse,
   CodexRemoteConnectionPayload,
   CodexRemoteConnectionResponse,
   CodexRemoteConnectionTestResponse,
@@ -26,6 +27,7 @@ const remoteDialogVisible = ref(false)
 const remoteError = ref('')
 const remoteTestingId = ref('')
 const remoteInstallingId = ref('')
+const remoteChatGptLoginId = ref('')
 const remoteSaving = ref(false)
 const remoteEditingId = ref('')
 const remoteDraft = ref<CodexRemoteConnectionPayload>(emptyRemoteDraft())
@@ -263,6 +265,30 @@ async function loginRemoteApiKey() {
   }
 }
 
+async function loginRemoteChatGpt(connection: CodexRemoteConnection) {
+  remoteChatGptLoginId.value = connection.id
+  remoteError.value = ''
+  try {
+    const result = await apiPost<CodexRemoteConnectionChatGptLoginResponse>(
+      `/api/codex/remote-connections/${encodeURIComponent(connection.id)}/login-chatgpt`,
+      {},
+    )
+    if (!result.ok) {
+      remoteError.value = result.detail
+      return
+    }
+    if (result.auth_url) {
+      window.open(result.auth_url, '_blank', 'noopener,noreferrer')
+    }
+    remoteError.value = 'Complete ChatGPT login in the browser.'
+    emit('remoteConnectionChanged')
+  } catch (error) {
+    remoteError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    remoteChatGptLoginId.value = ''
+  }
+}
+
 async function deleteRemoteConnection(connection: CodexRemoteConnection) {
   remoteError.value = ''
   try {
@@ -381,6 +407,19 @@ async function deleteRemoteConnection(connection: CodexRemoteConnection) {
             data-codex-login-api-key-remote
             :disabled="busy"
             @click.stop="openApiKeyDialog(connection)"
+          />
+          <Button
+            icon="pi pi-sign-in"
+            severity="secondary"
+            text
+            rounded
+            size="small"
+            class="!h-6 !w-6 !min-w-6 !p-0 !text-[0.68rem]"
+            aria-label="Sign in with ChatGPT"
+            data-codex-login-chatgpt-remote
+            :loading="remoteChatGptLoginId === connection.id"
+            :disabled="busy"
+            @click.stop="loginRemoteChatGpt(connection)"
           />
           <Button
             icon="pi pi-verified"

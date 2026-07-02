@@ -129,6 +129,7 @@ function mountSidebar(props: Partial<InstanceType<typeof CodexSidebar>['$props']
 
 describe('CodexSidebar', () => {
   beforeEach(() => {
+    vi.restoreAllMocks()
     localStorage.clear()
     apiPostMock.mockReset()
     apiPutMock.mockReset()
@@ -214,7 +215,14 @@ describe('CodexSidebar', () => {
       .mockResolvedValueOnce({ ok: true })
       .mockResolvedValueOnce({ ok: true, detail: 'installed' })
       .mockResolvedValueOnce({ ok: true, detail: 'Signed in with apiKey.' })
+      .mockResolvedValueOnce({
+        ok: true,
+        auth_url: 'https://chatgpt.com/login',
+        login_id: 'login-1',
+        detail: '',
+      })
       .mockResolvedValueOnce({ ok: true })
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
 
     const wrapper = mountSidebar({
       workspace: {
@@ -291,9 +299,21 @@ describe('CodexSidebar', () => {
       { apiKey: 'sk-test' },
     )
 
-    await wrapper.get('[data-codex-remote-row] button').trigger('click')
+    await wrapper.get('[data-codex-login-chatgpt-remote]').trigger('click')
     expect(apiPostMock).toHaveBeenNthCalledWith(
       6,
+      '/api/codex/remote-connections/remote-1/login-chatgpt',
+      {},
+    )
+    expect(openSpy).toHaveBeenCalledWith(
+      'https://chatgpt.com/login',
+      '_blank',
+      'noopener,noreferrer',
+    )
+
+    await wrapper.get('[data-codex-remote-row] button').trigger('click')
+    expect(apiPostMock).toHaveBeenNthCalledWith(
+      7,
       '/api/codex/remote-connections/remote-1/activate',
       {},
     )

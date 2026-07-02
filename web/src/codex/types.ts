@@ -83,6 +83,13 @@ export interface CodexRemoteConnectionTestResponse {
   detail: string
 }
 
+export interface CodexRemoteConnectionChatGptLoginResponse {
+  ok: boolean
+  auth_url: string
+  login_id: string
+  detail: string
+}
+
 export type CodexFilesystemEntryKind = 'directory' | 'file' | 'other'
 
 export interface CodexFilesystemEntry {

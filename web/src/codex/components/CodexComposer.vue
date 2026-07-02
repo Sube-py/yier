@@ -6,12 +6,16 @@ import type {
   CodexConversationState,
   CodexPromptSubmission,
   CodexQueuedFollowup,
+  CodexRemoteConnection,
+  CodexRemoteConnectionsResponse,
   CodexThreadGoal,
   CodexThreadGoalStatus,
   CodexWorkMode,
+  CodexWorkspaceResponse,
   JsonRecord,
 } from '../types'
 import { isRecord } from '../lib/format'
+import { apiPost } from '../../lib/api'
 
 const draft = defineModel<string>({ required: true })
 
@@ -22,6 +26,7 @@ const props = defineProps<{
   mode: CodexWorkMode
   queuedFollowups: CodexQueuedFollowup[]
   state: CodexConversationState | null
+  workspace?: CodexWorkspaceResponse | null
 }>()
 
 const emit = defineEmits<{
@@ -34,6 +39,7 @@ const emit = defineEmits<{
   setThreadGoal: [objective: string, tokenBudget?: number | null]
   updateThreadGoalStatus: [status: CodexThreadGoalStatus]
   clearThreadGoal: []
+  remoteConnectionChanged: []
 }>()
 
 const baseModelOptions = ['gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.2']
@@ -42,6 +48,9 @@ const selectedModel = ref('')
 const selectedReasoningEffort = ref('')
 const goalObjectiveDraft = ref('')
 const goalTokenBudgetDraft = ref('')
+const remoteMenuOpen = ref(false)
+const remoteSwitchingId = ref<string | null>(null)
+const remoteSwitchError = ref('')
 
 const latestModel = computed(() => props.state?.latestModel?.trim() || 'gpt-5.4')
 const latestReasoningEffort = computed(() => props.state?.latestReasoningEffort?.trim() || 'medium')
@@ -102,6 +111,15 @@ const goalDetail = computed(() => goalProgressText(threadGoal.value))
 const canResumeGoal = computed(() =>
   ['paused', 'blocked', 'usageLimited'].includes(goalStatus.value),
 )
+const remoteConnections = computed(() => props.workspace?.remote_connections ?? [])
+const activeRemoteConnectionId = computed(() => props.workspace?.active_remote_connection_id ?? '')
+const activeRemoteConnection = computed(() =>
+  remoteConnections.value.find((connection) => connection.id === activeRemoteConnectionId.value),
+)
+const activeRunLocationLabel = computed(() =>
+  activeRemoteConnection.value ? remoteTitle(activeRemoteConnection.value) : 'Local',
+)
+const showRunLocationPicker = computed(() => remoteConnections.value.length > 0)
 
 watch(
   () => props.state?.id,
@@ -167,6 +185,26 @@ function submitPrimary() {
   sendSubmission()
 }
 
+async function activateRunLocation(connectionId: string) {
+  if (props.busy || props.disabled || remoteSwitchingId.value !== null) {
+    return
+  }
+  remoteSwitchError.value = ''
+  remoteSwitchingId.value = connectionId || 'local'
+  try {
+    const path = connectionId
+      ? `/api/codex/remote-connections/${encodeURIComponent(connectionId)}/activate`
+      : '/api/codex/remote-connections/activate-local'
+    await apiPost<CodexRemoteConnectionsResponse>(path, {})
+    remoteMenuOpen.value = false
+    emit('remoteConnectionChanged')
+  } catch (error) {
+    remoteSwitchError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    remoteSwitchingId.value = null
+  }
+}
+
 function onKeydown(event: KeyboardEvent) {
   if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
     submitPrimary()
@@ -192,6 +230,16 @@ function steerFollowup(followup: CodexQueuedFollowup, index: number) {
   }
   emit('steerPrompt', prompt)
   emit('removeFollowup', followupId(followup, index))
+}
+
+function remoteTitle(connection: CodexRemoteConnection) {
+  return connection.display_name || connection.ssh_alias || connection.ssh_host
+}
+
+function remoteSubtitle(connection: CodexRemoteConnection) {
+  const target = connection.ssh_alias || connection.ssh_host
+  const port = connection.ssh_port ? `:${connection.ssh_port}` : ''
+  return `${target}${port}`
 }
 
 function optionItems(values: string[]) {
@@ -515,6 +563,70 @@ function goalProgressText(goal: CodexThreadGoal | null) {
             class="hide-scrollbar flex min-w-0 flex-wrap items-center gap-1.5 max-sm:flex-nowrap max-sm:overflow-x-auto max-sm:overscroll-x-contain max-sm:pb-0.5"
             data-codex-composer-controls
           >
+            <div
+              v-if="showRunLocationPicker"
+              class="relative shrink-0"
+              data-codex-run-location-picker
+            >
+              <button
+                type="button"
+                class="inline-flex h-8 max-w-48 items-center gap-1.5 rounded-lg border border-[color:var(--app-border)] bg-white px-2 text-sm font-semibold text-[color:var(--app-text)] transition hover:bg-[rgba(21,94,99,0.05)] disabled:cursor-not-allowed disabled:opacity-45 max-sm:max-w-36"
+                :disabled="busy || disabled || remoteSwitchingId !== null"
+                aria-label="Select where to run the task"
+                :aria-expanded="remoteMenuOpen"
+                data-codex-run-location-trigger
+                @click="remoteMenuOpen = !remoteMenuOpen"
+              >
+                <i :class="activeRemoteConnection ? 'pi pi-server' : 'pi pi-desktop'" class="text-[0.7rem]"></i>
+                <span class="min-w-0 truncate">{{ activeRunLocationLabel }}</span>
+                <i class="pi pi-chevron-down text-[0.55rem] text-[color:var(--app-text-soft)]"></i>
+              </button>
+              <div
+                v-if="remoteMenuOpen"
+                class="absolute bottom-full left-0 z-30 mb-1 grid w-72 max-w-[calc(100vw-2rem)] gap-1 rounded-lg border border-[color:var(--app-border)] bg-white p-1.5 shadow-xl"
+                data-codex-run-location-menu
+              >
+                <button
+                  type="button"
+                  class="grid grid-cols-[1rem_minmax(0,1fr)_1rem] items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition hover:bg-[rgba(21,94,99,0.06)] disabled:cursor-wait disabled:opacity-60"
+                  :class="!activeRemoteConnectionId ? 'font-semibold text-[color:var(--app-text)]' : 'text-[color:var(--app-text-soft)]'"
+                  :disabled="remoteSwitchingId !== null"
+                  data-codex-run-location-local
+                  @click="activateRunLocation('')"
+                >
+                  <i class="pi pi-desktop text-[0.68rem]"></i>
+                  <span class="truncate">Work locally</span>
+                  <i v-if="!activeRemoteConnectionId" class="pi pi-check text-[0.68rem] text-[color:var(--app-accent)]"></i>
+                </button>
+                <button
+                  v-for="connection in remoteConnections"
+                  :key="connection.id"
+                  type="button"
+                  class="grid grid-cols-[1rem_minmax(0,1fr)_1rem] items-center gap-2 rounded-md px-2 py-1.5 text-left transition hover:bg-[rgba(21,94,99,0.06)] disabled:cursor-wait disabled:opacity-60"
+                  :class="connection.id === activeRemoteConnectionId ? 'font-semibold text-[color:var(--app-text)]' : 'text-[color:var(--app-text-soft)]'"
+                  :disabled="remoteSwitchingId !== null"
+                  data-codex-run-location-remote
+                  @click="activateRunLocation(connection.id)"
+                >
+                  <i class="pi pi-server text-[0.68rem]"></i>
+                  <span class="min-w-0">
+                    <span class="block truncate text-sm">{{ remoteTitle(connection) }}</span>
+                    <span class="block truncate text-[0.68rem] font-normal text-[color:var(--app-text-soft)]">
+                      {{ remoteSubtitle(connection) }}
+                    </span>
+                  </span>
+                  <i v-if="connection.id === activeRemoteConnectionId" class="pi pi-check text-[0.68rem] text-[color:var(--app-accent)]"></i>
+                </button>
+                <p
+                  v-if="remoteSwitchError"
+                  class="m-0 line-clamp-2 px-2 py-1 text-[0.68rem] text-red-700"
+                  data-codex-run-location-error
+                >
+                  {{ remoteSwitchError }}
+                </p>
+              </div>
+            </div>
+
             <div
               class="grid w-[7.25rem] shrink-0 grid-cols-2 rounded-lg border border-[color:var(--app-border)] bg-[rgba(255,253,247,0.86)] p-0.5"
               data-codex-mode-switch

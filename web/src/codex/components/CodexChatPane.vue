@@ -13,6 +13,7 @@ import type {
   CodexSocketStatus,
   CodexThreadGoalStatus,
   CodexWorkMode,
+  CodexWorkspaceResponse,
   JsonRecord,
 } from '../types'
 
@@ -25,6 +26,7 @@ defineProps<{
   activeStatus: string
   activeMode: CodexWorkMode
   queuedFollowups: CodexQueuedFollowup[]
+  workspace?: CodexWorkspaceResponse | null
   socketStatus: CodexSocketStatus
   errorMessage?: string
   successMessage?: string
@@ -52,6 +54,7 @@ const emit = defineEmits<{
   steerPrompt: [prompt: string]
   enqueueFollowup: [prompt: string]
   removeFollowup: [messageId: string]
+  remoteConnectionChanged: []
 }>()
 
 function submitUserInputResponse(requestId: string, response: JsonRecord) {
@@ -117,6 +120,7 @@ function submitUserInputResponse(requestId: string, response: JsonRecord) {
       :mode="activeMode"
       :queued-followups="queuedFollowups"
       :state="activeThreadState"
+      :workspace="workspace"
       @send-prompt="emit('sendPrompt', $event)"
       @steer-prompt="emit('steerPrompt', $event)"
       @enqueue-followup="emit('enqueueFollowup', $event)"
@@ -126,6 +130,7 @@ function submitUserInputResponse(requestId: string, response: JsonRecord) {
       @set-thread-goal="(objective, tokenBudget) => emit('setThreadGoal', objective, tokenBudget)"
       @update-thread-goal-status="emit('updateThreadGoalStatus', $event)"
       @clear-thread-goal="emit('clearThreadGoal')"
+      @remote-connection-changed="emit('remoteConnectionChanged')"
     />
   </section>
 </template>

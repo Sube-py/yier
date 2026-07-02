@@ -102,6 +102,7 @@ function startMobileThread(projectPath: string) {
           :active-status="codex.activeStatus"
           :active-mode="codex.activeMode"
           :queued-followups="codex.queuedFollowups"
+          :workspace="codex.workspace"
           :socket-status="codex.status"
           :error-message="codex.errorMessage"
           :success-message="codex.successMessage"
@@ -123,6 +124,7 @@ function startMobileThread(projectPath: string) {
           @steer-prompt="codex.steerPrompt"
           @enqueue-followup="codex.enqueueFollowup"
           @remove-followup="codex.removeFollowup"
+          @remote-connection-changed="codex.refreshWorkspace"
         />
       </div>
     </main>

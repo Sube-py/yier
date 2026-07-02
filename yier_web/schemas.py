@@ -144,6 +144,18 @@ class CodexRemoteConnectionPayload(BaseModel):
         return value.strip()
 
 
+class CodexRemoteConnectionApiKeyLoginPayload(BaseModel):
+    api_key: str = Field(alias="apiKey")
+
+    @field_validator("api_key")
+    @classmethod
+    def strip_api_key(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("apiKey is required.")
+        return stripped
+
+
 class CodexRemoteConnectionResponse(BaseModel):
     connection: CodexRemoteConnection
 

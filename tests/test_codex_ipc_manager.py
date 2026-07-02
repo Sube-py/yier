@@ -984,6 +984,70 @@ def test_codex_remote_connection_install_uses_official_installer(
     asyncio.run(scenario())
 
 
+def test_codex_remote_connection_api_key_login_uses_remote_app_server(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        factory = FakeSessionFactory()
+        config_service = AppConfigService(
+            project_root=tmp_path / "project",
+            home_dir=tmp_path / "home",
+        )
+        connection = config_service.save_codex_remote_connection(
+            CodexRemoteConnectionPayload(
+                display_name="Build host",
+                ssh_host="builder.example.com",
+                auto_connect=False,
+            )
+        )
+        manager = CodexIpcManager(
+            config_service=config_service,
+            event_broker=EventStreamBroker(),
+            session_factory=factory,
+        )
+        calls: list[tuple[str, Any]] = []
+
+        class FakeAsyncAppServerClient:
+            def __init__(self, *, config: Any) -> None:
+                calls.append(("config", config))
+
+            async def __aenter__(self) -> "FakeAsyncAppServerClient":
+                calls.append(("enter", None))
+                return self
+
+            async def __aexit__(self, _exc_type: Any, _exc: Any, _tb: Any) -> None:
+                calls.append(("exit", None))
+
+            async def initialize(self) -> None:
+                calls.append(("initialize", None))
+
+            async def account_login_api_key(self, api_key: str) -> None:
+                calls.append(("login", api_key))
+
+            async def account_read(self, *, refresh_token: bool) -> SimpleNamespace:
+                calls.append(("read", refresh_token))
+                return SimpleNamespace(
+                    account=SimpleNamespace(root=SimpleNamespace(type="apiKey"))
+                )
+
+        monkeypatch.setattr(
+            "yier_web.codex.ipc_manager.AsyncAppServerClient",
+            FakeAsyncAppServerClient,
+        )
+
+        result = await manager.login_remote_api_key(connection.id, "sk-test")
+
+        assert result.ok is True
+        assert result.detail == "Signed in with apiKey."
+        assert ("login", "sk-test") in calls
+        assert ("read", False) in calls
+        statuses = manager.remote_connections().statuses
+        assert statuses[connection.id].status == "connected"
+
+    asyncio.run(scenario())
+
+
 def test_codex_controller_lists_host_filesystem(tmp_path: Path) -> None:
     factory = FakeSessionFactory()
     _, client = build_app(tmp_path, factory)

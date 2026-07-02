@@ -213,6 +213,7 @@ describe('CodexSidebar', () => {
       .mockResolvedValueOnce({ ok: true, detail: 'codex 1.2.3' })
       .mockResolvedValueOnce({ ok: true })
       .mockResolvedValueOnce({ ok: true, detail: 'installed' })
+      .mockResolvedValueOnce({ ok: true, detail: 'Signed in with apiKey.' })
       .mockResolvedValueOnce({ ok: true })
 
     const wrapper = mountSidebar({
@@ -281,9 +282,18 @@ describe('CodexSidebar', () => {
       {},
     )
 
-    await wrapper.get('[data-codex-remote-row] button').trigger('click')
+    await wrapper.get('[data-codex-login-api-key-remote]').trigger('click')
+    await wrapper.get('[data-codex-remote-api-key]').setValue('sk-test')
+    await wrapper.get('[data-codex-remote-api-key-submit]').trigger('click')
     expect(apiPostMock).toHaveBeenNthCalledWith(
       5,
+      '/api/codex/remote-connections/remote-1/login-api-key',
+      { apiKey: 'sk-test' },
+    )
+
+    await wrapper.get('[data-codex-remote-row] button').trigger('click')
+    expect(apiPostMock).toHaveBeenNthCalledWith(
+      6,
       '/api/codex/remote-connections/remote-1/activate',
       {},
     )

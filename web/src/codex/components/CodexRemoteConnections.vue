@@ -30,6 +30,9 @@ const remoteSaving = ref(false)
 const remoteEditingId = ref('')
 const remoteDraft = ref<CodexRemoteConnectionPayload>(emptyRemoteDraft())
 const remotePortDraft = ref('')
+const apiKeyDialogConnection = ref<CodexRemoteConnection | null>(null)
+const apiKeyDraft = ref('')
+const apiKeySaving = ref(false)
 
 const remoteConnections = computed(() => props.workspace.remote_connections ?? [])
 const remoteStatuses = computed(() => props.workspace.remote_connection_statuses ?? {})
@@ -130,6 +133,17 @@ function closeRemoteDialog() {
   remoteError.value = ''
 }
 
+function openApiKeyDialog(connection: CodexRemoteConnection) {
+  apiKeyDialogConnection.value = connection
+  apiKeyDraft.value = ''
+  remoteError.value = ''
+}
+
+function closeApiKeyDialog() {
+  apiKeyDialogConnection.value = null
+  apiKeyDraft.value = ''
+}
+
 async function saveRemoteConnection() {
   remoteError.value = ''
   const payload = {
@@ -222,6 +236,30 @@ async function installRemoteCodex(connection: CodexRemoteConnection) {
     remoteError.value = error instanceof Error ? error.message : String(error)
   } finally {
     remoteInstallingId.value = ''
+  }
+}
+
+async function loginRemoteApiKey() {
+  const connection = apiKeyDialogConnection.value
+  const apiKey = apiKeyDraft.value.trim()
+  if (!connection || !apiKey) {
+    remoteError.value = 'API key is required.'
+    return
+  }
+  apiKeySaving.value = true
+  remoteError.value = ''
+  try {
+    const result = await apiPost<CodexRemoteConnectionTestResponse>(
+      `/api/codex/remote-connections/${encodeURIComponent(connection.id)}/login-api-key`,
+      { apiKey },
+    )
+    remoteError.value = result.ok ? result.detail : result.detail
+    closeApiKeyDialog()
+    emit('remoteConnectionChanged')
+  } catch (error) {
+    remoteError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    apiKeySaving.value = false
   }
 }
 
@@ -331,6 +369,18 @@ async function deleteRemoteConnection(connection: CodexRemoteConnection) {
             :loading="remoteInstallingId === connection.id"
             :disabled="busy"
             @click.stop="installRemoteCodex(connection)"
+          />
+          <Button
+            icon="pi pi-key"
+            severity="secondary"
+            text
+            rounded
+            size="small"
+            class="!h-6 !w-6 !min-w-6 !p-0 !text-[0.68rem]"
+            aria-label="Sign in with API key"
+            data-codex-login-api-key-remote
+            :disabled="busy"
+            @click.stop="openApiKeyDialog(connection)"
           />
           <Button
             icon="pi pi-verified"
@@ -478,6 +528,61 @@ async function deleteRemoteConnection(connection: CodexRemoteConnection) {
           data-codex-save-remote
           :loading="remoteSaving"
           @click="saveRemoteConnection"
+        />
+      </footer>
+    </section>
+  </div>
+
+  <div
+    v-if="apiKeyDialogConnection"
+    class="fixed inset-0 z-50 grid place-items-center bg-black/30 p-4"
+    data-codex-remote-api-key-dialog
+    @click.self="closeApiKeyDialog"
+  >
+    <section class="grid w-full max-w-md gap-3 rounded-lg border border-[color:var(--app-border)] bg-white p-4 shadow-xl">
+      <header class="flex items-center justify-between gap-3">
+        <h2 class="m-0 text-base font-semibold text-[color:var(--app-text)]">
+          Sign in to {{ remoteTitle(apiKeyDialogConnection) }}
+        </h2>
+        <Button
+          icon="pi pi-times"
+          severity="secondary"
+          text
+          rounded
+          aria-label="Close API key dialog"
+          @click="closeApiKeyDialog"
+        />
+      </header>
+      <label class="grid gap-1 text-sm font-medium text-[color:var(--app-text)]">
+        API key
+        <InputText
+          v-model="apiKeyDraft"
+          type="password"
+          autocomplete="off"
+          data-codex-remote-api-key
+          @keydown.enter.prevent="loginRemoteApiKey"
+        />
+      </label>
+      <p
+        v-if="remoteError"
+        class="m-0 text-sm text-red-700"
+        data-codex-remote-api-key-error
+      >
+        {{ remoteError }}
+      </p>
+      <footer class="flex justify-end gap-2">
+        <Button
+          label="Cancel"
+          severity="secondary"
+          outlined
+          @click="closeApiKeyDialog"
+        />
+        <Button
+          label="Sign in"
+          icon="pi pi-key"
+          data-codex-remote-api-key-submit
+          :loading="apiKeySaving"
+          @click="loginRemoteApiKey"
         />
       </footer>
     </section>

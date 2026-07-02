@@ -29,6 +29,7 @@ from yier_web.schemas import (
     CodexFilesystemEntryKind,
     CodexFilesystemResponse,
     CodexRemoteConnectionPayload,
+    CodexRemoteConnectionApiKeyLoginPayload,
     CodexRemoteConnectionResponse,
     CodexRemoteConnectionTestResponse,
     CodexRemoteConnectionsResponse,
@@ -259,6 +260,18 @@ class CodexController(Controller):
         state: State,
     ) -> CodexRemoteConnectionTestResponse:
         return await _codex_manager(state).install_remote_codex(connection_id)
+
+    @post("/remote-connections/{connection_id:str}/login-api-key")
+    async def login_remote_api_key(
+        self,
+        connection_id: str,
+        data: CodexRemoteConnectionApiKeyLoginPayload,
+        state: State,
+    ) -> CodexRemoteConnectionTestResponse:
+        return await _codex_manager(state).login_remote_api_key(
+            connection_id,
+            data.api_key,
+        )
 
     @post("/remote-connections/{connection_id:str}/test")
     async def test_remote_connection(

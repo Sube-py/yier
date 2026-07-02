@@ -16,6 +16,7 @@ from codex_ipc import (
     SshConnectionConfig,
     SshWebsocketAppServerConfig,
 )
+from codex_app_server import AsyncAppServerClient
 from codex_app_server.generated.v2_all import (
     AbsolutePathBuf,
     ActiveThreadStatus,
@@ -267,6 +268,35 @@ class CodexIpcManager:
             ok=ok,
             detail=detail or ("Codex installed." if ok else "Codex install failed."),
         )
+
+    async def login_remote_api_key(
+        self,
+        connection_id: str,
+        api_key: str,
+    ) -> CodexRemoteConnectionTestResponse:
+        connection = self._remote_connection_by_id(connection_id)
+        if connection is None:
+            raise ValueError("Remote connection not found.")
+        self._set_remote_connection_status(
+            connection_id,
+            "connecting",
+            "Signing in with API key",
+        )
+        try:
+            async with AsyncAppServerClient(
+                config=self._remote_app_server_config(connection)
+            ) as client:
+                await client.initialize()
+                await client.account_login_api_key(api_key)
+                account = await client.account_read(refresh_token=False)
+        except Exception as exc:
+            detail = _compact_text(exc, limit=180) or exc.__class__.__name__
+            self._set_remote_connection_status(connection_id, "error", detail)
+            return CodexRemoteConnectionTestResponse(ok=False, detail=detail)
+        account_type = account.account.root.type if account.account is not None else "unknown"
+        detail = f"Signed in with {account_type}."
+        self._set_remote_connection_status(connection_id, "connected", detail)
+        return CodexRemoteConnectionTestResponse(ok=True, detail=detail)
 
     async def test_remote_connection(
         self,
@@ -708,16 +738,8 @@ class CodexIpcManager:
     def _app_server_config(self, settings: StoredCodexSettings) -> AppServerConfig:
         remote_connection = self._active_remote_connection(settings)
         if remote_connection is not None:
-            return AppServerConfig(
-                ssh_websocket=SshWebsocketAppServerConfig(
-                    connection=SshConnectionConfig(
-                        host=remote_connection.ssh_host,
-                        alias=remote_connection.ssh_alias or None,
-                        port=remote_connection.ssh_port,
-                        identity=remote_connection.identity_file or None,
-                    ),
-                    remote_cwd=remote_connection.remote_path or "~",
-                ),
+            return self._remote_app_server_config(
+                remote_connection,
                 cwd=None,
                 client_name="yier_codex",
                 client_title=f"Yier Codex ({remote_connection.display_name})",
@@ -735,6 +757,29 @@ class CodexIpcManager:
             cwd=str(self.config_service.project_root),
             client_name="yier_codex",
             client_title="Yier Codex",
+        )
+
+    def _remote_app_server_config(
+        self,
+        connection: CodexRemoteConnection,
+        *,
+        cwd: str | None = None,
+        client_name: str = "yier_codex",
+        client_title: str | None = None,
+    ) -> AppServerConfig:
+        return AppServerConfig(
+            ssh_websocket=SshWebsocketAppServerConfig(
+                connection=SshConnectionConfig(
+                    host=connection.ssh_host,
+                    alias=connection.ssh_alias or None,
+                    port=connection.ssh_port,
+                    identity=connection.identity_file or None,
+                ),
+                remote_cwd=connection.remote_path or "~",
+            ),
+            cwd=cwd,
+            client_name=client_name,
+            client_title=client_title or f"Yier Codex ({connection.display_name})",
         )
 
     def _host_id(self, settings: StoredCodexSettings) -> str:

@@ -25,7 +25,7 @@ from yier_web.config import AppConfigService
 from yier_web.event_stream import EventStreamBroker
 from yier_web.frontend import FrontendService
 from yier_web.routes.codex import CodexController
-from yier_web.schemas import CodexWorkspaceResponse
+from yier_web.schemas import CodexRemoteConnectionPayload, CodexWorkspaceResponse
 
 
 def fake_thread(
@@ -527,6 +527,8 @@ def test_codex_controller_http_and_websocket_contract(tmp_path: Path) -> None:
         assert thread_a["cwd"] == "/tmp/project-a"
         assert thread_a["status"] == "idle"
         assert thread_a["source"] == "appServer"
+        assert workspace_response.json()["remote_connections"] == []
+        assert workspace_response.json()["active_remote_connection_id"] == ""
 
         create_response = client.post(
             "/api/codex/threads",
@@ -792,6 +794,99 @@ def test_codex_controller_http_and_websocket_contract(tmp_path: Path) -> None:
             error_message = error_messages[-1]
             assert error_message["type"] == "error"
             assert error_message["code"] == "bad_request"
+
+
+def test_codex_remote_connection_configures_ssh_app_server(tmp_path: Path) -> None:
+    factory = FakeSessionFactory()
+    config_service, client = build_app(tmp_path, factory)
+
+    connection = config_service.save_codex_remote_connection(
+        CodexRemoteConnectionPayload(
+            display_name="Build host",
+            ssh_host="builder.example.com",
+            ssh_port=2222,
+            identity_file="~/.ssh/build",
+            remote_path="/srv/project",
+            auto_connect=True,
+        )
+    )
+
+    with client:
+        workspace_response = client.get("/api/codex/workspace")
+
+    assert workspace_response.status_code == 200
+    payload = workspace_response.json()
+    assert payload["active_remote_connection_id"] == connection.id
+    assert payload["remote_connections"][0]["display_name"] == "Build host"
+
+    session = factory.workspace_session()
+    assert session.config.host_id == f"ssh:{connection.id}"
+    args = session.config.app_server_config.launch_args_override
+    assert args[:6] == (
+        "ssh",
+        "-T",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ServerAliveInterval=15",
+    )
+    assert "-p" in args
+    assert "2222" in args
+    assert "-i" in args
+    assert "~/.ssh/build" in args
+    assert "builder.example.com" in args
+    assert "cd -- /srv/project" in args[-1]
+    assert "codex app-server --listen stdio://" in args[-1]
+
+
+def test_codex_remote_connection_routes_persist_and_switch_hosts(tmp_path: Path) -> None:
+    factory = FakeSessionFactory()
+    config_service, client = build_app(tmp_path, factory)
+
+    with client:
+        initial_workspace = client.get("/api/codex/workspace")
+        assert initial_workspace.status_code == 200
+        local_session = factory.workspace_session()
+        assert local_session.config.host_id == "local"
+
+        create_response = client.post(
+            "/api/codex/remote-connections",
+            json={
+                "display_name": "Remote",
+                "ssh_host": "user@remote",
+                "ssh_port": 22,
+                "identity_file": "",
+                "remote_path": "~/repo",
+                "auto_connect": True,
+            },
+        )
+        assert create_response.status_code == 201
+        connection_id = create_response.json()["connection"]["id"]
+        assert local_session.stopped is True
+
+        list_response = client.get("/api/codex/remote-connections")
+        assert list_response.status_code == 200
+        assert list_response.json()["active_connection_id"] == connection_id
+
+        remote_workspace = client.get("/api/codex/workspace")
+        assert remote_workspace.status_code == 200
+        assert factory.sessions[-1].config.host_id == f"ssh:{connection_id}"
+
+        local_response = client.post("/api/codex/remote-connections/activate-local")
+        assert local_response.status_code == 201
+        assert (
+            config_service.load_web_settings().codex.active_remote_connection_id
+            == ""
+        )
+
+        activate_response = client.post(
+            f"/api/codex/remote-connections/{connection_id}/activate"
+        )
+        assert activate_response.status_code == 201
+        assert (
+            config_service.load_web_settings().codex.active_remote_connection_id
+            == connection_id
+        )
 
 
 def test_codex_controller_lists_host_filesystem(tmp_path: Path) -> None:

@@ -56,6 +56,7 @@ function startMobileThread(projectPath: string) {
       @fork-thread="codex.forkThread"
       @rename-thread="codex.renameThread"
       @copy-error="showCodexError"
+      @remote-connection-changed="codex.refreshWorkspace"
     />
 
     <main class="flex min-h-0 flex-col overflow-hidden">
@@ -162,6 +163,7 @@ function startMobileThread(projectPath: string) {
             @fork-thread="codex.forkThread"
             @rename-thread="codex.renameThread"
             @copy-error="showCodexError"
+            @remote-connection-changed="codex.refreshWorkspace"
           />
         </div>
       </Transition>

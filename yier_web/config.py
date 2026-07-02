@@ -13,6 +13,8 @@ from yier_web.schemas import (
     BackendHealth,
     BackendOption,
     CodexConfigPayload,
+    CodexRemoteConnection,
+    CodexRemoteConnectionPayload,
     ConfigResponse,
     LLMConfigPayload,
     MCPRuntimeEntry,
@@ -122,6 +124,51 @@ class AppConfigService:
         self._write_json(self.settings_path, settings.model_dump())
         return settings
 
+    def save_codex_remote_connection(
+        self,
+        payload: CodexRemoteConnectionPayload,
+        *,
+        connection_id: str | None = None,
+    ) -> CodexRemoteConnection:
+        settings = self.load_web_settings()
+        connection = self._remote_connection_from_payload(
+            payload,
+            connection_id=connection_id,
+        )
+        connections = [
+            existing
+            for existing in settings.codex.remote_connections
+            if existing.id != connection.id
+        ]
+        connections.append(connection)
+        settings.codex.remote_connections = self._normalize_remote_connections(connections)
+        connection = settings.codex.remote_connections[-1]
+        if payload.auto_connect or not settings.codex.active_remote_connection_id:
+            settings.codex.active_remote_connection_id = connection.id
+        self._write_json(self.settings_path, settings.model_dump())
+        return connection
+
+    def delete_codex_remote_connection(self, connection_id: str) -> None:
+        settings = self.load_web_settings()
+        settings.codex.remote_connections = [
+            connection
+            for connection in settings.codex.remote_connections
+            if connection.id != connection_id
+        ]
+        if settings.codex.active_remote_connection_id == connection_id:
+            settings.codex.active_remote_connection_id = ""
+        self._write_json(self.settings_path, settings.model_dump())
+
+    def set_active_codex_remote_connection(self, connection_id: str) -> WebSettings:
+        settings = self.load_web_settings()
+        if connection_id:
+            known_ids = {connection.id for connection in settings.codex.remote_connections}
+            if connection_id not in known_ids:
+                raise ValueError("Remote connection not found.")
+        settings.codex.active_remote_connection_id = connection_id
+        self._write_json(self.settings_path, settings.model_dump())
+        return settings
+
     def load_mcp_root_config(self) -> dict[str, Any]:
         return YIERConfig.load_config(self.yier_root)
 
@@ -172,6 +219,8 @@ class AppConfigService:
                 reasoning_effort=settings.codex.reasoning_effort,
                 show_reasoning_cards=settings.codex.show_reasoning_cards,
                 service_tier=settings.codex.service_tier,
+                active_remote_connection_id=settings.codex.active_remote_connection_id,
+                remote_connections=settings.codex.remote_connections,
             ),
             allowed_roots=settings.allowed_roots,
             mcp_runtime=mcp_runtime,
@@ -207,6 +256,45 @@ class AppConfigService:
                 normalized_name, server
             )
         return normalized
+
+    def _remote_connection_from_payload(
+        self,
+        payload: CodexRemoteConnectionPayload,
+        *,
+        connection_id: str | None,
+    ) -> CodexRemoteConnection:
+        if not payload.ssh_alias and not payload.ssh_host:
+            raise ValueError("ssh_host or ssh_alias is required.")
+        return CodexRemoteConnection(
+            id=connection_id or "",
+            display_name=payload.display_name,
+            ssh_host=payload.ssh_host,
+            ssh_port=payload.ssh_port,
+            ssh_alias=payload.ssh_alias,
+            identity_file=payload.identity_file,
+            remote_path=payload.remote_path,
+            auto_connect=payload.auto_connect,
+        ).normalized()
+
+    def _normalize_remote_connections(
+        self,
+        connections: list[CodexRemoteConnection],
+    ) -> list[CodexRemoteConnection]:
+        normalized: list[CodexRemoteConnection] = []
+        seen: set[str] = set()
+        for connection in connections:
+            item = connection.normalized()
+            if not item.id:
+                item = item.model_copy(update={"id": self._remote_connection_id(item)})
+            if item.id in seen:
+                item = item.model_copy(update={"id": self._remote_connection_id(item)})
+            seen.add(item.id)
+            normalized.append(item)
+        return normalized
+
+    def _remote_connection_id(self, connection: CodexRemoteConnection) -> str:
+        source = connection.ssh_alias or connection.ssh_host or connection.display_name
+        return source.replace("@", "-").replace(".", "-").replace(":", "-") or "remote"
 
     def _normalize_mcp_server(
         self, name: str, server: dict[str, Any]
@@ -331,6 +419,12 @@ class AppConfigService:
         )
         if not settings.codex.launcher_command:
             settings.codex.launcher_command = "codex app-server --listen stdio://"
+        settings.codex.remote_connections = self._normalize_remote_connections(
+            settings.codex.remote_connections
+        )
+        remote_ids = {connection.id for connection in settings.codex.remote_connections}
+        if settings.codex.active_remote_connection_id not in remote_ids:
+            settings.codex.active_remote_connection_id = ""
         return settings
 
     def _resolve_user_path(self, raw_path: str) -> Path:

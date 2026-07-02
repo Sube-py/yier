@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Literal
+from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -72,11 +73,89 @@ class StoredCodexSettings(BaseModel):
     reasoning_effort: CodexReasoningEffort = "medium"
     show_reasoning_cards: bool = False
     service_tier: CodexServiceTier = ""
+    active_remote_connection_id: str = ""
+    remote_connections: list["CodexRemoteConnection"] = Field(default_factory=list)
 
-    @field_validator("launcher_command", "model")
+    @field_validator("launcher_command", "model", "active_remote_connection_id")
     @classmethod
     def strip_string_fields(cls, value: str) -> str:
         return value.strip()
+
+
+class CodexRemoteConnection(BaseModel):
+    id: str = Field(default_factory=lambda: uuid4().hex)
+    display_name: str = ""
+    ssh_host: str = ""
+    ssh_port: int | None = None
+    ssh_alias: str = ""
+    identity_file: str = ""
+    remote_path: str = "~"
+    auto_connect: bool = False
+
+    @field_validator(
+        "id",
+        "display_name",
+        "ssh_host",
+        "ssh_alias",
+        "identity_file",
+        "remote_path",
+    )
+    @classmethod
+    def strip_remote_connection_strings(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("ssh_port")
+    @classmethod
+    def validate_ssh_port(cls, value: int | None) -> int | None:
+        if value is None:
+            return None
+        if value < 1 or value > 65535:
+            raise ValueError("ssh_port must be between 1 and 65535.")
+        return value
+
+    def normalized(self) -> "CodexRemoteConnection":
+        display_name = self.display_name or self.ssh_alias or self.ssh_host
+        return self.model_copy(
+            update={
+                "display_name": display_name,
+                "remote_path": self.remote_path or "~",
+            }
+        )
+
+
+class CodexRemoteConnectionPayload(BaseModel):
+    display_name: str = ""
+    ssh_host: str = ""
+    ssh_port: int | None = None
+    ssh_alias: str = ""
+    identity_file: str = ""
+    remote_path: str = "~"
+    auto_connect: bool = False
+
+    @field_validator(
+        "display_name",
+        "ssh_host",
+        "ssh_alias",
+        "identity_file",
+        "remote_path",
+    )
+    @classmethod
+    def strip_payload_strings(cls, value: str) -> str:
+        return value.strip()
+
+
+class CodexRemoteConnectionResponse(BaseModel):
+    connection: CodexRemoteConnection
+
+
+class CodexRemoteConnectionsResponse(BaseModel):
+    connections: list[CodexRemoteConnection] = Field(default_factory=list)
+    active_connection_id: str = ""
+
+
+class CodexRemoteConnectionTestResponse(BaseModel):
+    ok: bool
+    detail: str = ""
 
 
 class WebSettings(BaseModel):
@@ -108,6 +187,8 @@ class CodexConfigPayload(BaseModel):
     reasoning_effort: CodexReasoningEffort = "medium"
     show_reasoning_cards: bool = False
     service_tier: CodexServiceTier = ""
+    active_remote_connection_id: str = ""
+    remote_connections: list[CodexRemoteConnection] = Field(default_factory=list)
 
 
 class LLMConfigPayload(BaseModel):
@@ -271,6 +352,8 @@ class CodexProjectGroup(BaseModel):
 class CodexWorkspaceResponse(BaseModel):
     projects: list[CodexProjectGroup] = Field(default_factory=list)
     paired_editors: list[CodexPairingExtensionSummary] = Field(default_factory=list)
+    remote_connections: list[CodexRemoteConnection] = Field(default_factory=list)
+    active_remote_connection_id: str = ""
 
 
 CodexFilesystemEntryKind = Literal["directory", "file", "other"]

@@ -31,6 +31,43 @@ export interface CodexProjectGroup {
 export interface CodexWorkspaceResponse {
   projects: CodexProjectGroup[]
   paired_editors?: JsonRecord[]
+  remote_connections?: CodexRemoteConnection[]
+  active_remote_connection_id?: string
+}
+
+export interface CodexRemoteConnection {
+  id: string
+  display_name: string
+  ssh_host: string
+  ssh_port?: number | null
+  ssh_alias: string
+  identity_file: string
+  remote_path: string
+  auto_connect: boolean
+}
+
+export interface CodexRemoteConnectionPayload {
+  display_name: string
+  ssh_host: string
+  ssh_port?: number | null
+  ssh_alias: string
+  identity_file: string
+  remote_path: string
+  auto_connect: boolean
+}
+
+export interface CodexRemoteConnectionsResponse {
+  connections: CodexRemoteConnection[]
+  active_connection_id: string
+}
+
+export interface CodexRemoteConnectionResponse {
+  connection: CodexRemoteConnection
+}
+
+export interface CodexRemoteConnectionTestResponse {
+  ok: boolean
+  detail: string
 }
 
 export type CodexFilesystemEntryKind = 'directory' | 'file' | 'other'
@@ -180,6 +217,7 @@ export type CodexClientCommand =
   | 'archive_thread'
   | 'fork_thread'
   | 'unarchive_thread'
+  | 'activate_remote_connection'
 
 export type CodexServerEventType =
   | 'connection_ready'

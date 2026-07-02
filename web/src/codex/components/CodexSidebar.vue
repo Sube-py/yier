@@ -13,6 +13,7 @@ import type {
 } from '../types'
 import { displayPath } from '../lib/format'
 import CodexHostPathPicker from './CodexHostPathPicker.vue'
+import CodexRemoteConnections from './CodexRemoteConnections.vue'
 
 const EXPANDED_PROJECTS_STORAGE_KEY = 'yier.codex.sidebar.expanded-projects'
 
@@ -34,6 +35,7 @@ const emit = defineEmits<{
   forkThread: [threadId: string]
   renameThread: [threadId: string, name: string]
   copyError: [message: string]
+  remoteConnectionChanged: []
 }>()
 
 type ProjectWithKey = CodexProjectGroup & {
@@ -329,6 +331,12 @@ async function copyThreadId(threadId: string) {
         @select="selectProjectPath"
       />
     </header>
+
+    <CodexRemoteConnections
+      :workspace="workspace"
+      :busy="busy"
+      @remote-connection-changed="emit('remoteConnectionChanged')"
+    />
 
     <ScrollPanel class="min-h-0 flex-1">
       <div class="p-3">

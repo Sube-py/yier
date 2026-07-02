@@ -3,8 +3,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent, h, ref } from 'vue'
 import PrimeVue from 'primevue/config'
 
+import { apiPost, apiPut } from '../../lib/api'
 import CodexSidebar from '../components/CodexSidebar.vue'
 import type { CodexNativeSessionSummary, CodexWorkspaceResponse } from '../types'
+
+vi.mock('../../lib/api', () => ({
+  apiPost: vi.fn(),
+  apiPut: vi.fn(),
+}))
+
+const apiPostMock = vi.mocked(apiPost)
+const apiPutMock = vi.mocked(apiPut)
 
 function thread(
   threadId: string,
@@ -48,6 +57,8 @@ function workspace(): CodexWorkspaceResponse {
       },
     ],
     paired_editors: [],
+    remote_connections: [],
+    active_remote_connection_id: '',
   }
 }
 
@@ -118,6 +129,8 @@ function mountSidebar(props: Partial<InstanceType<typeof CodexSidebar>['$props']
 describe('CodexSidebar', () => {
   beforeEach(() => {
     localStorage.clear()
+    apiPostMock.mockReset()
+    apiPutMock.mockReset()
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
       value: {
@@ -180,6 +193,126 @@ describe('CodexSidebar', () => {
     await wrapper.findAll('[data-codex-project-start-thread]')[0]!.trigger('click')
 
     expect(wrapper.emitted('startThread')).toEqual([['/tmp/alpha']])
+  })
+
+  it('creates, tests, and activates SSH remote connections', async () => {
+    apiPostMock
+      .mockResolvedValueOnce({
+        connection: {
+          id: 'remote-1',
+          display_name: 'Build host',
+          ssh_host: 'user@host',
+          ssh_port: 2222,
+          ssh_alias: '',
+          identity_file: '~/.ssh/build',
+          remote_path: '/srv/app',
+          auto_connect: true,
+        },
+      })
+      .mockResolvedValueOnce({ ok: true, detail: 'codex 1.2.3' })
+      .mockResolvedValueOnce({ ok: true })
+
+    const wrapper = mountSidebar({
+      workspace: {
+        ...workspace(),
+        remote_connections: [
+          {
+            id: 'remote-1',
+            display_name: 'Build host',
+            ssh_host: 'user@host',
+            ssh_port: 2222,
+            ssh_alias: '',
+            identity_file: '~/.ssh/build',
+            remote_path: '/srv/app',
+            auto_connect: true,
+          },
+        ],
+      },
+    })
+
+    await wrapper.get('[data-codex-add-remote]').trigger('click')
+    await wrapper.get('[data-codex-remote-display-name]').setValue('Build host')
+    await wrapper.get('[data-codex-remote-host]').setValue('user@host')
+    await wrapper.get('[data-codex-remote-port]').setValue('2222')
+    await wrapper.get('[data-codex-remote-identity]').setValue('~/.ssh/build')
+    await wrapper.get('[data-codex-remote-path]').setValue('/srv/app')
+    await wrapper.get('[data-codex-remote-auto-connect]').setValue(true)
+    await wrapper.get('[data-codex-save-remote]').trigger('click')
+
+    expect(apiPostMock).toHaveBeenNthCalledWith(1, '/api/codex/remote-connections', {
+      display_name: 'Build host',
+      ssh_host: 'user@host',
+      ssh_port: 2222,
+      ssh_alias: '',
+      identity_file: '~/.ssh/build',
+      remote_path: '/srv/app',
+      auto_connect: true,
+    })
+    expect(wrapper.emitted('remoteConnectionChanged')).toHaveLength(1)
+
+    await wrapper.get('[data-codex-test-remote]').trigger('click')
+    expect(apiPostMock).toHaveBeenNthCalledWith(
+      2,
+      '/api/codex/remote-connections/remote-1/test',
+      {},
+    )
+
+    await wrapper.get('[data-codex-remote-row] button').trigger('click')
+    expect(apiPostMock).toHaveBeenNthCalledWith(
+      3,
+      '/api/codex/remote-connections/remote-1/activate',
+      {},
+    )
+  })
+
+  it('updates SSH remote connections from the edit dialog', async () => {
+    apiPutMock.mockResolvedValueOnce({
+      connection: {
+        id: 'remote-1',
+        display_name: 'Edited',
+        ssh_host: 'user@host',
+        ssh_port: null,
+        ssh_alias: 'prod',
+        identity_file: '',
+        remote_path: '~',
+        auto_connect: false,
+      },
+    })
+    const wrapper = mountSidebar({
+      workspace: {
+        ...workspace(),
+        remote_connections: [
+          {
+            id: 'remote-1',
+            display_name: 'Build host',
+            ssh_host: 'user@host',
+            ssh_port: null,
+            ssh_alias: 'prod',
+            identity_file: '',
+            remote_path: '~',
+            auto_connect: false,
+          },
+        ],
+      },
+    })
+
+    await wrapper.get('[data-codex-edit-remote]').trigger('click')
+    await wrapper.get('[data-codex-remote-display-name]').setValue('Edited')
+    await wrapper.get('[data-codex-save-remote]').trigger('click')
+
+    expect(apiPutMock).toHaveBeenCalledWith(
+      '/api/codex/remote-connections/remote-1',
+      {
+        display_name: 'Edited',
+        ssh_host: 'user@host',
+        ssh_port: null,
+        ssh_alias: 'prod',
+        identity_file: '',
+        remote_path: '~',
+        auto_connect: false,
+      },
+    )
+    expect(wrapper.emitted('remoteConnectionChanged')).toHaveLength(1)
   })
 
   it('renders compact thread rows under project names', () => {

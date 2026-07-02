@@ -28,6 +28,9 @@ from yier_web.event_stream import EventStreamBroker
 from yier_web.schemas import (
     CodexNativeSessionSummary,
     CodexProjectGroup,
+    CodexRemoteConnection,
+    CodexRemoteConnectionTestResponse,
+    CodexRemoteConnectionsResponse,
     CodexWorkspaceResponse,
     StoredCodexSettings,
 )
@@ -150,7 +153,61 @@ class CodexIpcManager:
 
     async def workspace(self) -> CodexWorkspaceResponse:
         response = await self.list_threads()
-        return self._workspace_from_threads(response)
+        workspace = self._workspace_from_threads(response)
+        remote = self.remote_connections()
+        workspace.remote_connections = remote.connections
+        workspace.active_remote_connection_id = remote.active_connection_id
+        return workspace
+
+    def remote_connections(self) -> CodexRemoteConnectionsResponse:
+        settings = self.config_service.load_web_settings().codex
+        return CodexRemoteConnectionsResponse(
+            connections=settings.remote_connections,
+            active_connection_id=settings.active_remote_connection_id,
+        )
+
+    async def activate_remote_connection(self, connection_id: str) -> None:
+        self.config_service.set_active_codex_remote_connection(connection_id)
+        await self._restart_sessions()
+
+    async def test_remote_connection(
+        self,
+        connection_id: str,
+    ) -> CodexRemoteConnectionTestResponse:
+        connection = self._remote_connection_by_id(connection_id)
+        if connection is None:
+            raise ValueError("Remote connection not found.")
+        args = self._ssh_base_args(connection)
+        script = "command -v codex >/dev/null 2>&1 && codex --version"
+        process = await asyncio.create_subprocess_exec(
+            *args,
+            self._remote_login_shell_command(script),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=12)
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.wait()
+            return CodexRemoteConnectionTestResponse(
+                ok=False,
+                detail="SSH connection timed out.",
+            )
+        output = "\n".join(
+            item.decode("utf-8", errors="replace").strip()
+            for item in (stdout, stderr)
+            if item
+        ).strip()
+        return CodexRemoteConnectionTestResponse(
+            ok=process.returncode == 0,
+            detail=output
+            or (
+                "Codex is available on the remote host."
+                if process.returncode == 0
+                else f"SSH exited with code {process.returncode}."
+            ),
+        )
 
     async def list_threads(self) -> ThreadListResponse:
         session = await self._ensure_workspace_session()
@@ -435,6 +492,19 @@ class CodexIpcManager:
         await managed.session.stop()
         self._subscribers.pop(thread_id, None)
 
+    async def _restart_sessions(self) -> None:
+        for managed in list(self._threads.values()):
+            managed.watcher_task.cancel()
+        for managed in list(self._threads.values()):
+            with contextlib.suppress(asyncio.CancelledError):
+                await managed.watcher_task
+            await managed.session.stop()
+        self._threads.clear()
+        self._subscribers.clear()
+        if self._workspace_session is not None:
+            await self._workspace_session.stop()
+            self._workspace_session = None
+
     async def _watch_thread(
         self,
         thread_id: str,
@@ -518,7 +588,7 @@ class CodexIpcManager:
         settings = self.config_service.load_web_settings().codex
         return CodexIpcConfig(
             thread_id=thread_id,
-            host_id="local",
+            host_id=self._host_id(settings),
             client_type="yier",
             model=settings.model or None,
             reasoning_effort=self._reasoning_effort(settings),
@@ -529,6 +599,15 @@ class CodexIpcManager:
         return self._session_factory(config, notify=self._notify)
 
     def _app_server_config(self, settings: StoredCodexSettings) -> AppServerConfig:
+        remote_connection = self._active_remote_connection(settings)
+        if remote_connection is not None:
+            return AppServerConfig(
+                launch_args_override=self._ssh_app_server_args(remote_connection),
+                cwd=None,
+                client_name="yier_codex",
+                client_title=f"Yier Codex ({remote_connection.display_name})",
+            )
+
         command = settings.launcher_command or "codex app-server --listen stdio://"
         try:
             args = tuple(shlex.split(command))
@@ -541,6 +620,71 @@ class CodexIpcManager:
             cwd=str(self.config_service.project_root),
             client_name="yier_codex",
             client_title="Yier Codex",
+        )
+
+    def _host_id(self, settings: StoredCodexSettings) -> str:
+        remote_connection = self._active_remote_connection(settings)
+        if remote_connection is None:
+            return "local"
+        return f"ssh:{remote_connection.id}"
+
+    def _active_remote_connection(
+        self,
+        settings: StoredCodexSettings,
+    ) -> CodexRemoteConnection | None:
+        active_id = settings.active_remote_connection_id.strip()
+        if not active_id:
+            return None
+        for connection in settings.remote_connections:
+            if connection.id == active_id:
+                return connection
+        return None
+
+    def _remote_connection_by_id(
+        self,
+        connection_id: str,
+    ) -> CodexRemoteConnection | None:
+        normalized_id = connection_id.strip()
+        if not normalized_id:
+            return None
+        for connection in self.config_service.load_web_settings().codex.remote_connections:
+            if connection.id == normalized_id:
+                return connection
+        return None
+
+    def _ssh_base_args(self, connection: CodexRemoteConnection) -> tuple[str, ...]:
+        args = [
+            "ssh",
+            "-T",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ServerAliveInterval=15",
+            "-o",
+            "ServerAliveCountMax=12",
+        ]
+        if connection.ssh_alias:
+            args.append(connection.ssh_alias)
+            return tuple(args)
+        if connection.identity_file:
+            args.extend(["-i", connection.identity_file])
+        if connection.ssh_port is not None:
+            args.extend(["-p", str(connection.ssh_port)])
+        args.append(connection.ssh_host)
+        return tuple(args)
+
+    def _remote_login_shell_command(self, script: str) -> str:
+        return f'exec "${{SHELL:-sh}}" -lc {shlex.quote(script)}'
+
+    def _ssh_app_server_args(self, connection: CodexRemoteConnection) -> tuple[str, ...]:
+        remote_path = connection.remote_path or "~"
+        script = (
+            f"cd -- {shlex.quote(remote_path)} "
+            "&& exec codex app-server --listen stdio://"
+        )
+        return (
+            *self._ssh_base_args(connection),
+            self._remote_login_shell_command(script),
         )
 
     def _thread_start_params(self, *, project_path: str | None) -> JsonDict:

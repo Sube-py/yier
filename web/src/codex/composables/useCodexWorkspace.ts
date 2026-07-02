@@ -78,6 +78,13 @@ function normalizeWorkspace(value: unknown): CodexWorkspaceResponse {
   return {
     projects: Array.isArray(record.projects) ? record.projects : [],
     paired_editors: Array.isArray(record.paired_editors) ? record.paired_editors : [],
+    remote_connections: Array.isArray(record.remote_connections)
+      ? record.remote_connections
+      : [],
+    active_remote_connection_id:
+      typeof record.active_remote_connection_id === 'string'
+        ? record.active_remote_connection_id
+        : '',
   }
 }
 

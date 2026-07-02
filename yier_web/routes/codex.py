@@ -28,6 +28,10 @@ from yier_web.schemas import (
     CodexFilesystemEntry,
     CodexFilesystemEntryKind,
     CodexFilesystemResponse,
+    CodexRemoteConnectionPayload,
+    CodexRemoteConnectionResponse,
+    CodexRemoteConnectionTestResponse,
+    CodexRemoteConnectionsResponse,
     CodexThreadCreateRequest,
     CodexThreadCreateResponse,
     CodexThreadNameRequest,
@@ -161,6 +165,91 @@ class CodexController(Controller):
     @get("/workspace")
     async def get_workspace(self, state: State) -> CodexWorkspaceResponse:
         return await _codex_manager(state).workspace()
+
+    @get("/remote-connections")
+    async def get_remote_connections(
+        self,
+        state: State,
+    ) -> CodexRemoteConnectionsResponse:
+        return _codex_manager(state).remote_connections()
+
+    @post("/remote-connections")
+    async def create_remote_connection(
+        self,
+        data: CodexRemoteConnectionPayload,
+        state: State,
+    ) -> CodexRemoteConnectionResponse:
+        manager = _codex_manager(state)
+        previous_active_id = (
+            manager.config_service.load_web_settings().codex.active_remote_connection_id
+        )
+        connection = manager.config_service.save_codex_remote_connection(data)
+        current_active_id = (
+            manager.config_service.load_web_settings().codex.active_remote_connection_id
+        )
+        if current_active_id != previous_active_id:
+            await manager.activate_remote_connection(current_active_id)
+        return CodexRemoteConnectionResponse(connection=connection)
+
+    @put("/remote-connections/{connection_id:str}")
+    async def update_remote_connection(
+        self,
+        connection_id: str,
+        data: CodexRemoteConnectionPayload,
+        state: State,
+    ) -> CodexRemoteConnectionResponse:
+        manager = _codex_manager(state)
+        previous_active_id = (
+            manager.config_service.load_web_settings().codex.active_remote_connection_id
+        )
+        connection = manager.config_service.save_codex_remote_connection(
+            data,
+            connection_id=connection_id,
+        )
+        current_active_id = (
+            manager.config_service.load_web_settings().codex.active_remote_connection_id
+        )
+        if current_active_id != previous_active_id or current_active_id == connection.id:
+            await manager.activate_remote_connection(current_active_id)
+        return CodexRemoteConnectionResponse(connection=connection)
+
+    @post("/remote-connections/{connection_id:str}/delete")
+    async def delete_remote_connection(
+        self,
+        connection_id: str,
+        state: State,
+    ) -> dict[str, bool]:
+        manager = _codex_manager(state)
+        was_active = (
+            manager.config_service.load_web_settings().codex.active_remote_connection_id
+            == connection_id
+        )
+        manager.config_service.delete_codex_remote_connection(connection_id)
+        if was_active:
+            await manager.activate_remote_connection("")
+        return {"ok": True}
+
+    @post("/remote-connections/{connection_id:str}/activate")
+    async def activate_remote_connection(
+        self,
+        connection_id: str,
+        state: State,
+    ) -> dict[str, bool]:
+        await _codex_manager(state).activate_remote_connection(connection_id)
+        return {"ok": True}
+
+    @post("/remote-connections/activate-local")
+    async def activate_local_connection(self, state: State) -> dict[str, bool]:
+        await _codex_manager(state).activate_remote_connection("")
+        return {"ok": True}
+
+    @post("/remote-connections/{connection_id:str}/test")
+    async def test_remote_connection(
+        self,
+        connection_id: str,
+        state: State,
+    ) -> CodexRemoteConnectionTestResponse:
+        return await _codex_manager(state).test_remote_connection(connection_id)
 
     @get("/filesystem")
     async def get_filesystem(self, path: str | None = None) -> CodexFilesystemResponse:

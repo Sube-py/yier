@@ -24,7 +24,17 @@ interface TurnView {
   workItems: ConversationItemView[]
   responseItems: ConversationItemView[]
   unknownItems: ConversationItemView[]
+  report: TurnReport
+}
+
+interface TurnReport {
   summary: string
+  changedFileCount: number
+  linesAdded: number
+  linesRemoved: number
+  commandCount: number
+  toolCount: number
+  changedPaths: string[]
 }
 
 const workItemTypes = new Set([
@@ -76,7 +86,7 @@ const turnViews = computed<TurnView[]>(() =>
       workItems,
       responseItems,
       unknownItems,
-      summary: finalTurnSummary(workItems.map((workItem) => workItem.item)),
+      report: finalTurnReport(workItems.map((workItem) => workItem.item)),
     }
   }),
 )
@@ -438,7 +448,7 @@ function workItemDetail(item: JsonRecord) {
   return itemText(item)
 }
 
-function finalTurnSummary(items: JsonRecord[]) {
+function finalTurnReport(items: JsonRecord[]): TurnReport {
   const changedPaths = new Set<string>()
   let linesAdded = 0
   let linesRemoved = 0
@@ -473,6 +483,7 @@ function finalTurnSummary(items: JsonRecord[]) {
     }
   }
 
+  const changedPathList = [...changedPaths].sort((left, right) => left.localeCompare(right))
   const parts: string[] = []
   if (changedPaths.size > 0) {
     parts.push(
@@ -496,7 +507,34 @@ function finalTurnSummary(items: JsonRecord[]) {
     parts.push(`${toolCount} ${toolCount === 1 ? 'tool call' : 'tool calls'}`)
   }
 
-  return parts.join(' · ')
+  return {
+    summary: parts.join(' · '),
+    changedFileCount: changedPaths.size,
+    linesAdded,
+    linesRemoved,
+    commandCount,
+    toolCount,
+    changedPaths: changedPathList,
+  }
+}
+
+function hasTurnReport(turnView: TurnView) {
+  return Boolean(turnView.responseItems.length && turnView.report.summary)
+}
+
+function reportStatLabel(count: number, singular: string, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`
+}
+
+function reportLinesLabel(report: TurnReport) {
+  const parts = []
+  if (report.linesAdded) {
+    parts.push(`+${report.linesAdded}`)
+  }
+  if (report.linesRemoved) {
+    parts.push(`-${report.linesRemoved}`)
+  }
+  return parts.join(' / ')
 }
 
 function shouldRenderMarkdown(item: JsonRecord) {
@@ -740,12 +778,66 @@ const justDebug = false
         </article>
 
         <div
-          v-if="turnView.responseItems.length && turnView.summary"
-          class="flex min-w-0 items-center gap-2 text-xs font-semibold text-[color:var(--app-text-soft)]"
+          v-if="hasTurnReport(turnView)"
+          class="group/turn-diff-header flex max-w-full flex-col overflow-hidden rounded-lg border border-[rgba(34,66,72,0.12)] bg-white/78 text-xs text-[color:var(--app-text-soft)] shadow-[0_10px_24px_rgba(24,44,48,0.045)] [--thread-resource-card-row-padding-x:0.75rem] [--turn-diff-row-padding-y:0.25rem]"
           data-codex-turn-summary
+          data-codex-turn-report
         >
-          <i class="pi pi-check-circle text-[0.72rem] text-emerald-600"></i>
-          <span class="min-w-0 truncate">{{ turnView.summary }}</span>
+          <div class="flex min-w-0 items-center gap-2 border-b border-[rgba(34,66,72,0.08)] px-[var(--thread-resource-card-row-padding-x)] py-2 font-semibold text-[color:var(--app-text)]">
+            <i class="pi pi-check-circle shrink-0 text-[0.72rem] text-emerald-600"></i>
+            <span class="min-w-0 truncate">Turn report</span>
+            <span class="ml-auto min-w-0 truncate text-[color:var(--app-text-soft)]">
+              {{ turnView.report.summary }}
+            </span>
+          </div>
+          <div class="grid min-w-0 gap-px p-1.5">
+            <div
+              v-if="turnView.report.changedFileCount"
+              class="grid min-w-0 grid-cols-[1rem_minmax(0,1fr)_auto] items-center gap-2 rounded-md px-[var(--thread-resource-card-row-padding-x)] py-[var(--turn-diff-row-padding-y)]"
+              data-codex-turn-report-files
+            >
+              <i class="pi pi-file-edit text-[0.68rem] text-[color:var(--app-text-soft)]"></i>
+              <span class="min-w-0 truncate">
+                {{ turnView.report.changedPaths.join(', ') }}
+              </span>
+              <span class="font-semibold text-[color:var(--app-text)]">
+                {{ reportStatLabel(turnView.report.changedFileCount, 'file') }}
+              </span>
+            </div>
+            <div
+              v-if="reportLinesLabel(turnView.report)"
+              class="grid min-w-0 grid-cols-[1rem_minmax(0,1fr)_auto] items-center gap-2 rounded-md px-[var(--thread-resource-card-row-padding-x)] py-[var(--turn-diff-row-padding-y)]"
+              data-codex-turn-report-lines
+            >
+              <i class="pi pi-code text-[0.68rem] text-[color:var(--app-text-soft)]"></i>
+              <span class="min-w-0 truncate">Diff</span>
+              <span class="font-mono font-semibold text-[color:var(--app-text)]">
+                {{ reportLinesLabel(turnView.report) }}
+              </span>
+            </div>
+            <div
+              v-if="turnView.report.commandCount"
+              class="grid min-w-0 grid-cols-[1rem_minmax(0,1fr)_auto] items-center gap-2 rounded-md px-[var(--thread-resource-card-row-padding-x)] py-[var(--turn-diff-row-padding-y)]"
+              data-codex-turn-report-commands
+            >
+              <i class="pi pi-terminal text-[0.68rem] text-[color:var(--app-text-soft)]"></i>
+              <span class="min-w-0 truncate">Commands</span>
+              <span class="font-semibold text-[color:var(--app-text)]">
+                {{ reportStatLabel(turnView.report.commandCount, 'command') }}
+              </span>
+            </div>
+            <div
+              v-if="turnView.report.toolCount"
+              class="grid min-w-0 grid-cols-[1rem_minmax(0,1fr)_auto] items-center gap-2 rounded-md px-[var(--thread-resource-card-row-padding-x)] py-[var(--turn-diff-row-padding-y)]"
+              data-codex-turn-report-tools
+            >
+              <i class="pi pi-wrench text-[0.68rem] text-[color:var(--app-text-soft)]"></i>
+              <span class="min-w-0 truncate">Tools</span>
+              <span class="font-semibold text-[color:var(--app-text)]">
+                {{ reportStatLabel(turnView.report.toolCount, 'tool call') }}
+              </span>
+            </div>
+          </div>
         </div>
 
         <article

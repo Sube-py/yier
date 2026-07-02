@@ -10,6 +10,8 @@ export interface CodexPromptSubmission {
 
 export interface CodexNativeSessionSummary {
   thread_id: string
+  host_id?: string
+  hostId?: string
   title: string
   preview: string
   updated_at: number
@@ -24,6 +26,8 @@ export interface CodexNativeSessionSummary {
 export interface CodexProjectGroup {
   project: string
   project_path: string
+  host_id?: string
+  hostId?: string
   session_count: number
   sessions: CodexNativeSessionSummary[]
 }

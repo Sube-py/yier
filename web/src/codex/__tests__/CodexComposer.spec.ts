@@ -150,6 +150,9 @@ describe('CodexComposer', () => {
       state: { id: 'thread-1', turns: [] },
     })
 
+    expect(wrapper.get('[data-codex-composer-shell]').classes()).toEqual(
+      expect.arrayContaining(['sticky', 'bottom-0', 'z-10', 'mt-auto', 'w-full']),
+    )
     expect(wrapper.get('[data-codex-composer]').classes()).toEqual(
       expect.arrayContaining(['min-w-0', 'max-sm:rounded-xl']),
     )
@@ -208,7 +211,7 @@ describe('CodexComposer', () => {
     expect(wrapper.emitted('removeFollowup')?.[1]).toEqual(['queued-1'])
   })
 
-  it('creates and controls a thread goal from the composer panel', async () => {
+  it('creates and controls a thread goal from the main composer input', async () => {
     const wrapper = mountCodexComposer({
       modelValue: '',
       disabled: false,
@@ -219,11 +222,18 @@ describe('CodexComposer', () => {
       state: { id: 'thread-1', turns: [] },
     })
 
-    await wrapper.get('[data-codex-goal-objective]').setValue('Finish goal mode')
+    expect(wrapper.find('[data-codex-goal-objective]').exists()).toBe(false)
+
+    await wrapper.get('[data-codex-goal-toggle]').trigger('click')
+    expect(wrapper.get('textarea').attributes('placeholder')).toBe('Describe a goal for this thread...')
+
+    await wrapper.get('textarea').setValue('Finish goal mode')
     await wrapper.get('[data-codex-goal-token-budget]').setValue('12000')
-    await wrapper.get('[data-codex-goal-submit]').trigger('click')
+    await wrapper.get('[data-codex-primary-submit]').trigger('click')
 
     expect(wrapper.emitted('setThreadGoal')?.[0]).toEqual(['Finish goal mode', 12000])
+    const modelUpdates = wrapper.emitted('update:modelValue') ?? []
+    expect(modelUpdates[modelUpdates.length - 1]).toEqual([''])
 
     await wrapper.setProps({
       state: {
@@ -242,6 +252,7 @@ describe('CodexComposer', () => {
 
     expect(wrapper.get('[data-codex-goal-status]').text()).toContain('Pursuing goal')
     expect(wrapper.get('[data-codex-goal-panel]').text()).toContain('3k / 12k tokens')
+    expect(wrapper.get('[data-codex-goal-toggle]').attributes('disabled')).toBeDefined()
 
     await wrapper.get('[data-codex-goal-pause]').trigger('click')
     await wrapper.get('[data-codex-goal-complete]').trigger('click')

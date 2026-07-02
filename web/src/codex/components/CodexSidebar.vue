@@ -177,11 +177,23 @@ function compareProjects(left: CodexProjectGroup, right: CodexProjectGroup) {
 }
 
 function projectKey(project: CodexProjectGroup) {
-  return project.project_path || project.project || 'unknown'
+  return `${projectHostId(project)}::${project.project_path || project.project || 'unknown'}`
 }
 
 function projectTitle(project: CodexProjectGroup) {
   return project.project || displayPath(project.project_path) || 'Untitled project'
+}
+
+function projectHostId(project: CodexProjectGroup) {
+  const explicit = project.host_id || project.hostId
+  if (explicit) {
+    return explicit
+  }
+  return threadHostId(project.sessions[0])
+}
+
+function threadHostId(thread: CodexNativeSessionSummary | undefined) {
+  return thread?.host_id || thread?.hostId || 'local'
 }
 
 function threadTitle(thread: CodexNativeSessionSummary) {

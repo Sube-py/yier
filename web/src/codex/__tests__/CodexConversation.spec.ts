@@ -252,7 +252,7 @@ describe('CodexConversation', () => {
     expect(wrapper.get('[data-codex-raw]').text()).toContain('{"ok":true}')
   })
 
-  it('summarizes final turn work after the assistant response', () => {
+  it('renders final turn work as a report card after the assistant response', () => {
     const wrapper = mountConversation([
       {
         id: 'files-1',
@@ -275,9 +275,23 @@ describe('CodexConversation', () => {
       },
     ])
 
-    expect(wrapper.get('[data-codex-turn-summary]').text()).toContain('2 files changed')
-    expect(wrapper.get('[data-codex-turn-summary]').text()).toContain('+14 / -3')
-    expect(wrapper.get('[data-codex-turn-summary]').text()).toContain('1 command')
+    const report = wrapper.get('[data-codex-turn-report]')
+    expect(report.classes()).toEqual(
+      expect.arrayContaining([
+        'group/turn-diff-header',
+        'flex',
+        'max-w-full',
+        'flex-col',
+        'overflow-hidden',
+        'rounded-lg',
+        '[--thread-resource-card-row-padding-x:0.75rem]',
+        '[--turn-diff-row-padding-y:0.25rem]',
+      ]),
+    )
+    expect(report.text()).toContain('Turn report')
+    expect(wrapper.get('[data-codex-turn-report-files]').text()).toContain('2 files')
+    expect(wrapper.get('[data-codex-turn-report-lines]').text()).toContain('+14 / -3')
+    expect(wrapper.get('[data-codex-turn-report-commands]').text()).toContain('1 command')
   })
 
   it('renders unknown items as contained raw json', () => {

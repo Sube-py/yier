@@ -46,8 +46,8 @@ const baseModelOptions = ['gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.2']
 const baseReasoningOptions = ['minimal', 'low', 'medium', 'high', 'xhigh']
 const selectedModel = ref('')
 const selectedReasoningEffort = ref('')
-const goalObjectiveDraft = ref('')
 const goalTokenBudgetDraft = ref('')
+const isGoalComposeMode = ref(false)
 const remoteMenuOpen = ref(false)
 const remoteSwitchingId = ref<string | null>(null)
 const remoteSwitchError = ref('')
@@ -75,6 +75,9 @@ const primaryLabel = computed(() => {
   if (primaryAction.value === 'stop') {
     return 'Stop'
   }
+  if (isGoalComposeMode.value && !props.isWorking) {
+    return 'Start goal'
+  }
   return 'Send'
 })
 const primaryIcon = computed(() => {
@@ -90,11 +93,17 @@ const primaryTitle = computed(() => {
   if (primaryAction.value === 'queue') {
     return 'Send after the active response'
   }
+  if (isGoalComposeMode.value) {
+    return 'Start goal'
+  }
   return 'Send'
 })
 const primaryDisabled = computed(() => {
   if (primaryAction.value === 'stop') {
     return props.disabled || props.busy
+  }
+  if (isGoalComposeMode.value && !props.isWorking) {
+    return !canSubmitGoal.value
   }
   return !canSubmitText.value
 })
@@ -102,9 +111,7 @@ const context = computed(() => contextWindowState(props.state))
 const threadGoal = computed(() => props.state?.threadGoal ?? null)
 const hasThreadGoal = computed(() => Boolean(threadGoal.value))
 const goalObjective = computed(() => threadGoal.value?.objective?.trim() ?? '')
-const canSubmitGoal = computed(
-  () => goalObjectiveDraft.value.trim().length > 0 && !props.disabled && !props.busy,
-)
+const canSubmitGoal = computed(() => hasDraft.value && !props.disabled && !props.busy)
 const goalStatus = computed(() => String(threadGoal.value?.status ?? ''))
 const goalStatusLabel = computed(() => goalStatusText(threadGoal.value))
 const goalDetail = computed(() => goalProgressText(threadGoal.value))
@@ -120,6 +127,12 @@ const activeRunLocationLabel = computed(() =>
   activeRemoteConnection.value ? remoteTitle(activeRemoteConnection.value) : 'Local',
 )
 const showRunLocationPicker = computed(() => remoteConnections.value.length > 0)
+const composerPlaceholder = computed(() => {
+  if (isGoalComposeMode.value) {
+    return 'Describe a goal for this thread...'
+  }
+  return props.isWorking ? 'Add a follow-up for the queue...' : 'Ask Codex to work in this thread...'
+})
 
 watch(
   () => props.state?.id,
@@ -132,8 +145,8 @@ watch(
 watch(
   () => props.state?.id,
   () => {
-    goalObjectiveDraft.value = ''
     goalTokenBudgetDraft.value = ''
+    isGoalComposeMode.value = false
   },
 )
 
@@ -153,9 +166,10 @@ function submitGoal() {
   if (!canSubmitGoal.value) {
     return
   }
-  emit('setThreadGoal', goalObjectiveDraft.value, parsedGoalTokenBudget())
-  goalObjectiveDraft.value = ''
+  emit('setThreadGoal', draft.value, parsedGoalTokenBudget())
+  draft.value = ''
   goalTokenBudgetDraft.value = ''
+  isGoalComposeMode.value = false
 }
 
 function parsedGoalTokenBudget() {
@@ -178,11 +192,22 @@ function submitPrimary() {
     }
     return
   }
+  if (isGoalComposeMode.value && !props.isWorking) {
+    submitGoal()
+    return
+  }
   if (primaryAction.value === 'queue') {
     submitQueue()
     return
   }
   sendSubmission()
+}
+
+function toggleGoalComposeMode() {
+  if (props.busy || props.disabled || props.isWorking || hasThreadGoal.value) {
+    return
+  }
+  isGoalComposeMode.value = !isGoalComposeMode.value
 }
 
 async function activateRunLocation(connectionId: string) {
@@ -374,7 +399,8 @@ function goalProgressText(goal: CodexThreadGoal | null) {
 
 <template>
   <section
-    class="border-t border-[color:var(--app-border)] bg-[rgba(255,253,247,0.94)] px-4 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-3 max-sm:px-2.5"
+    class="sticky bottom-0 z-10 mt-auto w-full border-t border-[color:var(--app-border)] bg-[rgba(255,253,247,0.94)] px-4 pb-[calc(1rem+env(safe-area-inset-bottom))] pt-3 max-sm:px-2.5"
+    data-codex-composer-shell
   >
     <div class="mx-auto grid max-w-5xl gap-2">
       <div
@@ -382,117 +408,86 @@ function goalProgressText(goal: CodexThreadGoal | null) {
         data-codex-composer
       >
         <div
-          class="grid gap-2 rounded-xl border border-[rgba(34,66,72,0.1)] bg-[rgba(255,253,247,0.7)] p-2"
+          v-if="hasThreadGoal || isGoalComposeMode"
+          class="-mb-1 flex min-w-0 flex-wrap items-center gap-1.5 px-1 text-xs"
           data-codex-goal-panel
         >
-          <div
-            v-if="hasThreadGoal"
-            class="grid min-w-0 gap-2 sm:grid-cols-[minmax(0,1fr)_auto]"
-          >
-            <div class="min-w-0">
-              <div class="mb-1 flex min-w-0 items-center gap-2">
-                <span
-                  class="inline-flex h-6 shrink-0 items-center gap-1 rounded-md bg-[rgba(21,94,99,0.08)] px-2 text-xs font-bold text-[color:var(--app-accent)]"
-                  data-codex-goal-status
-                >
-                  <i class="pi pi-flag text-[0.62rem]"></i>
-                  {{ goalStatusLabel }}
-                </span>
-                <span class="truncate text-xs text-[color:var(--app-text-soft)]">
-                  {{ goalDetail }}
-                </span>
-              </div>
-              <p class="m-0 min-w-0 overflow-hidden text-ellipsis text-sm font-semibold leading-5 text-[color:var(--app-text)]">
-                {{ goalObjective }}
-              </p>
-            </div>
-            <div class="flex flex-wrap items-center gap-1 justify-self-start sm:justify-self-end">
-              <button
-                v-if="canResumeGoal"
-                type="button"
-                class="inline-flex h-8 items-center gap-1 rounded-lg border border-[color:var(--app-border)] bg-white px-2 text-xs font-semibold text-[color:var(--app-text)] transition hover:bg-[rgba(21,94,99,0.06)] disabled:cursor-not-allowed disabled:opacity-45"
-                :disabled="busy || disabled"
-                data-codex-goal-resume
-                @click="emit('updateThreadGoalStatus', 'active')"
-              >
-                <i class="pi pi-play text-[0.62rem]"></i>
-                Resume
-              </button>
-              <button
-                v-else-if="goalStatus === 'active'"
-                type="button"
-                class="inline-flex h-8 items-center gap-1 rounded-lg border border-[color:var(--app-border)] bg-white px-2 text-xs font-semibold text-[color:var(--app-text)] transition hover:bg-[rgba(21,94,99,0.06)] disabled:cursor-not-allowed disabled:opacity-45"
-                :disabled="busy || disabled"
-                data-codex-goal-pause
-                @click="emit('updateThreadGoalStatus', 'paused')"
-              >
-                <i class="pi pi-pause text-[0.62rem]"></i>
-                Pause
-              </button>
-              <button
-                type="button"
-                class="inline-flex h-8 items-center gap-1 rounded-lg border border-[color:var(--app-border)] bg-white px-2 text-xs font-semibold text-[color:var(--app-text)] transition hover:bg-[rgba(21,94,99,0.06)] disabled:cursor-not-allowed disabled:opacity-45"
-                :disabled="busy || disabled"
-                data-codex-goal-complete
-                @click="emit('updateThreadGoalStatus', 'complete')"
-              >
-                <i class="pi pi-check text-[0.62rem]"></i>
-                Done
-              </button>
-              <button
-                type="button"
-                class="inline-flex h-8 items-center gap-1 rounded-lg border border-[color:var(--app-border)] bg-white px-2 text-xs font-semibold text-[color:var(--app-text)] transition hover:bg-[rgba(21,94,99,0.06)] disabled:cursor-not-allowed disabled:opacity-45"
-                :disabled="busy || disabled"
-                data-codex-goal-blocked
-                @click="emit('updateThreadGoalStatus', 'blocked')"
-              >
-                <i class="pi pi-ban text-[0.62rem]"></i>
-                Blocked
-              </button>
-              <button
-                type="button"
-                class="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[color:var(--app-text-soft)] transition hover:bg-red-50 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-45"
-                aria-label="Clear goal"
-                :disabled="busy || disabled"
-                data-codex-goal-clear
-                @click="emit('clearThreadGoal')"
-              >
-                <i class="pi pi-times text-[0.62rem]"></i>
-              </button>
-            </div>
-          </div>
-          <div
-            v-else
-            class="grid gap-2 sm:grid-cols-[minmax(0,1fr)_8rem_auto]"
-          >
-            <input
-              v-model="goalObjectiveDraft"
-              class="h-9 min-w-0 rounded-lg border border-[color:var(--app-border)] bg-white px-3 text-sm text-[color:var(--app-text)] outline-none placeholder:text-[color:var(--app-text-soft)]"
+          <template v-if="hasThreadGoal">
+            <span
+              class="inline-flex h-7 min-w-0 max-w-full items-center gap-1.5 rounded-lg bg-[rgba(21,94,99,0.08)] px-2 font-bold text-[color:var(--app-accent)]"
+              data-codex-goal-status
+            >
+              <i class="pi pi-flag text-[0.62rem]"></i>
+              <span class="truncate">{{ goalStatusLabel }}</span>
+            </span>
+            <span class="min-w-0 flex-1 truncate font-semibold text-[color:var(--app-text)]">
+              {{ goalObjective }}
+            </span>
+            <span class="shrink-0 text-[color:var(--app-text-soft)]">
+              {{ goalDetail }}
+            </span>
+            <button
+              v-if="canResumeGoal"
+              type="button"
+              class="inline-flex h-7 w-7 items-center justify-center rounded-md text-[color:var(--app-text-soft)] transition hover:bg-[rgba(21,94,99,0.07)] hover:text-[color:var(--app-text)] disabled:cursor-not-allowed disabled:opacity-45"
+              aria-label="Resume goal"
               :disabled="busy || disabled"
-              placeholder="Describe a goal"
-              data-codex-goal-objective
-              @keydown.enter.prevent="submitGoal"
-            />
-            <input
-              v-model="goalTokenBudgetDraft"
-              class="h-9 min-w-0 rounded-lg border border-[color:var(--app-border)] bg-white px-2 text-sm text-[color:var(--app-text)] outline-none placeholder:text-[color:var(--app-text-soft)]"
+              data-codex-goal-resume
+              @click="emit('updateThreadGoalStatus', 'active')"
+            >
+              <i class="pi pi-play text-[0.62rem]"></i>
+            </button>
+            <button
+              v-else-if="goalStatus === 'active'"
+              type="button"
+              class="inline-flex h-7 w-7 items-center justify-center rounded-md text-[color:var(--app-text-soft)] transition hover:bg-[rgba(21,94,99,0.07)] hover:text-[color:var(--app-text)] disabled:cursor-not-allowed disabled:opacity-45"
+              aria-label="Pause goal"
               :disabled="busy || disabled"
-              inputmode="numeric"
-              placeholder="Tokens"
-              data-codex-goal-token-budget
-              @keydown.enter.prevent="submitGoal"
-            />
+              data-codex-goal-pause
+              @click="emit('updateThreadGoalStatus', 'paused')"
+            >
+              <i class="pi pi-pause text-[0.62rem]"></i>
+            </button>
             <button
               type="button"
-              class="inline-flex h-9 items-center justify-center gap-1 rounded-lg bg-[color:var(--app-accent)] px-3 text-sm font-semibold text-white transition hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-45"
-              :disabled="!canSubmitGoal"
-              data-codex-goal-submit
-              @click="submitGoal"
+              class="inline-flex h-7 w-7 items-center justify-center rounded-md text-[color:var(--app-text-soft)] transition hover:bg-[rgba(21,94,99,0.07)] hover:text-[color:var(--app-text)] disabled:cursor-not-allowed disabled:opacity-45"
+              aria-label="Complete goal"
+              :disabled="busy || disabled"
+              data-codex-goal-complete
+              @click="emit('updateThreadGoalStatus', 'complete')"
             >
-              <i class="pi pi-flag text-[0.68rem]"></i>
-              Goal
+              <i class="pi pi-check text-[0.62rem]"></i>
             </button>
-          </div>
+            <button
+              type="button"
+              class="inline-flex h-7 w-7 items-center justify-center rounded-md text-[color:var(--app-text-soft)] transition hover:bg-[rgba(21,94,99,0.07)] hover:text-[color:var(--app-text)] disabled:cursor-not-allowed disabled:opacity-45"
+              aria-label="Mark goal blocked"
+              :disabled="busy || disabled"
+              data-codex-goal-blocked
+              @click="emit('updateThreadGoalStatus', 'blocked')"
+            >
+              <i class="pi pi-ban text-[0.62rem]"></i>
+            </button>
+            <button
+              type="button"
+              class="inline-flex h-7 w-7 items-center justify-center rounded-md text-[color:var(--app-text-soft)] transition hover:bg-red-50 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-45"
+              aria-label="Clear goal"
+              :disabled="busy || disabled"
+              data-codex-goal-clear
+              @click="emit('clearThreadGoal')"
+            >
+              <i class="pi pi-times text-[0.62rem]"></i>
+            </button>
+          </template>
+          <template v-else>
+            <span
+              class="inline-flex h-7 items-center gap-1.5 rounded-lg bg-[rgba(21,94,99,0.08)] px-2 font-bold text-[color:var(--app-accent)]"
+              data-codex-goal-status
+            >
+              <i class="pi pi-flag text-[0.62rem]"></i>
+              New goal
+            </span>
+          </template>
         </div>
 
         <div
@@ -551,7 +546,7 @@ function goalProgressText(goal: CodexThreadGoal | null) {
           v-model="draft"
           class="min-h-24 w-full min-w-0 resize-y rounded-xl border-0 bg-transparent px-2 py-2 text-sm leading-6 text-[color:var(--app-text)] outline-none placeholder:text-[color:var(--app-text-soft)] max-sm:min-h-20"
           :disabled="disabled"
-          :placeholder="props.isWorking ? 'Add a follow-up for the queue...' : 'Ask Codex to work in this thread...'"
+          :placeholder="composerPlaceholder"
           @keydown="onKeydown"
         ></textarea>
 
@@ -650,6 +645,32 @@ function goalProgressText(goal: CodexThreadGoal | null) {
                 Plan
               </button>
             </div>
+
+            <button
+              type="button"
+              class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-[color:var(--app-border)] bg-white px-2 text-sm font-semibold transition hover:bg-[rgba(21,94,99,0.05)] disabled:cursor-not-allowed disabled:opacity-45"
+              :class="isGoalComposeMode || hasThreadGoal ? 'text-[color:var(--app-accent)]' : 'text-[color:var(--app-text-soft)]'"
+              :disabled="busy || disabled || isWorking || hasThreadGoal"
+              :aria-pressed="isGoalComposeMode"
+              aria-label="Use prompt as thread goal"
+              data-codex-goal-toggle
+              @click="toggleGoalComposeMode"
+            >
+              <i class="pi pi-flag text-[0.68rem]"></i>
+              <span>Goal</span>
+            </button>
+
+            <input
+              v-if="isGoalComposeMode && !hasThreadGoal"
+              v-model="goalTokenBudgetDraft"
+              class="h-8 w-24 shrink-0 rounded-lg border border-[color:var(--app-border)] bg-white px-2 text-sm text-[color:var(--app-text)] outline-none placeholder:text-[color:var(--app-text-soft)]"
+              :disabled="busy || disabled"
+              inputmode="numeric"
+              placeholder="Tokens"
+              aria-label="Goal token budget"
+              data-codex-goal-token-budget
+              @keydown.enter.prevent="submitGoal"
+            />
 
             <label
               class="inline-flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-lg border border-[color:var(--app-border)] bg-white px-2 text-sm text-[color:var(--app-text-soft)] max-sm:w-max max-sm:max-w-none max-sm:shrink-0"

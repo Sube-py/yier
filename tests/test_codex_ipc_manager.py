@@ -54,7 +54,9 @@ def fake_thread(
 
 
 class FakeCodexIpcSession:
-    def __init__(self, config: Any, *, notify: Callable[[str], None] | None = None) -> None:
+    def __init__(
+        self, config: Any, *, notify: Callable[[str], None] | None = None
+    ) -> None:
         self.config = config
         self._notify = notify
         self.started = False
@@ -105,7 +107,9 @@ class FakeCodexIpcSession:
     async def stop(self) -> None:
         self.stopped = True
 
-    async def start_new_thread(self, params: dict[str, Any] | None = None) -> SimpleNamespace:
+    async def start_new_thread(
+        self, params: dict[str, Any] | None = None
+    ) -> SimpleNamespace:
         self.start_new_thread_calls.append(params or {})
         self.thread_id = "thread-created"
         self.state = {
@@ -151,7 +155,9 @@ class FakeCodexIpcSession:
             }
         return None
 
-    async def list_threads(self, params: dict[str, Any] | None = None) -> ThreadListResponse:
+    async def list_threads(
+        self, params: dict[str, Any] | None = None
+    ) -> ThreadListResponse:
         self.list_threads_calls.append(params)
         return self.list_threads_response
 
@@ -217,10 +223,14 @@ class FakeCodexIpcSession:
             self.state["threadGoal"] = None
         return {"cleared": True}
 
-    async def set_collaboration_mode(self, collaboration_mode: dict[str, Any] | None) -> None:
+    async def set_collaboration_mode(
+        self, collaboration_mode: dict[str, Any] | None
+    ) -> None:
         self.collaboration_modes.append(collaboration_mode)
 
-    async def submit_user_input_response(self, request_id: str, response: dict[str, Any]) -> bool:
+    async def submit_user_input_response(
+        self, request_id: str, response: dict[str, Any]
+    ) -> bool:
         self.user_input_responses.append((request_id, response))
         return True
 
@@ -231,7 +241,9 @@ class FakeCodexIpcSession:
     async def remove_followup(self, message_id: str) -> None:
         self.removed_followups.append(message_id)
 
-    async def set_thread_name(self, name: str, thread_id: str | None = None) -> dict[str, Any]:
+    async def set_thread_name(
+        self, name: str, thread_id: str | None = None
+    ) -> dict[str, Any]:
         self.rename_calls.append((name, thread_id))
         if self.state is not None:
             self.state["title"] = name
@@ -282,7 +294,9 @@ class FakeSessionFactory:
     def __init__(self) -> None:
         self.sessions: list[FakeCodexIpcSession] = []
 
-    def __call__(self, config: Any, *, notify: Callable[[str], None] | None = None) -> FakeCodexIpcSession:
+    def __call__(
+        self, config: Any, *, notify: Callable[[str], None] | None = None
+    ) -> FakeCodexIpcSession:
         session = FakeCodexIpcSession(config, notify=notify)
         self.sessions.append(session)
         return session
@@ -327,11 +341,17 @@ class DisconnectingCodexSocket:
         self.sent_messages.append(message)
 
 
-def build_app(tmp_path: Path, factory: FakeSessionFactory) -> tuple[AppConfigService, TestClient[Any]]:
+def build_app(
+    tmp_path: Path, factory: FakeSessionFactory
+) -> tuple[AppConfigService, TestClient[Any]]:
     project_root = tmp_path / "project"
     (project_root / "web" / "dist").mkdir(parents=True)
-    (project_root / "web" / "dist" / "index.html").write_text("<html></html>", encoding="utf-8")
-    config_service = AppConfigService(project_root=project_root, home_dir=tmp_path / "home")
+    (project_root / "web" / "dist" / "index.html").write_text(
+        "<html></html>", encoding="utf-8"
+    )
+    config_service = AppConfigService(
+        project_root=project_root, home_dir=tmp_path / "home"
+    )
     manager = CodexIpcManager(
         config_service=config_service,
         event_broker=EventStreamBroker(),
@@ -353,7 +373,9 @@ def build_app(tmp_path: Path, factory: FakeSessionFactory) -> tuple[AppConfigSer
     return config_service, TestClient(app)
 
 
-async def _wait_for_event(queue: asyncio.Queue[dict[str, Any]], predicate: Callable[[dict[str, Any]], bool]) -> dict[str, Any]:
+async def _wait_for_event(
+    queue: asyncio.Queue[dict[str, Any]], predicate: Callable[[dict[str, Any]], bool]
+) -> dict[str, Any]:
     while True:
         event = await asyncio.wait_for(queue.get(), timeout=2.0)
         if predicate(event):
@@ -393,13 +415,18 @@ def test_codex_manager_keeps_separate_sessions_alive(tmp_path: Path) -> None:
         await manager.subscribe("thread-created", queue_b)
         await manager.subscribe("thread-plan", queue_plan)
 
-        snapshot_a = await _wait_for_event(queue_a, lambda event: event["type"] == "thread_snapshot")
-        snapshot_b = await _wait_for_event(queue_b, lambda event: event["type"] == "thread_snapshot")
+        snapshot_a = await _wait_for_event(
+            queue_a, lambda event: event["type"] == "thread_snapshot"
+        )
+        snapshot_b = await _wait_for_event(
+            queue_b, lambda event: event["type"] == "thread_snapshot"
+        )
         snapshot_plan = await _wait_for_event(
             queue_plan,
             lambda event: event["type"] == "thread_snapshot",
         )
         assert snapshot_a["payload"]["thread_id"] == "thread-a"
+        assert snapshot_a["payload"]["state"]["hostId"] == "local"
         assert snapshot_b["payload"]["thread_id"] == "thread-created"
         assert snapshot_plan["payload"]["state"]["requests"] == [
             {
@@ -422,14 +449,22 @@ def test_codex_manager_keeps_separate_sessions_alive(tmp_path: Path) -> None:
 
         state_a = await _wait_for_event(
             queue_a,
-            lambda event: event["type"] == "thread_state" and event["payload"]["state"].get("phase") == "working",
+            lambda event: (
+                event["type"] == "thread_state"
+                and event["payload"]["state"].get("phase") == "working"
+            ),
         )
         state_b = await _wait_for_event(
             queue_b,
-            lambda event: event["type"] == "thread_state" and event["payload"]["state"].get("phase") == "working",
+            lambda event: (
+                event["type"] == "thread_state"
+                and event["payload"]["state"].get("phase") == "working"
+            ),
         )
         assert state_a["payload"]["thread_id"] == "thread-a"
+        assert state_a["payload"]["state"]["hostId"] == "local"
         assert state_b["payload"]["thread_id"] == "thread-created"
+        assert state_b["payload"]["state"]["hostId"] == "local"
 
         manager.unsubscribe("thread-a", queue_a)
         manager.unsubscribe("thread-created", queue_b)
@@ -481,12 +516,17 @@ def test_codex_manager_updates_cached_mode_for_future_snapshots(tmp_path: Path) 
         await manager.set_collaboration_mode("thread-plan", default_collaboration_mode)
         state_event = await _wait_for_event(
             queue,
-            lambda event: event["type"] == "thread_state"
-            and event["payload"]["state"].get("latestCollaborationMode")
-            == default_collaboration_mode,
+            lambda event: (
+                event["type"] == "thread_state"
+                and event["payload"]["state"].get("latestCollaborationMode")
+                == default_collaboration_mode
+            ),
         )
 
-        assert state_event["payload"]["state"]["latestCollaborationMode"] == default_collaboration_mode
+        assert (
+            state_event["payload"]["state"]["latestCollaborationMode"]
+            == default_collaboration_mode
+        )
         assert (
             factory.by_thread_id("thread-plan").collaboration_modes[-1]
             == default_collaboration_mode
@@ -523,7 +563,16 @@ def test_codex_controller_http_and_websocket_contract(tmp_path: Path) -> None:
             for project in workspace_response.json()["projects"]
             for session in project["sessions"]
         ]
-        thread_a = next(session for session in sessions if session["thread_id"] == "thread-a")
+        thread_a = next(
+            session for session in sessions if session["thread_id"] == "thread-a"
+        )
+        project_a = next(
+            project
+            for project in workspace_response.json()["projects"]
+            if project["project_path"] == "/tmp/project-a"
+        )
+        assert project_a["host_id"] == "local"
+        assert thread_a["host_id"] == "local"
         assert thread_a["cwd"] == "/tmp/project-a"
         assert thread_a["status"] == "idle"
         assert thread_a["source"] == "appServer"
@@ -557,7 +606,10 @@ def test_codex_controller_http_and_websocket_contract(tmp_path: Path) -> None:
         assert unarchive_response.json()["ok"] is True
 
         with client.websocket_connect("/api/codex/ws") as ws:
-            def receive_until(predicate: Callable[[dict[str, Any]], bool]) -> list[dict[str, Any]]:
+
+            def receive_until(
+                predicate: Callable[[dict[str, Any]], bool],
+            ) -> list[dict[str, Any]]:
                 messages: list[dict[str, Any]] = []
                 while True:
                     message = ws.receive_json()
@@ -569,7 +621,11 @@ def test_codex_controller_http_and_websocket_contract(tmp_path: Path) -> None:
             assert ready["type"] == "connection_ready"
 
             ws.send_json({"id": "list-1", "type": "list_threads", "payload": {}})
-            list_messages = receive_until(lambda message: message.get("type") == "ack" and message.get("id") == "list-1")
+            list_messages = receive_until(
+                lambda message: (
+                    message.get("type") == "ack" and message.get("id") == "list-1"
+                )
+            )
             assert any(message["type"] == "workspace" for message in list_messages)
             assert factory.workspace_session().list_threads_calls[-1] == {
                 "archived": False,
@@ -585,8 +641,15 @@ def test_codex_controller_http_and_websocket_contract(tmp_path: Path) -> None:
                     "payload": {"thread_id": "thread-a"},
                 }
             )
-            sub_a = receive_until(lambda message: message.get("type") == "ack" and message.get("id") == "sub-a")
-            assert any(message["type"] in {"thread_snapshot", "thread_state"} for message in sub_a)
+            sub_a = receive_until(
+                lambda message: (
+                    message.get("type") == "ack" and message.get("id") == "sub-a"
+                )
+            )
+            assert any(
+                message["type"] in {"thread_snapshot", "thread_state"}
+                for message in sub_a
+            )
 
             ws.send_json(
                 {
@@ -595,15 +658,24 @@ def test_codex_controller_http_and_websocket_contract(tmp_path: Path) -> None:
                     "payload": {"thread_id": "thread-b"},
                 }
             )
-            sub_b = receive_until(lambda message: message.get("type") == "ack" and message.get("id") == "sub-b")
-            assert any(message["type"] in {"thread_snapshot", "thread_state"} for message in sub_b)
+            sub_b = receive_until(
+                lambda message: (
+                    message.get("type") == "ack" and message.get("id") == "sub-b"
+                )
+            )
+            assert any(
+                message["type"] in {"thread_snapshot", "thread_state"}
+                for message in sub_b
+            )
 
             factory.by_thread_id("thread-a").emit_state(
                 {"id": "thread-a", "phase": "working", "turns": []}
             )
             thread_state = receive_until(
-                lambda message: message.get("type") == "thread_state"
-                and message["payload"]["state"].get("phase") == "working"
+                lambda message: (
+                    message.get("type") == "thread_state"
+                    and message["payload"]["state"].get("phase") == "working"
+                )
             )
             assert thread_state[-1]["payload"]["thread_id"] == "thread-a"
 
@@ -619,7 +691,9 @@ def test_codex_controller_http_and_websocket_contract(tmp_path: Path) -> None:
                 }
             )
             prompt_messages = receive_until(
-                lambda message: message.get("type") == "ack" and message.get("id") == "prompt-1"
+                lambda message: (
+                    message.get("type") == "ack" and message.get("id") == "prompt-1"
+                )
             )
             assert factory.by_thread_id("thread-a").run_prompt_calls[-1] == (
                 "hello",
@@ -647,8 +721,10 @@ def test_codex_controller_http_and_websocket_contract(tmp_path: Path) -> None:
                 }
             )
             receive_until(
-                lambda message: message.get("type") == "ack"
-                and message.get("id") == "prompt-default"
+                lambda message: (
+                    message.get("type") == "ack"
+                    and message.get("id") == "prompt-default"
+                )
             )
             assert factory.by_thread_id("thread-a").run_prompt_calls[-1] == (
                 "implement",
@@ -668,7 +744,9 @@ def test_codex_controller_http_and_websocket_contract(tmp_path: Path) -> None:
                 }
             )
             input_messages = receive_until(
-                lambda message: message.get("type") == "ack" and message.get("id") == "input-1"
+                lambda message: (
+                    message.get("type") == "ack" and message.get("id") == "input-1"
+                )
             )
             assert factory.by_thread_id("thread-a").user_input_responses[-1] == (
                 "request-1",
@@ -688,8 +766,9 @@ def test_codex_controller_http_and_websocket_contract(tmp_path: Path) -> None:
                 }
             )
             goal_set_messages = receive_until(
-                lambda message: message.get("type") == "ack"
-                and message.get("id") == "goal-set-1"
+                lambda message: (
+                    message.get("type") == "ack" and message.get("id") == "goal-set-1"
+                )
             )
             assert goal_set_messages[-1]["payload"]["goal"]["objective"] == (
                 "Finish the web goal mode"
@@ -708,8 +787,9 @@ def test_codex_controller_http_and_websocket_contract(tmp_path: Path) -> None:
                 }
             )
             goal_get_messages = receive_until(
-                lambda message: message.get("type") == "ack"
-                and message.get("id") == "goal-get-1"
+                lambda message: (
+                    message.get("type") == "ack" and message.get("id") == "goal-get-1"
+                )
             )
             assert goal_get_messages[-1]["payload"]["goal"]["status"] == "active"
 
@@ -721,8 +801,9 @@ def test_codex_controller_http_and_websocket_contract(tmp_path: Path) -> None:
                 }
             )
             goal_clear_messages = receive_until(
-                lambda message: message.get("type") == "ack"
-                and message.get("id") == "goal-clear-1"
+                lambda message: (
+                    message.get("type") == "ack" and message.get("id") == "goal-clear-1"
+                )
             )
             assert goal_clear_messages[-1]["payload"]["cleared"] is True
             assert factory.by_thread_id("thread-a").goal_clear_calls == 1
@@ -735,9 +816,13 @@ def test_codex_controller_http_and_websocket_contract(tmp_path: Path) -> None:
                 }
             )
             archive_messages = receive_until(
-                lambda message: message.get("type") == "ack" and message.get("id") == "archive-1"
+                lambda message: (
+                    message.get("type") == "ack" and message.get("id") == "archive-1"
+                )
             )
-            assert any(message["type"] == "thread_archived" for message in archive_messages)
+            assert any(
+                message["type"] == "thread_archived" for message in archive_messages
+            )
 
             ws.send_json(
                 {
@@ -747,7 +832,9 @@ def test_codex_controller_http_and_websocket_contract(tmp_path: Path) -> None:
                 }
             )
             fork_messages = receive_until(
-                lambda message: message.get("type") == "ack" and message.get("id") == "fork-1"
+                lambda message: (
+                    message.get("type") == "ack" and message.get("id") == "fork-1"
+                )
             )
             assert fork_messages[-1]["payload"]["thread_id"] == "thread-forked"
             assert any(message["type"] == "workspace" for message in fork_messages)
@@ -761,7 +848,9 @@ def test_codex_controller_http_and_websocket_contract(tmp_path: Path) -> None:
                 }
             )
             sub_fork = receive_until(
-                lambda message: message.get("type") == "ack" and message.get("id") == "sub-fork"
+                lambda message: (
+                    message.get("type") == "ack" and message.get("id") == "sub-fork"
+                )
             )
             assert any(
                 message["type"] == "thread_snapshot"
@@ -777,9 +866,13 @@ def test_codex_controller_http_and_websocket_contract(tmp_path: Path) -> None:
                 }
             )
             unarchive_messages = receive_until(
-                lambda message: message.get("type") == "ack" and message.get("id") == "unarchive-1"
+                lambda message: (
+                    message.get("type") == "ack" and message.get("id") == "unarchive-1"
+                )
             )
-            assert any(message["type"] == "thread_unarchived" for message in unarchive_messages)
+            assert any(
+                message["type"] == "thread_unarchived" for message in unarchive_messages
+            )
 
             ws.send_json(
                 {
@@ -789,7 +882,9 @@ def test_codex_controller_http_and_websocket_contract(tmp_path: Path) -> None:
                 }
             )
             error_messages = receive_until(
-                lambda message: message.get("type") == "error" and message.get("id") == "bad-1"
+                lambda message: (
+                    message.get("type") == "error" and message.get("id") == "bad-1"
+                )
             )
             error_message = error_messages[-1]
             assert error_message["type"] == "error"
@@ -837,7 +932,9 @@ def test_codex_remote_connection_configures_ssh_app_server(tmp_path: Path) -> No
     assert created_session.start_new_thread_calls[0]["cwd"] == "/srv/project"
 
 
-def test_codex_remote_connection_routes_persist_and_switch_hosts(tmp_path: Path) -> None:
+def test_codex_remote_connection_routes_persist_and_switch_hosts(
+    tmp_path: Path,
+) -> None:
     factory = FakeSessionFactory()
     config_service, client = build_app(tmp_path, factory)
 
@@ -870,15 +967,16 @@ def test_codex_remote_connection_routes_persist_and_switch_hosts(tmp_path: Path)
         assert remote_workspace.status_code == 200
         assert factory.sessions[-1].config.host_id == f"ssh:{connection_id}"
         assert (
-            remote_workspace.json()["remote_connection_statuses"][connection_id]["status"]
+            remote_workspace.json()["remote_connection_statuses"][connection_id][
+                "status"
+            ]
             == "connected"
         )
 
         local_response = client.post("/api/codex/remote-connections/activate-local")
         assert local_response.status_code == 201
         assert (
-            config_service.load_web_settings().codex.active_remote_connection_id
-            == ""
+            config_service.load_web_settings().codex.active_remote_connection_id == ""
         )
 
         activate_response = client.post(
@@ -894,10 +992,14 @@ def test_codex_remote_connection_routes_persist_and_switch_hosts(tmp_path: Path)
         )
         assert restart_response.status_code == 201
         status_response = client.get("/api/codex/remote-connections")
-        assert status_response.json()["statuses"][connection_id]["status"] == "connecting"
+        assert (
+            status_response.json()["statuses"][connection_id]["status"] == "connecting"
+        )
 
 
-def test_codex_remote_connection_auto_connect_controls_active_host(tmp_path: Path) -> None:
+def test_codex_remote_connection_auto_connect_controls_active_host(
+    tmp_path: Path,
+) -> None:
     config_service = AppConfigService(
         project_root=tmp_path / "project",
         home_dir=tmp_path / "home",
@@ -962,7 +1064,9 @@ def test_codex_remote_connection_install_uses_official_installer(
             async def wait(self) -> None:
                 return None
 
-        async def fake_create_subprocess_exec(*args: str, **_kwargs: Any) -> FakeProcess:
+        async def fake_create_subprocess_exec(
+            *args: str, **_kwargs: Any
+        ) -> FakeProcess:
             commands.append(args)
             return FakeProcess()
 
@@ -1119,7 +1223,9 @@ def test_codex_remote_chatgpt_login_starts_port_forward(
                     return None
                 await asyncio.sleep(10)
 
-        async def fake_create_subprocess_exec(*args: str, **_kwargs: Any) -> FakeProcess:
+        async def fake_create_subprocess_exec(
+            *args: str, **_kwargs: Any
+        ) -> FakeProcess:
             subprocess_calls.append(args)
             return FakeProcess()
 
@@ -1136,7 +1242,10 @@ def test_codex_remote_chatgpt_login_starts_port_forward(
 
         assert result.ok is True
         assert result.auth_url == "https://chatgpt.com/login"
-        assert ("account/login/start", {"type": "chatgpt", "codexStreamlinedLogin": True}) in client_calls
+        assert (
+            "account/login/start",
+            {"type": "chatgpt", "codexStreamlinedLogin": True},
+        ) in client_calls
         assert subprocess_calls
         args = subprocess_calls[0]
         assert "-N" in args
@@ -1188,9 +1297,7 @@ def test_codex_controller_lists_host_filesystem(tmp_path: Path) -> None:
             index for index, entry in enumerate(entries) if entry["kind"] == "file"
         )
         last_directory_index = max(
-            index
-            for index, entry in enumerate(entries)
-            if entry["kind"] == "directory"
+            index for index, entry in enumerate(entries) if entry["kind"] == "directory"
         )
         assert last_directory_index < first_file_index
 

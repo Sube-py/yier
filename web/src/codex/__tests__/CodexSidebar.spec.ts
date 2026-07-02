@@ -172,7 +172,7 @@ describe('CodexSidebar', () => {
 
     expect(alphaButton.attributes('aria-expanded')).toBe('false')
     expect(JSON.parse(localStorage.getItem('yier.codex.sidebar.expanded-projects') ?? '{}')).toEqual({
-      '/tmp/alpha': false,
+      'local::/tmp/alpha': false,
     })
   })
 
@@ -394,6 +394,50 @@ describe('CodexSidebar', () => {
     expect(threadRow.text()).toContain('Investigate bug')
     expect(threadRow.text()).toContain('3m')
     expect(threadRow.text()).not.toContain('/tmp/gamma')
+  })
+
+  it('keeps local and remote projects separate when paths match', async () => {
+    const wrapper = mountSidebar({
+      workspace: {
+        projects: [
+          {
+            project: 'app',
+            project_path: '/srv/app',
+            host_id: 'local',
+            session_count: 1,
+            sessions: [
+              thread('thread-local', 'app', '/srv/app', 20, {
+                host_id: 'local',
+                title: 'Local work',
+              }),
+            ],
+          },
+          {
+            project: 'app',
+            project_path: '/srv/app',
+            host_id: 'ssh:build',
+            session_count: 1,
+            sessions: [
+              thread('thread-remote', 'app', '/srv/app', 30, {
+                host_id: 'ssh:build',
+                title: 'Remote work',
+              }),
+            ],
+          },
+        ],
+        paired_editors: [],
+      },
+    })
+
+    expect(wrapper.findAll('[data-codex-project-toggle]')).toHaveLength(2)
+    expect(wrapper.text()).toContain('Remote work')
+
+    await wrapper
+      .findAll('[data-codex-thread-name]')
+      .find((row) => row.text().includes('Remote work'))!
+      .trigger('click')
+
+    expect(wrapper.emitted('selectThread')?.[0]).toEqual(['thread-remote'])
   })
 
   it('emits fork, copy, and archive actions from thread controls', async () => {

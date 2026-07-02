@@ -348,6 +348,7 @@ class ArchiveCodexSessionResponse(BaseModel):
 
 class CodexNativeSessionSummary(BaseModel):
     thread_id: str
+    host_id: str = "local"
     title: str
     preview: str
     updated_at: float
@@ -378,6 +379,7 @@ class CodexPairingExtensionSummary(BaseModel):
 class CodexProjectGroup(BaseModel):
     project: str
     project_path: str
+    host_id: str = "local"
     session_count: int
     sessions: list[CodexNativeSessionSummary] = Field(default_factory=list)
 

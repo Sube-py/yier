@@ -103,7 +103,9 @@ def _summary_used_at(summary: CodexNativeSessionSummary) -> float:
     return summary.updated_at or summary.started_at
 
 
-def _thread_summary(thread: Thread) -> CodexNativeSessionSummary:
+def _thread_summary(
+    thread: Thread, *, host_id: str = "local"
+) -> CodexNativeSessionSummary:
     cwd = thread.cwd.root
     project, project_path = _project_from_cwd(thread.cwd)
     name = _compact_text(thread.name)
@@ -111,6 +113,7 @@ def _thread_summary(thread: Thread) -> CodexNativeSessionSummary:
     title = name or preview or thread.id
     return CodexNativeSessionSummary(
         thread_id=thread.id,
+        host_id=host_id,
         title=title,
         preview=preview or title,
         updated_at=float(thread.updated_at),
@@ -183,7 +186,10 @@ class CodexIpcManager:
         active_id = settings.active_remote_connection_id.strip()
         if active_id:
             self._set_remote_connection_status(active_id, "connected", "Connected")
-        workspace = self._workspace_from_threads(response)
+        workspace = self._workspace_from_threads(
+            response,
+            host_id=self._host_id(settings),
+        )
         remote = self.remote_connections()
         workspace.remote_connections = remote.connections
         workspace.active_remote_connection_id = remote.active_connection_id
@@ -211,7 +217,9 @@ class CodexIpcManager:
                 "Disconnected",
             )
         if connection_id:
-            self._set_remote_connection_status(connection_id, "connecting", "Connecting")
+            self._set_remote_connection_status(
+                connection_id, "connecting", "Connecting"
+            )
         await self._restart_sessions()
 
     async def restart_remote_connection(self, connection_id: str) -> None:
@@ -233,12 +241,14 @@ class CodexIpcManager:
         connection = self._remote_connection_by_id(connection_id)
         if connection is None:
             raise ValueError("Remote connection not found.")
-        self._set_remote_connection_status(connection_id, "connecting", "Installing Codex")
+        self._set_remote_connection_status(
+            connection_id, "connecting", "Installing Codex"
+        )
         install_script = (
             "if command -v curl >/dev/null 2>&1; then "
-            f"installer_script=\"$(curl -fsSL {CODEX_POSIX_INSTALL_URL})\" || exit; "
+            f'installer_script="$(curl -fsSL {CODEX_POSIX_INSTALL_URL})" || exit; '
             "elif command -v wget >/dev/null 2>&1; then "
-            f"installer_script=\"$(wget -qO- {CODEX_POSIX_INSTALL_URL})\" || exit; "
+            f'installer_script="$(wget -qO- {CODEX_POSIX_INSTALL_URL})" || exit; '
             "else echo 'curl or wget is required to install Codex' >&2; exit 127; fi; "
             "printf '%s\\n' \"$installer_script\" | "
             "CODEX_RELEASE=latest CODEX_NON_INTERACTIVE=1 sh"
@@ -363,7 +373,9 @@ class CodexIpcManager:
             detail = _compact_text(exc, limit=180) or exc.__class__.__name__
             self._set_remote_connection_status(connection_id, "error", detail)
             return CodexRemoteConnectionTestResponse(ok=False, detail=detail)
-        account_type = account.account.root.type if account.account is not None else "unknown"
+        account_type = (
+            account.account.root.type if account.account is not None else "unknown"
+        )
         detail = f"Signed in with {account_type}."
         self._set_remote_connection_status(connection_id, "connected", detail)
         return CodexRemoteConnectionTestResponse(ok=True, detail=detail)
@@ -449,12 +461,18 @@ class CodexIpcManager:
         managed = await self._ensure_thread(thread_id)
         return {
             "thread_id": managed.session.thread_id,
-            "state": managed.state or managed.session.state,
+            "state": self._state_with_host_id(
+                managed.state or managed.session.state,
+                managed.session.config.host_id,
+            ),
         }
 
     async def get_thread_state(self, thread_id: str) -> JsonDict | None:
         managed = await self._ensure_thread(thread_id)
-        return managed.state or managed.session.state
+        return self._state_with_host_id(
+            managed.state or managed.session.state,
+            managed.session.config.host_id,
+        )
 
     async def subscribe(
         self,
@@ -463,7 +481,10 @@ class CodexIpcManager:
     ) -> JsonDict | None:
         managed = await self._ensure_thread(thread_id)
         self._subscribers.setdefault(thread_id, set()).add(queue)
-        state = managed.state or managed.session.state
+        state = self._state_with_host_id(
+            managed.state or managed.session.state,
+            managed.session.config.host_id,
+        )
         await queue.put(
             {
                 "type": "thread_snapshot",
@@ -730,11 +751,12 @@ class CodexIpcManager:
         *,
         session: CodexIpcSession,
     ) -> None:
+        state_with_host = self._state_with_host_id(state, session.config.host_id)
         payload = {
             "type": "thread_state",
             "payload": {
                 "thread_id": thread_id,
-                "state": state,
+                "state": state_with_host,
                 "stream_role": session.stream_role,
                 "queued_followups": session.queued_followups,
             },
@@ -745,6 +767,17 @@ class CodexIpcManager:
             "codex_thread_state",
             payload["payload"],
         )
+
+    def _state_with_host_id(
+        self,
+        state: JsonDict | None,
+        host_id: str,
+    ) -> JsonDict | None:
+        if not isinstance(state, dict):
+            return state
+        if isinstance(state.get("hostId"), str) and state["hostId"]:
+            return state
+        return {**state, "hostId": host_id or "local"}
 
     async def _apply_latest_collaboration_mode(
         self,
@@ -877,7 +910,9 @@ class CodexIpcManager:
         normalized_id = connection_id.strip()
         if not normalized_id:
             return None
-        for connection in self.config_service.load_web_settings().codex.remote_connections:
+        for (
+            connection
+        ) in self.config_service.load_web_settings().codex.remote_connections:
             if connection.id == normalized_id:
                 return connection
         return None
@@ -895,8 +930,12 @@ class CodexIpcManager:
             status = self._remote_connection_statuses.get(connection.id)
             if status is None:
                 status = CodexRemoteConnectionStatus(
-                    status="connecting" if connection.id == active_id else "disconnected",
-                    detail="Connecting" if connection.id == active_id else "Disconnected",
+                    status="connecting"
+                    if connection.id == active_id
+                    else "disconnected",
+                    detail="Connecting"
+                    if connection.id == active_id
+                    else "Disconnected",
                 )
             statuses[connection.id] = status
         return statuses
@@ -940,7 +979,9 @@ class CodexIpcManager:
         return tuple(args)
 
     def _remote_login_shell_command(self, script: str) -> str:
-        path_prefix = 'PATH="${CODEX_INSTALL_DIR:-$HOME/.local/bin}:$PATH"; export PATH; '
+        path_prefix = (
+            'PATH="${CODEX_INSTALL_DIR:-$HOME/.local/bin}:$PATH"; export PATH; '
+        )
         return f'exec "${{SHELL:-sh}}" -l -i -c {shlex.quote(path_prefix + script)}'
 
     async def _start_remote_chatgpt_login_forward(
@@ -969,7 +1010,9 @@ class CodexIpcManager:
             with contextlib.suppress(Exception):
                 stderr = await process.stderr.read()
         detail = stderr.decode("utf-8", errors="replace").strip()
-        raise RuntimeError(detail or f"SSH port forward exited with {process.returncode}.")
+        raise RuntimeError(
+            detail or f"SSH port forward exited with {process.returncode}."
+        )
 
     async def _stop_all_remote_login_forwards(self) -> None:
         for connection_id in list(self._remote_login_forwards):
@@ -981,7 +1024,9 @@ class CodexIpcManager:
         if remote_connection is not None:
             resolved_project_path = project_path or remote_connection.remote_path or "~"
         else:
-            resolved_project_path = self.config_service.resolve_project_path(project_path)
+            resolved_project_path = self.config_service.resolve_project_path(
+                project_path
+            )
         params: JsonDict = {
             "cwd": resolved_project_path,
             "model": settings.model or None,
@@ -999,7 +1044,10 @@ class CodexIpcManager:
         return value if value and value != "none" else None
 
     def _workspace_from_threads(
-        self, response: ThreadListResponse
+        self,
+        response: ThreadListResponse,
+        *,
+        host_id: str,
     ) -> CodexWorkspaceResponse:
         threads = response.data
 
@@ -1007,13 +1055,14 @@ class CodexIpcManager:
         for thread in threads:
             if thread.ephemeral:
                 continue
-            summary = _thread_summary(thread)
-            projects.setdefault(summary.project_path or summary.project, []).append(
-                summary
+            summary = _thread_summary(thread, host_id=host_id)
+            project_key = (
+                f"{summary.host_id}::{summary.project_path or summary.project}"
             )
+            projects.setdefault(project_key, []).append(summary)
 
         project_groups: list[CodexProjectGroup] = []
-        for project_path, sessions in projects.items():
+        for _, sessions in projects.items():
             sessions.sort(
                 key=lambda item: (
                     _summary_used_at(item),
@@ -1024,10 +1073,9 @@ class CodexIpcManager:
             )
             project_groups.append(
                 CodexProjectGroup(
-                    project=sessions[0].project
-                    if sessions
-                    else Path(project_path).name,
-                    project_path=project_path,
+                    project=sessions[0].project if sessions else "Untitled project",
+                    project_path=sessions[0].project_path if sessions else "",
+                    host_id=sessions[0].host_id if sessions else "local",
                     session_count=len(sessions),
                     sessions=sessions,
                 )

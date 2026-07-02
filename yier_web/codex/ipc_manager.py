@@ -8,7 +8,14 @@ from pathlib import Path
 import shlex
 from typing import Any, Callable
 
-from codex_ipc import AppServerConfig, CodexIpcConfig, CodexIpcSession, JsonDict
+from codex_ipc import (
+    AppServerConfig,
+    CodexIpcConfig,
+    CodexIpcSession,
+    JsonDict,
+    SshConnectionConfig,
+    SshWebsocketAppServerConfig,
+)
 from codex_app_server.generated.v2_all import (
     AbsolutePathBuf,
     ActiveThreadStatus,
@@ -602,7 +609,15 @@ class CodexIpcManager:
         remote_connection = self._active_remote_connection(settings)
         if remote_connection is not None:
             return AppServerConfig(
-                launch_args_override=self._ssh_app_server_args(remote_connection),
+                ssh_websocket=SshWebsocketAppServerConfig(
+                    connection=SshConnectionConfig(
+                        host=remote_connection.ssh_host,
+                        alias=remote_connection.ssh_alias or None,
+                        port=remote_connection.ssh_port,
+                        identity=remote_connection.identity_file or None,
+                    ),
+                    remote_cwd=remote_connection.remote_path or "~",
+                ),
                 cwd=None,
                 client_name="yier_codex",
                 client_title=f"Yier Codex ({remote_connection.display_name})",
@@ -656,6 +671,7 @@ class CodexIpcManager:
         args = [
             "ssh",
             "-T",
+            "-v",
             "-o",
             "BatchMode=yes",
             "-o",
@@ -674,22 +690,16 @@ class CodexIpcManager:
         return tuple(args)
 
     def _remote_login_shell_command(self, script: str) -> str:
-        return f'exec "${{SHELL:-sh}}" -lc {shlex.quote(script)}'
-
-    def _ssh_app_server_args(self, connection: CodexRemoteConnection) -> tuple[str, ...]:
-        remote_path = connection.remote_path or "~"
-        script = (
-            f"cd -- {shlex.quote(remote_path)} "
-            "&& exec codex app-server --listen stdio://"
-        )
-        return (
-            *self._ssh_base_args(connection),
-            self._remote_login_shell_command(script),
-        )
+        path_prefix = 'PATH="${CODEX_INSTALL_DIR:-$HOME/.local/bin}:$PATH"; export PATH; '
+        return f'exec "${{SHELL:-sh}}" -l -i -c {shlex.quote(path_prefix + script)}'
 
     def _thread_start_params(self, *, project_path: str | None) -> JsonDict:
         settings = self.config_service.load_web_settings().codex
-        resolved_project_path = self.config_service.resolve_project_path(project_path)
+        remote_connection = self._active_remote_connection(settings)
+        if remote_connection is not None:
+            resolved_project_path = project_path or remote_connection.remote_path or "~"
+        else:
+            resolved_project_path = self.config_service.resolve_project_path(project_path)
         params: JsonDict = {
             "cwd": resolved_project_path,
             "model": settings.model or None,

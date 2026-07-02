@@ -821,22 +821,19 @@ def test_codex_remote_connection_configures_ssh_app_server(tmp_path: Path) -> No
 
     session = factory.workspace_session()
     assert session.config.host_id == f"ssh:{connection.id}"
-    args = session.config.app_server_config.launch_args_override
-    assert args[:6] == (
-        "ssh",
-        "-T",
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        "ServerAliveInterval=15",
-    )
-    assert "-p" in args
-    assert "2222" in args
-    assert "-i" in args
-    assert "~/.ssh/build" in args
-    assert "builder.example.com" in args
-    assert "cd -- /srv/project" in args[-1]
-    assert "codex app-server --listen stdio://" in args[-1]
+    app_server_config = session.config.app_server_config
+    assert app_server_config.launch_args_override is None
+    assert app_server_config.ssh_websocket is not None
+    ssh_config = app_server_config.ssh_websocket.connection
+    assert ssh_config.host == "builder.example.com"
+    assert ssh_config.port == 2222
+    assert ssh_config.identity == "~/.ssh/build"
+    assert app_server_config.ssh_websocket.remote_cwd == "/srv/project"
+
+    create_response = client.post("/api/codex/threads", json={})
+    assert create_response.status_code == 201
+    created_session = factory.by_thread_id("thread-created")
+    assert created_session.start_new_thread_calls[0]["cwd"] == "/srv/project"
 
 
 def test_codex_remote_connection_routes_persist_and_switch_hosts(tmp_path: Path) -> None:

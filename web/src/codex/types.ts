@@ -102,6 +102,26 @@ export interface CodexQueuedFollowup extends JsonRecord {
   createdAt?: number
 }
 
+export type CodexThreadGoalStatus =
+  | 'active'
+  | 'paused'
+  | 'blocked'
+  | 'usageLimited'
+  | 'budgetLimited'
+  | 'complete'
+
+export interface CodexThreadGoal extends JsonRecord {
+  threadId?: string
+  thread_id?: string
+  objective: string
+  status: CodexThreadGoalStatus | string
+  tokenBudget?: number | null
+  tokensUsed?: number
+  timeUsedSeconds?: number
+  createdAt?: number
+  updatedAt?: number
+}
+
 export interface CodexConversationState extends JsonRecord {
   id?: string
   hostId?: string
@@ -114,6 +134,9 @@ export interface CodexConversationState extends JsonRecord {
   latestReasoningEffort?: string | null
   latestCollaborationMode?: CodexCollaborationMode | null
   threadRuntimeStatus?: JsonRecord | string | null
+  threadGoal?: CodexThreadGoal | null
+  completedThreadGoal?: CodexThreadGoal | null
+  threadGoalResumeConfirmation?: JsonRecord | null
   cwd?: string | null
   source?: string | null
   archived?: boolean
@@ -148,6 +171,9 @@ export type CodexClientCommand =
   | 'remove_followup'
   | 'interrupt_turn'
   | 'compact_thread'
+  | 'set_thread_goal'
+  | 'get_thread_goal'
+  | 'clear_thread_goal'
   | 'set_collaboration_mode'
   | 'submit_user_input_response'
   | 'rename_thread'

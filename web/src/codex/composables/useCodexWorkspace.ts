@@ -9,6 +9,8 @@ import type {
   CodexPromptSubmission,
   CodexQueuedFollowup,
   CodexSocketStatus,
+  CodexThreadGoal,
+  CodexThreadGoalStatus,
   CodexThreadCreateResponse,
   CodexThreadForkResponse,
   CodexThreadStatePayload,
@@ -199,6 +201,16 @@ function buildCollaborationPayload(
   return mode === 'plan'
     ? planCollaborationMode(state, submission)
     : defaultCollaborationMode(state, submission)
+}
+
+function normalizeGoal(value: unknown): CodexThreadGoal | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null
+  }
+  const goal = value as Partial<CodexThreadGoal>
+  return typeof goal.objective === 'string' && goal.objective.trim()
+    ? (goal as CodexThreadGoal)
+    : null
 }
 
 export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
@@ -433,6 +445,7 @@ export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
       if (normalizedPayload) {
         setThreadPayload(normalizedPayload)
       }
+      void hydrateThreadGoal(normalizedThreadId)
       return true
     } catch (error) {
       errorMessage.value = toErrorMessage(error)
@@ -564,6 +577,121 @@ export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
       await socket.sendCommand('compact_thread', { thread_id: threadId })
       successMessage.value = 'Compact requested.'
     })
+  }
+
+  async function hydrateThreadGoal(threadId: string) {
+    try {
+      const response = await socket.sendCommand<{ goal?: CodexThreadGoal | null }>(
+        'get_thread_goal',
+        { thread_id: threadId },
+      )
+      const goal = normalizeGoal(response.goal)
+      if (goal) {
+        patchThreadState(threadId, { threadGoal: goal })
+      }
+    } catch {
+      return
+    }
+  }
+
+  function patchThreadState(threadId: string, patch: Partial<CodexConversationState>) {
+    const current = threadPayloads.value[threadId]
+    const state = current?.state
+    if (!current || !state) {
+      return
+    }
+    setThreadPayload({
+      ...current,
+      thread_id: threadId,
+      state: {
+        ...state,
+        ...patch,
+      },
+    })
+  }
+
+  async function setThreadGoal(objective: string, tokenBudget?: number | null) {
+    const threadId = activeThreadId.value
+    const trimmedObjective = objective.trim()
+    if (!threadId || !trimmedObjective) {
+      return
+    }
+    await runCommand(async () => {
+      const response = await socket.sendCommand<{ goal?: CodexThreadGoal }>(
+        'set_thread_goal',
+        {
+          thread_id: threadId,
+          objective: trimmedObjective,
+          status: 'active',
+          token_budget: tokenBudget ?? undefined,
+        },
+      )
+      const goal = normalizeGoal(response.goal)
+      if (goal) {
+        updateActiveState({
+          threadGoal: goal,
+          threadGoalResumeConfirmation: null,
+        })
+      }
+      successMessage.value = 'Goal started.'
+    })
+  }
+
+  async function updateThreadGoalStatus(status: CodexThreadGoalStatus) {
+    const threadId = activeThreadId.value
+    if (!threadId) {
+      return
+    }
+    await runCommand(async () => {
+      const response = await socket.sendCommand<{ goal?: CodexThreadGoal }>(
+        'set_thread_goal',
+        {
+          thread_id: threadId,
+          status,
+        },
+      )
+      const goal = normalizeGoal(response.goal)
+      if (goal) {
+        updateActiveState({
+          threadGoal: goal,
+          completedThreadGoal:
+            goal.status === 'complete' ? goal : activeThreadState.value?.completedThreadGoal,
+          threadGoalResumeConfirmation:
+            ['paused', 'blocked', 'usageLimited'].includes(String(goal.status))
+              ? activeThreadState.value?.threadGoalResumeConfirmation ?? null
+              : null,
+        })
+      }
+      successMessage.value = goalStatusSuccessMessage(status)
+    })
+  }
+
+  async function clearThreadGoal() {
+    const threadId = activeThreadId.value
+    if (!threadId) {
+      return
+    }
+    await runCommand(async () => {
+      await socket.sendCommand('clear_thread_goal', { thread_id: threadId })
+      updateActiveState({
+        threadGoal: null,
+        threadGoalResumeConfirmation: null,
+      })
+      successMessage.value = 'Goal cleared.'
+    })
+  }
+
+  function goalStatusSuccessMessage(status: CodexThreadGoalStatus) {
+    if (status === 'complete') {
+      return 'Goal achieved.'
+    }
+    if (status === 'blocked') {
+      return 'Goal marked blocked.'
+    }
+    if (status === 'paused') {
+      return 'Goal paused.'
+    }
+    return 'Goal updated.'
   }
 
   async function setMode(mode: CodexWorkMode) {
@@ -833,6 +961,7 @@ export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
     selectThread,
     sendPrompt,
     setMode,
+    setThreadGoal,
     startEmbedThread,
     startThread,
     status,
@@ -841,6 +970,8 @@ export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
     successMessage,
     resumeEmbedThread,
     unarchiveThread,
+    updateThreadGoalStatus,
+    clearThreadGoal,
     workspace,
     interruptTurn,
   }

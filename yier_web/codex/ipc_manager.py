@@ -253,6 +253,56 @@ class CodexIpcManager:
         managed = await self._ensure_thread(thread_id)
         return await managed.session.compact_thread()
 
+    async def set_thread_goal(
+        self,
+        thread_id: str,
+        *,
+        objective: str | None = None,
+        status: str | None = None,
+        token_budget: int | None = None,
+    ) -> JsonDict:
+        managed = await self._ensure_thread(thread_id)
+        response = await managed.session.set_thread_goal(
+            objective=objective,
+            status=status,
+            token_budget=token_budget,
+        )
+        latest_state = managed.session.state
+        if isinstance(latest_state, dict):
+            managed.state = latest_state
+            await self._fanout_thread_state(
+                thread_id,
+                latest_state,
+                session=managed.session,
+            )
+        return response
+
+    async def get_thread_goal(self, thread_id: str) -> JsonDict | None:
+        managed = await self._ensure_thread(thread_id)
+        goal = await managed.session.get_thread_goal()
+        latest_state = managed.session.state
+        if isinstance(latest_state, dict):
+            managed.state = latest_state
+            await self._fanout_thread_state(
+                thread_id,
+                latest_state,
+                session=managed.session,
+            )
+        return goal
+
+    async def clear_thread_goal(self, thread_id: str) -> JsonDict:
+        managed = await self._ensure_thread(thread_id)
+        response = await managed.session.clear_thread_goal()
+        latest_state = managed.session.state
+        if isinstance(latest_state, dict):
+            managed.state = latest_state
+            await self._fanout_thread_state(
+                thread_id,
+                latest_state,
+                session=managed.session,
+            )
+        return response
+
     async def set_collaboration_mode(
         self,
         thread_id: str,

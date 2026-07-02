@@ -200,4 +200,48 @@ describe('CodexComposer', () => {
 
     expect(wrapper.emitted('removeFollowup')?.[1]).toEqual(['queued-1'])
   })
+
+  it('creates and controls a thread goal from the composer panel', async () => {
+    const wrapper = mountCodexComposer({
+      modelValue: '',
+      disabled: false,
+      busy: false,
+      isWorking: false,
+      mode: buildMode,
+      queuedFollowups: [],
+      state: { id: 'thread-1', turns: [] },
+    })
+
+    await wrapper.get('[data-codex-goal-objective]').setValue('Finish goal mode')
+    await wrapper.get('[data-codex-goal-token-budget]').setValue('12000')
+    await wrapper.get('[data-codex-goal-submit]').trigger('click')
+
+    expect(wrapper.emitted('setThreadGoal')?.[0]).toEqual(['Finish goal mode', 12000])
+
+    await wrapper.setProps({
+      state: {
+        id: 'thread-1',
+        turns: [],
+        threadGoal: {
+          threadId: 'thread-1',
+          objective: 'Finish goal mode',
+          status: 'active',
+          tokenBudget: 12000,
+          tokensUsed: 3000,
+          timeUsedSeconds: 90,
+        },
+      },
+    })
+
+    expect(wrapper.get('[data-codex-goal-status]').text()).toContain('Pursuing goal')
+    expect(wrapper.get('[data-codex-goal-panel]').text()).toContain('3k / 12k tokens')
+
+    await wrapper.get('[data-codex-goal-pause]').trigger('click')
+    await wrapper.get('[data-codex-goal-complete]').trigger('click')
+    await wrapper.get('[data-codex-goal-clear]').trigger('click')
+
+    expect(wrapper.emitted('updateThreadGoalStatus')?.[0]).toEqual(['paused'])
+    expect(wrapper.emitted('updateThreadGoalStatus')?.[1]).toEqual(['complete'])
+    expect(wrapper.emitted('clearThreadGoal')).toHaveLength(1)
+  })
 })

@@ -23,6 +23,13 @@ def _payload_dict(payload: dict[str, Any], key: str) -> dict[str, Any] | None:
     return dict(value) if isinstance(value, dict) else None
 
 
+def _payload_int(payload: dict[str, Any], key: str) -> int | None:
+    value = payload.get(key)
+    if isinstance(value, bool):
+        return None
+    return value if isinstance(value, int) else None
+
+
 @dataclass(slots=True)
 class CodexWsCommandContext:
     manager: CodexIpcManager
@@ -136,6 +143,33 @@ class CompactThreadCommandStrategy(ThreadCommandStrategy):
         return {"thread_id": thread_id, "forwarded": forwarded}
 
 
+class SetThreadGoalCommandStrategy(ThreadCommandStrategy):
+    async def execute(self, context: CodexWsCommandContext) -> dict[str, Any]:
+        thread_id = self.thread_id(context)
+        response = await context.manager.set_thread_goal(
+            thread_id,
+            objective=_payload_text(context.payload, "objective") or None,
+            status=_payload_text(context.payload, "status") or None,
+            token_budget=_payload_int(context.payload, "token_budget")
+            or _payload_int(context.payload, "tokenBudget"),
+        )
+        return {"thread_id": thread_id, **response}
+
+
+class GetThreadGoalCommandStrategy(ThreadCommandStrategy):
+    async def execute(self, context: CodexWsCommandContext) -> dict[str, Any]:
+        thread_id = self.thread_id(context)
+        goal = await context.manager.get_thread_goal(thread_id)
+        return {"thread_id": thread_id, "goal": goal}
+
+
+class ClearThreadGoalCommandStrategy(ThreadCommandStrategy):
+    async def execute(self, context: CodexWsCommandContext) -> dict[str, Any]:
+        thread_id = self.thread_id(context)
+        response = await context.manager.clear_thread_goal(thread_id)
+        return {"thread_id": thread_id, **response}
+
+
 class SetCollaborationModeCommandStrategy(ThreadCommandStrategy):
     async def execute(self, context: CodexWsCommandContext) -> dict[str, Any]:
         thread_id = self.thread_id(context)
@@ -201,6 +235,9 @@ class CodexWsCommandStrategyFactory:
             "remove_followup": RemoveFollowupCommandStrategy(),
             "interrupt_turn": InterruptTurnCommandStrategy(),
             "compact_thread": CompactThreadCommandStrategy(),
+            "set_thread_goal": SetThreadGoalCommandStrategy(),
+            "get_thread_goal": GetThreadGoalCommandStrategy(),
+            "clear_thread_goal": ClearThreadGoalCommandStrategy(),
             "set_collaboration_mode": SetCollaborationModeCommandStrategy(),
             "submit_user_input_response": SubmitUserInputResponseCommandStrategy(),
             "rename_thread": RenameThreadCommandStrategy(),

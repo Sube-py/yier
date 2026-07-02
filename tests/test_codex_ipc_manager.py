@@ -78,6 +78,10 @@ class FakeCodexIpcSession:
         self.steer_prompt_calls: list[str] = []
         self.interrupt_turn_calls: list[str | None] = []
         self.compact_calls = 0
+        self.goal: dict[str, Any] | None = None
+        self.goal_set_calls: list[dict[str, Any]] = []
+        self.goal_get_calls = 0
+        self.goal_clear_calls = 0
         self.collaboration_modes: list[dict[str, Any] | None] = []
         self.user_input_responses: list[tuple[str, dict[str, Any]]] = []
         self.followup_calls: list[str] = []
@@ -170,6 +174,48 @@ class FakeCodexIpcSession:
     async def compact_thread(self) -> bool:
         self.compact_calls += 1
         return True
+
+    async def set_thread_goal(
+        self,
+        *,
+        objective: str | None = None,
+        status: str | None = None,
+        token_budget: int | None = None,
+    ) -> dict[str, Any]:
+        self.goal_set_calls.append(
+            {
+                "objective": objective,
+                "status": status,
+                "token_budget": token_budget,
+            }
+        )
+        previous_goal = self.goal or {}
+        self.goal = {
+            "threadId": self.thread_id,
+            "objective": objective or previous_goal.get("objective") or "Existing goal",
+            "status": status or previous_goal.get("status") or "active",
+            "tokenBudget": token_budget
+            if token_budget is not None
+            else previous_goal.get("tokenBudget"),
+            "tokensUsed": 0,
+            "timeUsedSeconds": 0,
+            "createdAt": 1,
+            "updatedAt": 2,
+        }
+        if self.state is not None:
+            self.state["threadGoal"] = self.goal
+        return {"goal": self.goal}
+
+    async def get_thread_goal(self) -> dict[str, Any] | None:
+        self.goal_get_calls += 1
+        return self.goal
+
+    async def clear_thread_goal(self) -> dict[str, Any]:
+        self.goal_clear_calls += 1
+        self.goal = None
+        if self.state is not None:
+            self.state["threadGoal"] = None
+        return {"cleared": True}
 
     async def set_collaboration_mode(self, collaboration_mode: dict[str, Any] | None) -> None:
         self.collaboration_modes.append(collaboration_mode)
@@ -626,6 +672,58 @@ def test_codex_controller_http_and_websocket_contract(tmp_path: Path) -> None:
                 "request-1",
                 {"answer": "ok"},
             )
+
+            ws.send_json(
+                {
+                    "id": "goal-set-1",
+                    "type": "set_thread_goal",
+                    "payload": {
+                        "thread_id": "thread-a",
+                        "objective": "Finish the web goal mode",
+                        "status": "active",
+                        "token_budget": 12000,
+                    },
+                }
+            )
+            goal_set_messages = receive_until(
+                lambda message: message.get("type") == "ack"
+                and message.get("id") == "goal-set-1"
+            )
+            assert goal_set_messages[-1]["payload"]["goal"]["objective"] == (
+                "Finish the web goal mode"
+            )
+            assert factory.by_thread_id("thread-a").goal_set_calls[-1] == {
+                "objective": "Finish the web goal mode",
+                "status": "active",
+                "token_budget": 12000,
+            }
+
+            ws.send_json(
+                {
+                    "id": "goal-get-1",
+                    "type": "get_thread_goal",
+                    "payload": {"thread_id": "thread-a"},
+                }
+            )
+            goal_get_messages = receive_until(
+                lambda message: message.get("type") == "ack"
+                and message.get("id") == "goal-get-1"
+            )
+            assert goal_get_messages[-1]["payload"]["goal"]["status"] == "active"
+
+            ws.send_json(
+                {
+                    "id": "goal-clear-1",
+                    "type": "clear_thread_goal",
+                    "payload": {"thread_id": "thread-a"},
+                }
+            )
+            goal_clear_messages = receive_until(
+                lambda message: message.get("type") == "ack"
+                and message.get("id") == "goal-clear-1"
+            )
+            assert goal_clear_messages[-1]["payload"]["cleared"] is True
+            assert factory.by_thread_id("thread-a").goal_clear_calls == 1
 
             ws.send_json(
                 {

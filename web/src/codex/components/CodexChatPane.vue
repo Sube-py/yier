@@ -11,6 +11,7 @@ import type {
   CodexPromptSubmission,
   CodexQueuedFollowup,
   CodexSocketStatus,
+  CodexThreadGoalStatus,
   CodexWorkMode,
   JsonRecord,
 } from '../types'
@@ -42,6 +43,9 @@ const emit = defineEmits<{
   compactThread: []
   interruptTurn: []
   setMode: [mode: CodexWorkMode]
+  setThreadGoal: [objective: string, tokenBudget?: number | null]
+  updateThreadGoalStatus: [status: CodexThreadGoalStatus]
+  clearThreadGoal: []
   refresh: []
   submitUserInputResponse: [requestId: string, response: JsonRecord]
   sendPrompt: [submission: CodexPromptSubmission]
@@ -119,6 +123,9 @@ function submitUserInputResponse(requestId: string, response: JsonRecord) {
       @remove-followup="emit('removeFollowup', $event)"
       @interrupt-turn="emit('interruptTurn')"
       @set-mode="emit('setMode', $event)"
+      @set-thread-goal="(objective, tokenBudget) => emit('setThreadGoal', objective, tokenBudget)"
+      @update-thread-goal-status="emit('updateThreadGoalStatus', $event)"
+      @clear-thread-goal="emit('clearThreadGoal')"
     />
   </section>
 </template>

@@ -95,6 +95,30 @@ class FakeCodexSocket implements CodexRealtimeClient {
         queued_followups: [],
       } as TPayload
     }
+    if (type === 'get_thread_goal') {
+      return { goal: null } as TPayload
+    }
+    if (type === 'set_thread_goal') {
+      return {
+        goal: {
+          threadId: String(payload.thread_id),
+          objective:
+            typeof payload.objective === 'string'
+              ? payload.objective
+              : 'Existing goal',
+          status: typeof payload.status === 'string' ? payload.status : 'active',
+          tokenBudget:
+            typeof payload.token_budget === 'number' ? payload.token_budget : null,
+          tokensUsed: 0,
+          timeUsedSeconds: 0,
+          createdAt: 1,
+          updatedAt: 2,
+        },
+      } as TPayload
+    }
+    if (type === 'clear_thread_goal') {
+      return { cleared: true } as TPayload
+    }
     if (type === 'fork_thread') {
       this.includeForkedThread = true
       return {
@@ -164,14 +188,16 @@ describe('useCodexWorkspace', () => {
     expect(socket.commands.map((command) => command.type)).toEqual([
       'list_threads',
       'subscribe_thread',
+      'get_thread_goal',
     ])
 
     await workspace.selectThread('thread-b')
     await flushPromises()
 
-    expect(socket.commands.slice(-2)).toEqual([
+    expect(socket.commands.slice(-3)).toEqual([
       { type: 'unsubscribe_thread', payload: { thread_id: 'thread-a' } },
       { type: 'subscribe_thread', payload: { thread_id: 'thread-b' } },
+      { type: 'get_thread_goal', payload: { thread_id: 'thread-b' } },
     ])
     expect(socket.closed).toBe(false)
 
@@ -238,6 +264,50 @@ describe('useCodexWorkspace', () => {
         },
       },
     })
+  })
+
+  it('sets, updates, and clears thread goals', async () => {
+    const socket = new FakeCodexSocket()
+    const { workspace } = mountHarness(socket)
+    await flushPromises()
+
+    await workspace.setThreadGoal('Ship the web goal mode', 20000)
+    await flushPromises()
+
+    expect(socket.commands[socket.commands.length - 1]).toEqual({
+      type: 'set_thread_goal',
+      payload: {
+        thread_id: 'thread-a',
+        objective: 'Ship the web goal mode',
+        status: 'active',
+        token_budget: 20000,
+      },
+    })
+    expect(workspace.activeThreadState.value?.threadGoal?.objective).toBe(
+      'Ship the web goal mode',
+    )
+
+    await workspace.updateThreadGoalStatus('complete')
+    await flushPromises()
+
+    expect(socket.commands[socket.commands.length - 1]).toEqual({
+      type: 'set_thread_goal',
+      payload: {
+        thread_id: 'thread-a',
+        status: 'complete',
+      },
+    })
+    expect(workspace.activeThreadState.value?.threadGoal?.status).toBe('complete')
+    expect(workspace.activeThreadState.value?.completedThreadGoal?.status).toBe('complete')
+
+    await workspace.clearThreadGoal()
+    await flushPromises()
+
+    expect(socket.commands[socket.commands.length - 1]).toEqual({
+      type: 'clear_thread_goal',
+      payload: { thread_id: 'thread-a' },
+    })
+    expect(workspace.activeThreadState.value?.threadGoal).toBeNull()
   })
 
   it('implements plan requests by returning to build mode and sending the plan prompt', async () => {
@@ -369,11 +439,12 @@ describe('useCodexWorkspace', () => {
     await workspace.forkThread('thread-a')
     await flushPromises()
 
-    expect(socket.commands.slice(-4)).toEqual([
+    expect(socket.commands.slice(-5)).toEqual([
       { type: 'fork_thread', payload: { thread_id: 'thread-a' } },
       { type: 'list_threads', payload: {} },
       { type: 'unsubscribe_thread', payload: { thread_id: 'thread-a' } },
       { type: 'subscribe_thread', payload: { thread_id: 'thread-forked' } },
+      { type: 'get_thread_goal', payload: { thread_id: 'thread-forked' } },
     ])
     expect(workspace.activeThreadId.value).toBe('thread-forked')
     expect(workspace.successMessage.value).toBe('Thread forked.')
@@ -394,10 +465,11 @@ describe('useCodexWorkspace', () => {
     await workspace.startEmbedThread('/tmp/embed')
     await flushPromises()
 
-    expect(socket.commands.slice(-3)).toEqual([
+    expect(socket.commands.slice(-4)).toEqual([
       { type: 'start_thread', payload: { project_path: '/tmp/embed' } },
       { type: 'list_threads', payload: {} },
       { type: 'subscribe_thread', payload: { thread_id: 'thread-created' } },
+      { type: 'get_thread_goal', payload: { thread_id: 'thread-created' } },
     ])
     expect(workspace.activeThreadId.value).toBe('thread-created')
     expect(localStorage.getItem('yier.codex.active-thread-id')).toBe('thread-a')
@@ -414,8 +486,9 @@ describe('useCodexWorkspace', () => {
     await workspace.resumeEmbedThread('thread-b')
     await flushPromises()
 
-    expect(socket.commands.slice(-1)).toEqual([
+    expect(socket.commands.slice(-2)).toEqual([
       { type: 'subscribe_thread', payload: { thread_id: 'thread-b' } },
+      { type: 'get_thread_goal', payload: { thread_id: 'thread-b' } },
     ])
     expect(workspace.activeThreadId.value).toBe('thread-b')
   })

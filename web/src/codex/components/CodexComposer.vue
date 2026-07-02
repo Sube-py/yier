@@ -6,6 +6,8 @@ import type {
   CodexConversationState,
   CodexPromptSubmission,
   CodexQueuedFollowup,
+  CodexThreadGoal,
+  CodexThreadGoalStatus,
   CodexWorkMode,
   JsonRecord,
 } from '../types'
@@ -29,12 +31,17 @@ const emit = defineEmits<{
   removeFollowup: [messageId: string]
   interruptTurn: []
   setMode: [mode: CodexWorkMode]
+  setThreadGoal: [objective: string, tokenBudget?: number | null]
+  updateThreadGoalStatus: [status: CodexThreadGoalStatus]
+  clearThreadGoal: []
 }>()
 
 const baseModelOptions = ['gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.2']
 const baseReasoningOptions = ['minimal', 'low', 'medium', 'high', 'xhigh']
 const selectedModel = ref('')
 const selectedReasoningEffort = ref('')
+const goalObjectiveDraft = ref('')
+const goalTokenBudgetDraft = ref('')
 
 const latestModel = computed(() => props.state?.latestModel?.trim() || 'gpt-5.4')
 const latestReasoningEffort = computed(() => props.state?.latestReasoningEffort?.trim() || 'medium')
@@ -83,12 +90,32 @@ const primaryDisabled = computed(() => {
   return !canSubmitText.value
 })
 const context = computed(() => contextWindowState(props.state))
+const threadGoal = computed(() => props.state?.threadGoal ?? null)
+const hasThreadGoal = computed(() => Boolean(threadGoal.value))
+const goalObjective = computed(() => threadGoal.value?.objective?.trim() ?? '')
+const canSubmitGoal = computed(
+  () => goalObjectiveDraft.value.trim().length > 0 && !props.disabled && !props.busy,
+)
+const goalStatus = computed(() => String(threadGoal.value?.status ?? ''))
+const goalStatusLabel = computed(() => goalStatusText(threadGoal.value))
+const goalDetail = computed(() => goalProgressText(threadGoal.value))
+const canResumeGoal = computed(() =>
+  ['paused', 'blocked', 'usageLimited'].includes(goalStatus.value),
+)
 
 watch(
   () => props.state?.id,
   () => {
     selectedModel.value = ''
     selectedReasoningEffort.value = ''
+  },
+)
+
+watch(
+  () => props.state?.id,
+  () => {
+    goalObjectiveDraft.value = ''
+    goalTokenBudgetDraft.value = ''
   },
 )
 
@@ -102,6 +129,20 @@ function sendSubmission() {
     reasoningEffort: activeReasoningEffort.value,
   })
   draft.value = ''
+}
+
+function submitGoal() {
+  if (!canSubmitGoal.value) {
+    return
+  }
+  emit('setThreadGoal', goalObjectiveDraft.value, parsedGoalTokenBudget())
+  goalObjectiveDraft.value = ''
+  goalTokenBudgetDraft.value = ''
+}
+
+function parsedGoalTokenBudget() {
+  const value = Number(goalTokenBudgetDraft.value)
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : null
 }
 
 function submitQueue() {
@@ -241,6 +282,46 @@ function formatTokenCount(value: number) {
   }
   return String(value)
 }
+
+function goalStatusText(goal: CodexThreadGoal | null) {
+  if (!goal) {
+    return 'Goal'
+  }
+  const status = String(goal.status)
+  if (status === 'active') {
+    return 'Pursuing goal'
+  }
+  if (status === 'paused') {
+    return 'Paused goal'
+  }
+  if (status === 'blocked') {
+    return 'Goal blocked'
+  }
+  if (status === 'usageLimited') {
+    return 'Goal usage limited'
+  }
+  if (status === 'budgetLimited') {
+    return 'Goal limited'
+  }
+  if (status === 'complete') {
+    return 'Goal achieved'
+  }
+  return 'Goal'
+}
+
+function goalProgressText(goal: CodexThreadGoal | null) {
+  if (!goal) {
+    return ''
+  }
+  const seconds = typeof goal.timeUsedSeconds === 'number' ? goal.timeUsedSeconds : 0
+  const minutes = Math.floor(seconds / 60)
+  const time = minutes > 0 ? `${minutes}m` : `${seconds}s`
+  if (typeof goal.tokenBudget === 'number' && goal.tokenBudget > 0) {
+    const used = typeof goal.tokensUsed === 'number' ? goal.tokensUsed : 0
+    return `${formatTokenCount(used)} / ${formatTokenCount(goal.tokenBudget)} tokens · ${time}`
+  }
+  return time
+}
 </script>
 
 <template>
@@ -252,6 +333,120 @@ function formatTokenCount(value: number) {
         class="grid min-w-0 gap-2 rounded-2xl border border-[color:var(--app-border)] bg-white/95 p-2 shadow-[0_14px_34px_rgba(24,44,48,0.08)] transition max-sm:rounded-xl"
         data-codex-composer
       >
+        <div
+          class="grid gap-2 rounded-xl border border-[rgba(34,66,72,0.1)] bg-[rgba(255,253,247,0.7)] p-2"
+          data-codex-goal-panel
+        >
+          <div
+            v-if="hasThreadGoal"
+            class="grid min-w-0 gap-2 sm:grid-cols-[minmax(0,1fr)_auto]"
+          >
+            <div class="min-w-0">
+              <div class="mb-1 flex min-w-0 items-center gap-2">
+                <span
+                  class="inline-flex h-6 shrink-0 items-center gap-1 rounded-md bg-[rgba(21,94,99,0.08)] px-2 text-xs font-bold text-[color:var(--app-accent)]"
+                  data-codex-goal-status
+                >
+                  <i class="pi pi-flag text-[0.62rem]"></i>
+                  {{ goalStatusLabel }}
+                </span>
+                <span class="truncate text-xs text-[color:var(--app-text-soft)]">
+                  {{ goalDetail }}
+                </span>
+              </div>
+              <p class="m-0 min-w-0 overflow-hidden text-ellipsis text-sm font-semibold leading-5 text-[color:var(--app-text)]">
+                {{ goalObjective }}
+              </p>
+            </div>
+            <div class="flex flex-wrap items-center gap-1 justify-self-start sm:justify-self-end">
+              <button
+                v-if="canResumeGoal"
+                type="button"
+                class="inline-flex h-8 items-center gap-1 rounded-lg border border-[color:var(--app-border)] bg-white px-2 text-xs font-semibold text-[color:var(--app-text)] transition hover:bg-[rgba(21,94,99,0.06)] disabled:cursor-not-allowed disabled:opacity-45"
+                :disabled="busy || disabled"
+                data-codex-goal-resume
+                @click="emit('updateThreadGoalStatus', 'active')"
+              >
+                <i class="pi pi-play text-[0.62rem]"></i>
+                Resume
+              </button>
+              <button
+                v-else-if="goalStatus === 'active'"
+                type="button"
+                class="inline-flex h-8 items-center gap-1 rounded-lg border border-[color:var(--app-border)] bg-white px-2 text-xs font-semibold text-[color:var(--app-text)] transition hover:bg-[rgba(21,94,99,0.06)] disabled:cursor-not-allowed disabled:opacity-45"
+                :disabled="busy || disabled"
+                data-codex-goal-pause
+                @click="emit('updateThreadGoalStatus', 'paused')"
+              >
+                <i class="pi pi-pause text-[0.62rem]"></i>
+                Pause
+              </button>
+              <button
+                type="button"
+                class="inline-flex h-8 items-center gap-1 rounded-lg border border-[color:var(--app-border)] bg-white px-2 text-xs font-semibold text-[color:var(--app-text)] transition hover:bg-[rgba(21,94,99,0.06)] disabled:cursor-not-allowed disabled:opacity-45"
+                :disabled="busy || disabled"
+                data-codex-goal-complete
+                @click="emit('updateThreadGoalStatus', 'complete')"
+              >
+                <i class="pi pi-check text-[0.62rem]"></i>
+                Done
+              </button>
+              <button
+                type="button"
+                class="inline-flex h-8 items-center gap-1 rounded-lg border border-[color:var(--app-border)] bg-white px-2 text-xs font-semibold text-[color:var(--app-text)] transition hover:bg-[rgba(21,94,99,0.06)] disabled:cursor-not-allowed disabled:opacity-45"
+                :disabled="busy || disabled"
+                data-codex-goal-blocked
+                @click="emit('updateThreadGoalStatus', 'blocked')"
+              >
+                <i class="pi pi-ban text-[0.62rem]"></i>
+                Blocked
+              </button>
+              <button
+                type="button"
+                class="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[color:var(--app-text-soft)] transition hover:bg-red-50 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-45"
+                aria-label="Clear goal"
+                :disabled="busy || disabled"
+                data-codex-goal-clear
+                @click="emit('clearThreadGoal')"
+              >
+                <i class="pi pi-times text-[0.62rem]"></i>
+              </button>
+            </div>
+          </div>
+          <div
+            v-else
+            class="grid gap-2 sm:grid-cols-[minmax(0,1fr)_8rem_auto]"
+          >
+            <input
+              v-model="goalObjectiveDraft"
+              class="h-9 min-w-0 rounded-lg border border-[color:var(--app-border)] bg-white px-3 text-sm text-[color:var(--app-text)] outline-none placeholder:text-[color:var(--app-text-soft)]"
+              :disabled="busy || disabled"
+              placeholder="Describe a goal"
+              data-codex-goal-objective
+              @keydown.enter.prevent="submitGoal"
+            />
+            <input
+              v-model="goalTokenBudgetDraft"
+              class="h-9 min-w-0 rounded-lg border border-[color:var(--app-border)] bg-white px-2 text-sm text-[color:var(--app-text)] outline-none placeholder:text-[color:var(--app-text-soft)]"
+              :disabled="busy || disabled"
+              inputmode="numeric"
+              placeholder="Tokens"
+              data-codex-goal-token-budget
+              @keydown.enter.prevent="submitGoal"
+            />
+            <button
+              type="button"
+              class="inline-flex h-9 items-center justify-center gap-1 rounded-lg bg-[color:var(--app-accent)] px-3 text-sm font-semibold text-white transition hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-45"
+              :disabled="!canSubmitGoal"
+              data-codex-goal-submit
+              @click="submitGoal"
+            >
+              <i class="pi pi-flag text-[0.68rem]"></i>
+              Goal
+            </button>
+          </div>
+        </div>
+
         <div
           v-if="queuedFollowups.length"
           class="vertical-scroll-fade-mask hide-scrollbar -mx-1 -mt-1 flex max-h-[30dvh] flex-col gap-px overflow-x-hidden overflow-y-auto rounded-t-xl border-b border-[rgba(34,66,72,0.1)] px-3 py-2 max-sm:px-2"

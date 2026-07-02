@@ -67,7 +67,7 @@ function persistActiveThreadId(threadId: string, enabled = true) {
 }
 
 function emptyWorkspace(): CodexWorkspaceResponse {
-  return { projects: [], paired_editors: [] }
+  return { projects: [], paired_editors: [], remote_connection_statuses: {} }
 }
 
 function normalizeWorkspace(value: unknown): CodexWorkspaceResponse {
@@ -85,6 +85,12 @@ function normalizeWorkspace(value: unknown): CodexWorkspaceResponse {
       typeof record.active_remote_connection_id === 'string'
         ? record.active_remote_connection_id
         : '',
+    remote_connection_statuses:
+      record.remote_connection_statuses &&
+      typeof record.remote_connection_statuses === 'object' &&
+      !Array.isArray(record.remote_connection_statuses)
+        ? record.remote_connection_statuses
+        : {},
   }
 }
 

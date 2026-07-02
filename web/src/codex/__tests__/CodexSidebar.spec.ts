@@ -59,6 +59,7 @@ function workspace(): CodexWorkspaceResponse {
     paired_editors: [],
     remote_connections: [],
     active_remote_connection_id: '',
+    remote_connection_statuses: {},
   }
 }
 
@@ -211,6 +212,8 @@ describe('CodexSidebar', () => {
       })
       .mockResolvedValueOnce({ ok: true, detail: 'codex 1.2.3' })
       .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({ ok: true, detail: 'installed' })
+      .mockResolvedValueOnce({ ok: true })
 
     const wrapper = mountSidebar({
       workspace: {
@@ -227,6 +230,9 @@ describe('CodexSidebar', () => {
             auto_connect: true,
           },
         ],
+        remote_connection_statuses: {
+          'remote-1': { status: 'connected', detail: 'codex 1.2.3' },
+        },
       },
     })
 
@@ -257,9 +263,27 @@ describe('CodexSidebar', () => {
       {},
     )
 
-    await wrapper.get('[data-codex-remote-row] button').trigger('click')
+    expect(wrapper.get('[data-codex-remote-runtime-status]').text()).toContain(
+      'Connected',
+    )
+
+    await wrapper.get('[data-codex-restart-remote]').trigger('click')
     expect(apiPostMock).toHaveBeenNthCalledWith(
       3,
+      '/api/codex/remote-connections/remote-1/restart',
+      {},
+    )
+
+    await wrapper.get('[data-codex-install-remote]').trigger('click')
+    expect(apiPostMock).toHaveBeenNthCalledWith(
+      4,
+      '/api/codex/remote-connections/remote-1/install',
+      {},
+    )
+
+    await wrapper.get('[data-codex-remote-row] button').trigger('click')
+    expect(apiPostMock).toHaveBeenNthCalledWith(
+      5,
       '/api/codex/remote-connections/remote-1/activate',
       {},
     )

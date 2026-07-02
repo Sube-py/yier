@@ -818,6 +818,7 @@ def test_codex_remote_connection_configures_ssh_app_server(tmp_path: Path) -> No
     payload = workspace_response.json()
     assert payload["active_remote_connection_id"] == connection.id
     assert payload["remote_connections"][0]["display_name"] == "Build host"
+    assert payload["remote_connection_statuses"][connection.id]["status"] == "connected"
 
     session = factory.workspace_session()
     assert session.config.host_id == f"ssh:{connection.id}"
@@ -868,6 +869,10 @@ def test_codex_remote_connection_routes_persist_and_switch_hosts(tmp_path: Path)
         remote_workspace = client.get("/api/codex/workspace")
         assert remote_workspace.status_code == 200
         assert factory.sessions[-1].config.host_id == f"ssh:{connection_id}"
+        assert (
+            remote_workspace.json()["remote_connection_statuses"][connection_id]["status"]
+            == "connected"
+        )
 
         local_response = client.post("/api/codex/remote-connections/activate-local")
         assert local_response.status_code == 201
@@ -884,6 +889,99 @@ def test_codex_remote_connection_routes_persist_and_switch_hosts(tmp_path: Path)
             config_service.load_web_settings().codex.active_remote_connection_id
             == connection_id
         )
+        restart_response = client.post(
+            f"/api/codex/remote-connections/{connection_id}/restart"
+        )
+        assert restart_response.status_code == 201
+        status_response = client.get("/api/codex/remote-connections")
+        assert status_response.json()["statuses"][connection_id]["status"] == "connecting"
+
+
+def test_codex_remote_connection_auto_connect_controls_active_host(tmp_path: Path) -> None:
+    config_service = AppConfigService(
+        project_root=tmp_path / "project",
+        home_dir=tmp_path / "home",
+    )
+
+    connection = config_service.save_codex_remote_connection(
+        CodexRemoteConnectionPayload(
+            display_name="Manual host",
+            ssh_host="manual.example.com",
+            auto_connect=False,
+        )
+    )
+
+    assert config_service.load_web_settings().codex.active_remote_connection_id == ""
+
+    config_service.set_active_codex_remote_connection(connection.id)
+    config_service.save_codex_remote_connection(
+        CodexRemoteConnectionPayload(
+            display_name="Manual host",
+            ssh_host="manual.example.com",
+            auto_connect=False,
+        ),
+        connection_id=connection.id,
+    )
+
+    assert config_service.load_web_settings().codex.active_remote_connection_id == ""
+
+
+def test_codex_remote_connection_install_uses_official_installer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        factory = FakeSessionFactory()
+        config_service = AppConfigService(
+            project_root=tmp_path / "project",
+            home_dir=tmp_path / "home",
+        )
+        connection = config_service.save_codex_remote_connection(
+            CodexRemoteConnectionPayload(
+                display_name="Build host",
+                ssh_host="builder.example.com",
+                auto_connect=True,
+            )
+        )
+        manager = CodexIpcManager(
+            config_service=config_service,
+            event_broker=EventStreamBroker(),
+            session_factory=factory,
+        )
+        commands: list[tuple[str, ...]] = []
+
+        class FakeProcess:
+            returncode = 0
+
+            async def communicate(self) -> tuple[bytes, bytes]:
+                return (b"installed", b"")
+
+            def kill(self) -> None:
+                return None
+
+            async def wait(self) -> None:
+                return None
+
+        async def fake_create_subprocess_exec(*args: str, **_kwargs: Any) -> FakeProcess:
+            commands.append(args)
+            return FakeProcess()
+
+        monkeypatch.setattr(
+            "yier_web.codex.ipc_manager.asyncio.create_subprocess_exec",
+            fake_create_subprocess_exec,
+        )
+
+        result = await manager.install_remote_codex(connection.id)
+
+        assert result.ok is True
+        assert "installed" in result.detail
+        assert commands
+        assert "https://chatgpt.com/codex/install.sh" in commands[0][-1]
+        statuses = manager.remote_connections().statuses
+        assert statuses[connection.id].status == "connecting"
+        assert statuses[connection.id].detail == "Restarting connection"
+
+    asyncio.run(scenario())
 
 
 def test_codex_controller_lists_host_filesystem(tmp_path: Path) -> None:

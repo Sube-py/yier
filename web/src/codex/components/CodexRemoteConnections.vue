@@ -25,12 +25,14 @@ const emit = defineEmits<{
 const remoteDialogVisible = ref(false)
 const remoteError = ref('')
 const remoteTestingId = ref('')
+const remoteInstallingId = ref('')
 const remoteSaving = ref(false)
 const remoteEditingId = ref('')
 const remoteDraft = ref<CodexRemoteConnectionPayload>(emptyRemoteDraft())
 const remotePortDraft = ref('')
 
 const remoteConnections = computed(() => props.workspace.remote_connections ?? [])
+const remoteStatuses = computed(() => props.workspace.remote_connection_statuses ?? {})
 const activeRemoteConnectionId = computed(
   () => props.workspace.active_remote_connection_id ?? '',
 )
@@ -61,6 +63,41 @@ function remoteSubtitle(connection: CodexRemoteConnection) {
   const target = connection.ssh_alias || connection.ssh_host
   const port = connection.ssh_port ? `:${connection.ssh_port}` : ''
   return `${target}${port} · ${connection.remote_path || '~'}`
+}
+
+function remoteStatus(connection: CodexRemoteConnection) {
+  return remoteStatuses.value[connection.id] ?? {
+    status: connection.id === activeRemoteConnectionId.value ? 'connecting' : 'disconnected',
+    detail: connection.id === activeRemoteConnectionId.value ? 'Connecting' : 'Disconnected',
+  }
+}
+
+function remoteStatusLabel(connection: CodexRemoteConnection) {
+  const status = remoteStatus(connection).status
+  if (status === 'connected') {
+    return 'Connected'
+  }
+  if (status === 'connecting') {
+    return 'Connecting'
+  }
+  if (status === 'error') {
+    return 'Connection failed'
+  }
+  return 'Disconnected'
+}
+
+function remoteStatusClass(connection: CodexRemoteConnection) {
+  const status = remoteStatus(connection).status
+  if (status === 'connected') {
+    return 'bg-emerald-50 text-emerald-700'
+  }
+  if (status === 'connecting') {
+    return 'bg-amber-50 text-amber-700'
+  }
+  if (status === 'error') {
+    return 'bg-red-50 text-red-700'
+  }
+  return 'bg-slate-100 text-slate-600'
 }
 
 function openAddRemoteDialog() {
@@ -158,6 +195,36 @@ async function testRemoteConnection(connection: CodexRemoteConnection) {
   }
 }
 
+async function restartRemoteConnection(connection: CodexRemoteConnection) {
+  remoteError.value = ''
+  try {
+    await apiPost(
+      `/api/codex/remote-connections/${encodeURIComponent(connection.id)}/restart`,
+      {},
+    )
+    emit('remoteConnectionChanged')
+  } catch (error) {
+    remoteError.value = error instanceof Error ? error.message : String(error)
+  }
+}
+
+async function installRemoteCodex(connection: CodexRemoteConnection) {
+  remoteInstallingId.value = connection.id
+  remoteError.value = ''
+  try {
+    const result = await apiPost<CodexRemoteConnectionTestResponse>(
+      `/api/codex/remote-connections/${encodeURIComponent(connection.id)}/install`,
+      {},
+    )
+    remoteError.value = result.ok ? `Installed: ${result.detail}` : result.detail
+    emit('remoteConnectionChanged')
+  } catch (error) {
+    remoteError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    remoteInstallingId.value = ''
+  }
+}
+
 async function deleteRemoteConnection(connection: CodexRemoteConnection) {
   remoteError.value = ''
   try {
@@ -230,8 +297,41 @@ async function deleteRemoteConnection(connection: CodexRemoteConnection) {
           <span class="block truncate text-[0.68rem] text-[color:var(--app-text-soft)]">
             {{ remoteSubtitle(connection) }}
           </span>
+          <span
+            class="mt-1 inline-flex max-w-full items-center rounded px-1.5 py-0.5 text-[0.62rem] font-semibold"
+            :class="remoteStatusClass(connection)"
+            :title="remoteStatus(connection).detail"
+            data-codex-remote-runtime-status
+          >
+            {{ remoteStatusLabel(connection) }}
+          </span>
         </button>
         <div class="flex items-center gap-0.5">
+          <Button
+            icon="pi pi-refresh"
+            severity="secondary"
+            text
+            rounded
+            size="small"
+            class="!h-6 !w-6 !min-w-6 !p-0 !text-[0.68rem]"
+            aria-label="Restart SSH connection"
+            data-codex-restart-remote
+            :disabled="busy"
+            @click.stop="restartRemoteConnection(connection)"
+          />
+          <Button
+            icon="pi pi-download"
+            severity="secondary"
+            text
+            rounded
+            size="small"
+            class="!h-6 !w-6 !min-w-6 !p-0 !text-[0.68rem]"
+            aria-label="Install Codex on remote"
+            data-codex-install-remote
+            :loading="remoteInstallingId === connection.id"
+            :disabled="busy"
+            @click.stop="installRemoteCodex(connection)"
+          />
           <Button
             icon="pi pi-verified"
             severity="secondary"
@@ -355,7 +455,7 @@ async function deleteRemoteConnection(connection: CodexRemoteConnection) {
           class="h-4 w-4"
           data-codex-remote-auto-connect
         >
-        Connect after saving
+        Auto connect
       </label>
 
       <p

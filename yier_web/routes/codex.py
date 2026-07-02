@@ -243,6 +243,23 @@ class CodexController(Controller):
         await _codex_manager(state).activate_remote_connection("")
         return {"ok": True}
 
+    @post("/remote-connections/{connection_id:str}/restart")
+    async def restart_remote_connection(
+        self,
+        connection_id: str,
+        state: State,
+    ) -> dict[str, bool]:
+        await _codex_manager(state).restart_remote_connection(connection_id)
+        return {"ok": True}
+
+    @post("/remote-connections/{connection_id:str}/install")
+    async def install_remote_codex(
+        self,
+        connection_id: str,
+        state: State,
+    ) -> CodexRemoteConnectionTestResponse:
+        return await _codex_manager(state).install_remote_codex(connection_id)
+
     @post("/remote-connections/{connection_id:str}/test")
     async def test_remote_connection(
         self,

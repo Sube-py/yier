@@ -36,6 +36,7 @@ from yier_web.schemas import (
     CodexNativeSessionSummary,
     CodexProjectGroup,
     CodexRemoteConnection,
+    CodexRemoteConnectionStatus,
     CodexRemoteConnectionTestResponse,
     CodexRemoteConnectionsResponse,
     CodexWorkspaceResponse,
@@ -43,6 +44,7 @@ from yier_web.schemas import (
 )
 
 logger = logging.getLogger(__name__)
+CODEX_POSIX_INSTALL_URL = "https://chatgpt.com/codex/install.sh"
 
 CodexSubscriberQueue = asyncio.Queue[dict[str, Any]]
 CodexSessionFactory = Callable[..., CodexIpcSession]
@@ -137,6 +139,7 @@ class CodexIpcManager:
         self._threads: dict[str, ManagedCodexThread] = {}
         self._subscribers: dict[str, set[CodexSubscriberQueue]] = {}
         self._workspace_session: CodexIpcSession | None = None
+        self._remote_connection_statuses: dict[str, CodexRemoteConnectionStatus] = {}
         self._lock = asyncio.Lock()
         self._started = False
 
@@ -159,11 +162,26 @@ class CodexIpcManager:
             self._workspace_session = None
 
     async def workspace(self) -> CodexWorkspaceResponse:
-        response = await self.list_threads()
+        settings = self.config_service.load_web_settings().codex
+        try:
+            response = await self.list_threads()
+        except Exception as exc:
+            active_id = settings.active_remote_connection_id.strip()
+            if active_id:
+                self._set_remote_connection_status(
+                    active_id,
+                    "error",
+                    _compact_text(exc, limit=180) or exc.__class__.__name__,
+                )
+            raise
+        active_id = settings.active_remote_connection_id.strip()
+        if active_id:
+            self._set_remote_connection_status(active_id, "connected", "Connected")
         workspace = self._workspace_from_threads(response)
         remote = self.remote_connections()
         workspace.remote_connections = remote.connections
         workspace.active_remote_connection_id = remote.active_connection_id
+        workspace.remote_connection_statuses = remote.statuses
         return workspace
 
     def remote_connections(self) -> CodexRemoteConnectionsResponse:
@@ -171,11 +189,84 @@ class CodexIpcManager:
         return CodexRemoteConnectionsResponse(
             connections=settings.remote_connections,
             active_connection_id=settings.active_remote_connection_id,
+            statuses=self._remote_statuses_for(settings),
         )
 
     async def activate_remote_connection(self, connection_id: str) -> None:
+        previous_active_id = (
+            self.config_service.load_web_settings().codex.active_remote_connection_id
+        )
         self.config_service.set_active_codex_remote_connection(connection_id)
+        if previous_active_id and previous_active_id != connection_id:
+            self._set_remote_connection_status(
+                previous_active_id,
+                "disconnected",
+                "Disconnected",
+            )
+        if connection_id:
+            self._set_remote_connection_status(connection_id, "connecting", "Connecting")
         await self._restart_sessions()
+
+    async def restart_remote_connection(self, connection_id: str) -> None:
+        if self._remote_connection_by_id(connection_id) is None:
+            raise ValueError("Remote connection not found.")
+        self.config_service.set_active_codex_remote_connection(connection_id)
+        self._set_remote_connection_status(
+            connection_id,
+            "connecting",
+            "Restarting connection",
+        )
+        await self._restart_sessions()
+
+    async def install_remote_codex(
+        self,
+        connection_id: str,
+    ) -> CodexRemoteConnectionTestResponse:
+        connection = self._remote_connection_by_id(connection_id)
+        if connection is None:
+            raise ValueError("Remote connection not found.")
+        self._set_remote_connection_status(connection_id, "connecting", "Installing Codex")
+        install_script = (
+            "if command -v curl >/dev/null 2>&1; then "
+            f"installer_script=\"$(curl -fsSL {CODEX_POSIX_INSTALL_URL})\" || exit; "
+            "elif command -v wget >/dev/null 2>&1; then "
+            f"installer_script=\"$(wget -qO- {CODEX_POSIX_INSTALL_URL})\" || exit; "
+            "else echo 'curl or wget is required to install Codex' >&2; exit 127; fi; "
+            "printf '%s\\n' \"$installer_script\" | "
+            "CODEX_RELEASE=latest CODEX_NON_INTERACTIVE=1 sh"
+        )
+        process = await asyncio.create_subprocess_exec(
+            *self._ssh_base_args(connection),
+            self._remote_login_shell_command(install_script),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=600)
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.wait()
+            detail = "Remote Codex install timed out."
+            self._set_remote_connection_status(connection_id, "error", detail)
+            return CodexRemoteConnectionTestResponse(ok=False, detail=detail)
+        detail = "\n".join(
+            item.decode("utf-8", errors="replace").strip()
+            for item in (stdout, stderr)
+            if item
+        ).strip()
+        ok = process.returncode == 0
+        if ok:
+            await self.restart_remote_connection(connection_id)
+        else:
+            self._set_remote_connection_status(
+                connection_id,
+                "error",
+                detail or f"Install exited with code {process.returncode}.",
+            )
+        return CodexRemoteConnectionTestResponse(
+            ok=ok,
+            detail=detail or ("Codex installed." if ok else "Codex install failed."),
+        )
 
     async def test_remote_connection(
         self,
@@ -184,6 +275,7 @@ class CodexIpcManager:
         connection = self._remote_connection_by_id(connection_id)
         if connection is None:
             raise ValueError("Remote connection not found.")
+        self._set_remote_connection_status(connection_id, "connecting", "Checking")
         args = self._ssh_base_args(connection)
         script = "command -v codex >/dev/null 2>&1 && codex --version"
         process = await asyncio.create_subprocess_exec(
@@ -197,6 +289,11 @@ class CodexIpcManager:
         except asyncio.TimeoutError:
             process.kill()
             await process.wait()
+            self._set_remote_connection_status(
+                connection_id,
+                "error",
+                "SSH connection timed out.",
+            )
             return CodexRemoteConnectionTestResponse(
                 ok=False,
                 detail="SSH connection timed out.",
@@ -206,15 +303,18 @@ class CodexIpcManager:
             for item in (stdout, stderr)
             if item
         ).strip()
-        return CodexRemoteConnectionTestResponse(
-            ok=process.returncode == 0,
-            detail=output
-            or (
-                "Codex is available on the remote host."
-                if process.returncode == 0
-                else f"SSH exited with code {process.returncode}."
-            ),
+        ok = process.returncode == 0
+        detail = output or (
+            "Codex is available on the remote host."
+            if ok
+            else f"SSH exited with code {process.returncode}."
         )
+        self._set_remote_connection_status(
+            connection_id,
+            "connected" if ok else "error",
+            detail,
+        )
+        return CodexRemoteConnectionTestResponse(ok=ok, detail=detail)
 
     async def list_threads(self) -> ThreadListResponse:
         session = await self._ensure_workspace_session()
@@ -666,6 +766,36 @@ class CodexIpcManager:
             if connection.id == normalized_id:
                 return connection
         return None
+
+    def _remote_statuses_for(
+        self,
+        settings: StoredCodexSettings,
+    ) -> dict[str, CodexRemoteConnectionStatus]:
+        active_id = settings.active_remote_connection_id.strip()
+        statuses: dict[str, CodexRemoteConnectionStatus] = {}
+        known_ids = {connection.id for connection in settings.remote_connections}
+        for stale_id in set(self._remote_connection_statuses) - known_ids:
+            self._remote_connection_statuses.pop(stale_id, None)
+        for connection in settings.remote_connections:
+            status = self._remote_connection_statuses.get(connection.id)
+            if status is None:
+                status = CodexRemoteConnectionStatus(
+                    status="connecting" if connection.id == active_id else "disconnected",
+                    detail="Connecting" if connection.id == active_id else "Disconnected",
+                )
+            statuses[connection.id] = status
+        return statuses
+
+    def _set_remote_connection_status(
+        self,
+        connection_id: str,
+        status: str,
+        detail: str = "",
+    ) -> None:
+        self._remote_connection_statuses[connection_id] = CodexRemoteConnectionStatus(
+            status=status,  # type: ignore[arg-type]
+            detail=detail,
+        )
 
     def _ssh_base_args(self, connection: CodexRemoteConnection) -> tuple[str, ...]:
         args = [

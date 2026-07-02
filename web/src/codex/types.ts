@@ -33,6 +33,7 @@ export interface CodexWorkspaceResponse {
   paired_editors?: JsonRecord[]
   remote_connections?: CodexRemoteConnection[]
   active_remote_connection_id?: string
+  remote_connection_statuses?: Record<string, CodexRemoteConnectionStatus>
 }
 
 export interface CodexRemoteConnection {
@@ -44,6 +45,17 @@ export interface CodexRemoteConnection {
   identity_file: string
   remote_path: string
   auto_connect: boolean
+}
+
+export type CodexRemoteConnectionRuntimeStatus =
+  | 'connected'
+  | 'connecting'
+  | 'disconnected'
+  | 'error'
+
+export interface CodexRemoteConnectionStatus {
+  status: CodexRemoteConnectionRuntimeStatus
+  detail?: string
 }
 
 export interface CodexRemoteConnectionPayload {
@@ -59,6 +71,7 @@ export interface CodexRemoteConnectionPayload {
 export interface CodexRemoteConnectionsResponse {
   connections: CodexRemoteConnection[]
   active_connection_id: string
+  statuses?: Record<string, CodexRemoteConnectionStatus>
 }
 
 export interface CodexRemoteConnectionResponse {

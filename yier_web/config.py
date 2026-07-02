@@ -143,8 +143,10 @@ class AppConfigService:
         connections.append(connection)
         settings.codex.remote_connections = self._normalize_remote_connections(connections)
         connection = settings.codex.remote_connections[-1]
-        if payload.auto_connect or not settings.codex.active_remote_connection_id:
+        if payload.auto_connect:
             settings.codex.active_remote_connection_id = connection.id
+        elif settings.codex.active_remote_connection_id == connection.id:
+            settings.codex.active_remote_connection_id = ""
         self._write_json(self.settings_path, settings.model_dump())
         return connection
 

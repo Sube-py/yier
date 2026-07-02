@@ -148,9 +148,23 @@ class CodexRemoteConnectionResponse(BaseModel):
     connection: CodexRemoteConnection
 
 
+CodexRemoteConnectionRuntimeStatus = Literal[
+    "connected",
+    "connecting",
+    "disconnected",
+    "error",
+]
+
+
+class CodexRemoteConnectionStatus(BaseModel):
+    status: CodexRemoteConnectionRuntimeStatus = "disconnected"
+    detail: str = ""
+
+
 class CodexRemoteConnectionsResponse(BaseModel):
     connections: list[CodexRemoteConnection] = Field(default_factory=list)
     active_connection_id: str = ""
+    statuses: dict[str, CodexRemoteConnectionStatus] = Field(default_factory=dict)
 
 
 class CodexRemoteConnectionTestResponse(BaseModel):
@@ -354,6 +368,9 @@ class CodexWorkspaceResponse(BaseModel):
     paired_editors: list[CodexPairingExtensionSummary] = Field(default_factory=list)
     remote_connections: list[CodexRemoteConnection] = Field(default_factory=list)
     active_remote_connection_id: str = ""
+    remote_connection_statuses: dict[str, CodexRemoteConnectionStatus] = Field(
+        default_factory=dict
+    )
 
 
 CodexFilesystemEntryKind = Literal["directory", "file", "other"]

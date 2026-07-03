@@ -6,12 +6,16 @@
 
 - 根据 yier 持久化的 Codex 设置构建 `codex_ipc.CodexIpcConfig`。
 - 为每个活跃 thread 保持一个长期存在的 `CodexIpcSession`。
-- 将原始 `ConversationState` 更新分发给 WebSocket 订阅者。
+- 通过共享 session event hub 将 Codex session 事件分发给 WebSocket、
+  SSE 监听者，以及未来的外部 channel sink。
 - 承载 Web 应用的 Codex-only 后端能力。
 
 ## 主要文件
 
-- `ipc_manager.py`: 会话生命周期、workspace 列表、thread 命令与 WebSocket 状态分发。
+- `ipc_manager.py`: 会话生命周期、workspace 列表、thread 命令与 session
+  event 分发。
+- `session_events.py`: Codex session event fanout 使用的 thread 订阅者与
+  channel sink 注册表。
 
 ## 说明
 

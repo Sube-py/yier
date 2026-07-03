@@ -36,6 +36,13 @@ from codex_app_server.generated.v2_all import (
     LoginAccountResponse,
 )
 from yier_web.config import AppConfigService
+from yier_web.codex.session_events import (
+    CodexSessionEvent,
+    CodexSessionEventHub,
+    CodexSessionEventQueue,
+    CodexSessionEventSink,
+    Unsubscribe,
+)
 from yier_web.event_stream import EventStreamBroker
 from yier_web.schemas import (
     CodexNativeSessionSummary,
@@ -53,7 +60,7 @@ logger = logging.getLogger(__name__)
 CODEX_POSIX_INSTALL_URL = "https://chatgpt.com/codex/install.sh"
 CODEX_CONFIG_FILE = "config.toml"
 
-CodexSubscriberQueue = asyncio.Queue[dict[str, Any]]
+CodexSubscriberQueue = CodexSessionEventQueue
 CodexSessionFactory = Callable[..., CodexIpcSession]
 
 
@@ -174,7 +181,8 @@ class CodexIpcManager:
         self.event_broker = event_broker
         self._session_factory = session_factory
         self._threads: dict[str, ManagedCodexThread] = {}
-        self._subscribers: dict[str, set[CodexSubscriberQueue]] = {}
+        self._session_events = CodexSessionEventHub()
+        self._session_events.add_sink(self._publish_session_event_to_broker)
         self._workspace_session: CodexIpcSession | None = None
         self._remote_connection_statuses: dict[str, CodexRemoteConnectionStatus] = {}
         self._remote_login_forwards: dict[str, asyncio.subprocess.Process] = {}
@@ -193,7 +201,7 @@ class CodexIpcManager:
                 await managed.watcher_task
             await managed.session.stop()
         self._threads.clear()
-        self._subscribers.clear()
+        self._session_events.clear_thread_subscribers()
 
         if self._workspace_session is not None:
             await self._workspace_session.stop()
@@ -504,37 +512,41 @@ class CodexIpcManager:
             managed.session.config.host_id,
         )
 
+    def add_session_event_sink(self, sink: CodexSessionEventSink) -> Unsubscribe:
+        return self._session_events.add_sink(sink)
+
     async def subscribe(
         self,
         thread_id: str,
         queue: CodexSubscriberQueue,
     ) -> JsonDict | None:
         managed = await self._ensure_thread(thread_id)
-        self._subscribers.setdefault(thread_id, set()).add(queue)
+        self._session_events.subscribe_thread(thread_id, queue)
         state = self._state_with_host_id(
             managed.state or managed.session.state,
             managed.session.config.host_id,
         )
-        await queue.put(
-            {
-                "type": "thread_snapshot",
-                "payload": {
-                    "thread_id": thread_id,
-                    "state": state,
-                    "stream_role": managed.session.stream_role,
-                    "queued_followups": managed.session.queued_followups,
-                },
-            }
+        await self._session_events.publish_to_thread_subscribers(
+            thread_id,
+            self._legacy_thread_event(
+                "thread_snapshot",
+                thread_id,
+                state=state,
+                session=managed.session,
+            ),
+        )
+        await self._session_events.publish_to_thread_subscribers(
+            thread_id,
+            self._session_state_event(
+                thread_id,
+                state,
+                session=managed.session,
+            ),
         )
         return state
 
     def unsubscribe(self, thread_id: str, queue: CodexSubscriberQueue) -> None:
-        subscribers = self._subscribers.get(thread_id)
-        if subscribers is None:
-            return
-        subscribers.discard(queue)
-        if not subscribers:
-            self._subscribers.pop(thread_id, None)
+        self._session_events.unsubscribe_thread(thread_id, queue)
 
     async def send_prompt(
         self,
@@ -748,7 +760,7 @@ class CodexIpcManager:
         with contextlib.suppress(asyncio.CancelledError):
             await managed.watcher_task
         await managed.session.stop()
-        self._subscribers.pop(thread_id, None)
+        self._session_events.clear_thread(thread_id)
 
     async def _restart_sessions(self) -> None:
         for managed in list(self._threads.values()):
@@ -758,7 +770,7 @@ class CodexIpcManager:
                 await managed.watcher_task
             await managed.session.stop()
         self._threads.clear()
-        self._subscribers.clear()
+        self._session_events.clear_thread_subscribers()
         if self._workspace_session is not None:
             await self._workspace_session.stop()
             self._workspace_session = None
@@ -783,19 +795,81 @@ class CodexIpcManager:
     ) -> None:
         state_with_host = self._state_with_host_id(state, session.config.host_id)
         payload = {
-            "type": "thread_state",
+            "thread_id": thread_id,
+            "state": state_with_host,
+            "stream_role": session.stream_role,
+            "queued_followups": session.queued_followups,
+        }
+        await self._session_events.publish_to_thread_subscribers(
+            thread_id,
+            {
+                "type": "thread_state",
+                "payload": payload,
+            },
+        )
+        await self._session_events.publish_thread_event(
+            thread_id,
+            self._session_state_event(
+                thread_id,
+                state_with_host,
+                session=session,
+            ),
+        )
+        await self.event_broker.publish(
+            "codex_thread_state",
+            payload,
+        )
+
+    def _legacy_thread_event(
+        self,
+        event_type: str,
+        thread_id: str,
+        *,
+        state: JsonDict | None,
+        session: CodexIpcSession,
+    ) -> CodexSessionEvent:
+        return {
+            "type": event_type,
             "payload": {
                 "thread_id": thread_id,
-                "state": state_with_host,
+                "state": state,
                 "stream_role": session.stream_role,
                 "queued_followups": session.queued_followups,
             },
         }
-        for queue in list(self._subscribers.get(thread_id, set())):
-            queue.put_nowait(payload)
+
+    def _session_state_event(
+        self,
+        thread_id: str,
+        state: JsonDict | None,
+        *,
+        session: CodexIpcSession,
+    ) -> CodexSessionEvent:
+        return {
+            "type": "codex_session_event",
+            "payload": {
+                "thread_id": thread_id,
+                "method": "thread-stream-state-changed",
+                "params": {
+                    "conversationId": thread_id,
+                    "type": "snapshot",
+                    "state": state,
+                    "streamRole": session.stream_role,
+                    "queuedFollowups": session.queued_followups,
+                },
+            },
+        }
+
+    async def _publish_session_event_to_broker(
+        self,
+        event: CodexSessionEvent,
+    ) -> None:
+        if event.get("type") != "codex_session_event":
+            return
+        payload = event.get("payload")
         await self.event_broker.publish(
-            "codex_thread_state",
-            payload["payload"],
+            "codex_session_event",
+            payload if isinstance(payload, dict) else {},
         )
 
     def _state_with_host_id(
@@ -849,9 +923,19 @@ class CodexIpcManager:
                 "thread_id": thread_id,
             },
         }
-        for subscribers in list(self._subscribers.values()):
-            for queue in list(subscribers):
-                queue.put_nowait(payload)
+        await self._session_events.publish_to_all_thread_subscribers(payload)
+        await self._session_events.publish_global_event(
+            {
+                "type": "codex_session_event",
+                "payload": {
+                    "thread_id": thread_id,
+                    "method": event_type,
+                    "params": {
+                        "threadId": thread_id,
+                    },
+                },
+            }
+        )
         await self.event_broker.publish(event_type, payload["payload"])
 
     def _config(self, *, thread_id: str | None = None) -> CodexIpcConfig:

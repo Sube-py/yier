@@ -7,13 +7,16 @@ This package contains the Codex-specific backend integration for the standalone
 
 - Build `codex_ipc.CodexIpcConfig` from stored yier Codex settings.
 - Keep one long-lived `CodexIpcSession` per active thread.
-- Fan out raw `ConversationState` updates to WebSocket subscribers.
+- Fan out Codex session events to WebSocket subscribers, SSE listeners, and
+  future channel sinks through a shared session event hub.
 - Own the Codex-only backend surface for the web app.
 
 ## Main Files
 
 - `ipc_manager.py`: session lifecycle, workspace listing, thread commands, and
-  WebSocket fanout state.
+- session event fanout state.
+- `session_events.py`: thread subscriber and channel sink registry for Codex
+  session event fanout.
 
 ## Notes
 

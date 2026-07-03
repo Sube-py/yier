@@ -246,6 +246,7 @@ export type CodexClientCommand =
 export type CodexServerEventType =
   | 'connection_ready'
   | 'workspace'
+  | 'codex_session_event'
   | 'thread_snapshot'
   | 'thread_state'
   | 'thread_archived'

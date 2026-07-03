@@ -382,6 +382,15 @@ async def _wait_for_event(
             return event
 
 
+async def _wait_for_broker_event(
+    queue: asyncio.Queue[Any], predicate: Callable[[Any], bool]
+) -> Any:
+    while True:
+        event = await asyncio.wait_for(queue.get(), timeout=2.0)
+        if predicate(event):
+            return event
+
+
 def test_codex_manager_keeps_separate_sessions_alive(tmp_path: Path) -> None:
     async def scenario() -> None:
         config_service = AppConfigService(
@@ -480,6 +489,80 @@ def test_codex_manager_keeps_separate_sessions_alive(tmp_path: Path) -> None:
         assert factory.by_thread_id("thread-created").stopped is True
         assert factory.by_thread_id("thread-plan").stopped is True
         assert factory.workspace_session().stopped is True
+
+    asyncio.run(scenario())
+
+
+def test_codex_manager_fans_out_session_events_to_sinks(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        config_service = AppConfigService(
+            project_root=tmp_path / "project",
+            home_dir=tmp_path / "home",
+        )
+        factory = FakeSessionFactory()
+        event_broker = EventStreamBroker()
+        broker_queue = event_broker.subscribe()
+        manager = CodexIpcManager(
+            config_service=config_service,
+            event_broker=event_broker,
+            session_factory=factory,
+        )
+        sink_events: list[dict[str, Any]] = []
+        manager.add_session_event_sink(lambda event: sink_events.append(event))
+
+        await manager.start()
+        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        await manager.subscribe("thread-a", queue)
+
+        snapshot = await _wait_for_event(
+            queue,
+            lambda event: event["type"] == "thread_snapshot",
+        )
+        assert snapshot["payload"]["thread_id"] == "thread-a"
+
+        replay = await _wait_for_event(
+            queue,
+            lambda event: event["type"] == "codex_session_event",
+        )
+        assert replay["payload"]["method"] == "thread-stream-state-changed"
+        assert replay["payload"]["params"]["conversationId"] == "thread-a"
+
+        factory.by_thread_id("thread-a").emit_state(
+            {"id": "thread-a", "phase": "working", "turns": []}
+        )
+
+        legacy = await _wait_for_event(
+            queue,
+            lambda event: (
+                event["type"] == "thread_state"
+                and event["payload"]["state"].get("phase") == "working"
+            ),
+        )
+        canonical = await _wait_for_event(
+            queue,
+            lambda event: (
+                event["type"] == "codex_session_event"
+                and event["payload"]["params"]["state"].get("phase") == "working"
+            ),
+        )
+        broker_event = await _wait_for_broker_event(
+            broker_queue,
+            lambda event: (
+                event.event == "codex_session_event"
+                and event.data["params"]["state"].get("phase") == "working"
+            ),
+        )
+
+        assert legacy["payload"]["state"]["hostId"] == "local"
+        assert canonical["payload"]["params"]["state"]["hostId"] == "local"
+        assert broker_event.data["method"] == "thread-stream-state-changed"
+        assert any(
+            event["payload"]["params"]["state"].get("phase") == "working"
+            for event in sink_events
+            if event.get("type") == "codex_session_event"
+        )
+
+        await manager.stop()
 
     asyncio.run(scenario())
 

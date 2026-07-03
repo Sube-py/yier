@@ -554,12 +554,15 @@ class CodexIpcManager:
         prompt: str,
         *,
         collaboration_mode: JsonDict | None = None,
+        attachments: list[JsonDict] | None = None,
     ) -> None:
         managed = await self._ensure_thread(thread_id)
+        input_items = self._prompt_input_items(prompt.strip(), attachments or [])
         await managed.session.run_prompt(
             prompt.strip(),
             wait_for_completion=False,
             collaboration_mode=collaboration_mode,
+            input_items=input_items if attachments else None,
         )
         if collaboration_mode is not None:
             await self._apply_latest_collaboration_mode(
@@ -567,6 +570,31 @@ class CodexIpcManager:
                 managed,
                 collaboration_mode,
             )
+
+    def _prompt_input_items(
+        self,
+        prompt: str,
+        attachments: list[JsonDict],
+    ) -> list[JsonDict]:
+        items: list[JsonDict] = [{"type": "text", "text": prompt, "text_elements": []}]
+        for attachment in attachments:
+            item_type = attachment.get("type")
+            if item_type in {"image", "input_image"}:
+                image_url = (
+                    attachment.get("imageUrl")
+                    or attachment.get("image_url")
+                    or attachment.get("url")
+                    or attachment.get("src")
+                )
+                if isinstance(image_url, str) and image_url.strip():
+                    items.append(
+                        {
+                            "type": "image",
+                            "url": image_url.strip(),
+                            "detail": "auto",
+                        }
+                    )
+        return items
 
     async def steer_prompt(self, thread_id: str, prompt: str) -> None:
         managed = await self._ensure_thread(thread_id)

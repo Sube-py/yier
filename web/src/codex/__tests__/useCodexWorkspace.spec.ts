@@ -266,6 +266,46 @@ describe('useCodexWorkspace', () => {
     })
   })
 
+  it('sends image attachments with prompt submissions', async () => {
+    const socket = new FakeCodexSocket()
+    const { workspace } = mountHarness(socket)
+    await flushPromises()
+
+    await workspace.sendPrompt({
+      prompt: '',
+      attachments: [
+        {
+          type: 'image',
+          imageUrl: 'data:image/png;base64,abc',
+          name: 'preview.png',
+        },
+      ],
+    })
+
+    expect(socket.commands[socket.commands.length - 1]).toEqual({
+      type: 'send_prompt',
+      payload: {
+        thread_id: 'thread-a',
+        prompt: '',
+        attachments: [
+          {
+            type: 'image',
+            imageUrl: 'data:image/png;base64,abc',
+            name: 'preview.png',
+          },
+        ],
+        collaboration_mode: {
+          mode: 'default',
+          settings: {
+            model: '',
+            reasoning_effort: null,
+            developer_instructions: null,
+          },
+        },
+      },
+    })
+  })
+
   it('sets, updates, and clears thread goals', async () => {
     const socket = new FakeCodexSocket()
     const { workspace } = mountHarness(socket)

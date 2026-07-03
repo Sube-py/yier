@@ -23,6 +23,13 @@ def _payload_dict(payload: dict[str, Any], key: str) -> dict[str, Any] | None:
     return dict(value) if isinstance(value, dict) else None
 
 
+def _payload_dict_list(payload: dict[str, Any], key: str) -> list[dict[str, Any]]:
+    value = payload.get(key)
+    if not isinstance(value, list):
+        return []
+    return [dict(item) for item in value if isinstance(item, dict)]
+
+
 def _payload_int(payload: dict[str, Any], key: str) -> int | None:
     value = payload.get(key)
     if isinstance(value, bool):
@@ -96,11 +103,15 @@ class UnsubscribeThreadCommandStrategy(ThreadCommandStrategy):
 class SendPromptCommandStrategy(ThreadCommandStrategy):
     async def execute(self, context: CodexWsCommandContext) -> dict[str, Any]:
         thread_id = self.thread_id(context)
-        prompt = _required_payload_text(context.payload, "prompt")
+        prompt = _payload_text(context.payload, "prompt")
+        attachments = _payload_dict_list(context.payload, "attachments")
+        if not prompt and not attachments:
+            raise ValueError("prompt or attachments is required.")
         await context.manager.send_prompt(
             thread_id,
             prompt,
             collaboration_mode=_payload_dict(context.payload, "collaboration_mode"),
+            attachments=attachments,
         )
         return {"thread_id": thread_id}
 

@@ -107,4 +107,34 @@ describe('CodexChatPane', () => {
 
     expect(wrapper.emitted('remoteConnectionChanged')).toHaveLength(1)
   })
+
+  it('shows thread git info when present', () => {
+    const wrapper = shallowMount(CodexChatPane, {
+      props: {
+        ...baseProps,
+        activeThreadState: {
+          id: 'thread-1',
+          turns: [],
+          gitInfo: {
+            branch: 'feature/goal-mode',
+            sha: 'abcdef1234567890',
+            originUrl: 'git@example.com:app/repo.git',
+          },
+        },
+      },
+      global: {
+        stubs: {
+          CodexComposer: true,
+          CodexConversation: true,
+          CodexRequestPanel: true,
+          CodexThreadToolbar: true,
+        },
+      },
+    })
+
+    const gitInfo = wrapper.get('[data-codex-git-info]')
+    expect(gitInfo.text()).toContain('feature/goal-mode')
+    expect(gitInfo.text()).toContain('abcdef1')
+    expect(gitInfo.text()).toContain('git@example.com:app/repo.git')
+  })
 })

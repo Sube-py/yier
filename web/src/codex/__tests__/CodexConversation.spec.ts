@@ -202,6 +202,129 @@ describe('CodexConversation', () => {
     expect(wrapper.get('[data-codex-assistant-message]').text()).toContain('Ready')
   })
 
+  it('preserves turn item order and folds non-final agent messages into work', async () => {
+    const wrapper = mountConversation(
+      [
+        {
+          id: 'user-1',
+          type: 'userMessage',
+          content: 'Please inspect this',
+        },
+        {
+          id: 'agent-commentary-1',
+          type: 'agentMessage',
+          phase: 'commentary',
+          text: 'I will inspect the relevant files first.',
+        },
+        {
+          id: 'command-1',
+          type: 'commandExecution',
+          command: 'rg "goal" web/src/codex',
+          aggregatedOutput: 'web/src/codex/components/CodexConversation.vue',
+        },
+        {
+          id: 'agent-final-1',
+          type: 'agentMessage',
+          phase: 'final_answer',
+          text: 'Done.',
+        },
+      ],
+      {
+        durationMs: 2_000,
+      },
+    )
+
+    const visibleBlocks = wrapper.findAll(
+      '[data-codex-user-message], [data-codex-work-section], [data-codex-assistant-message]',
+    )
+    expect(visibleBlocks.map((block) => block.attributes())).toMatchObject([
+      { 'data-codex-user-message': '' },
+      { 'data-codex-work-section': '' },
+      { 'data-codex-assistant-message': '' },
+    ])
+
+    const assistant = wrapper.get('[data-codex-assistant-message]')
+    expect(assistant.text()).toContain('Done.')
+    expect(assistant.text()).not.toContain('I will inspect the relevant files first.')
+
+    await wrapper.get('[data-codex-work-toggle]').trigger('click')
+    const workRows = wrapper.findAll('[data-codex-work-item]')
+
+    expect(workRows).toHaveLength(2)
+    expect(workRows[0]?.text()).toContain('Message')
+    expect(workRows[0]?.text()).toContain('I will inspect the relevant files first.')
+    expect(workRows[1]?.text()).toContain('Ran shell')
+    expect(workRows[1]?.text()).toContain('rg "goal" web/src/codex')
+  })
+
+  it('does not render explicit commentary as the final assistant response', async () => {
+    const wrapper = mountConversation([
+      {
+        id: 'agent-commentary-1',
+        type: 'agentMessage',
+        phase: 'commentary',
+        text: 'Still working through this.',
+      },
+    ])
+
+    expect(wrapper.find('[data-codex-assistant-message]').exists()).toBe(false)
+
+    await wrapper.get('[data-codex-work-toggle]').trigger('click')
+
+    expect(wrapper.get('[data-codex-work-item]').text()).toContain('Still working through this.')
+  })
+
+  it('keeps work item expansion scoped per turn even when item ids repeat', async () => {
+    const wrapper = mount(CodexConversation, {
+      props: {
+        state: {
+          id: 'thread-1',
+          turns: [
+            {
+              turnId: 'turn-1',
+              status: 'completed',
+              items: [
+                {
+                  id: 'command-1',
+                  type: 'commandExecution',
+                  command: 'pnpm first',
+                  aggregatedOutput: 'first output',
+                },
+                { id: 'agent-1', type: 'agentMessage', phase: 'final_answer', text: 'First done' },
+              ],
+            },
+            {
+              turnId: 'turn-2',
+              status: 'completed',
+              items: [
+                {
+                  id: 'command-1',
+                  type: 'commandExecution',
+                  command: 'pnpm second',
+                  aggregatedOutput: 'second output',
+                },
+                { id: 'agent-2', type: 'agentMessage', phase: 'final_answer', text: 'Second done' },
+              ],
+            },
+          ],
+        },
+      },
+      attachTo: document.body,
+    })
+
+    const workToggles = wrapper.findAll('[data-codex-work-toggle]')
+    await workToggles[0]?.trigger('click')
+    await workToggles[1]?.trigger('click')
+
+    const rows = wrapper.findAll('[data-codex-work-row]')
+    await rows[0]?.trigger('click')
+
+    const details = wrapper.findAll('[data-codex-work-detail]')
+    expect(details).toHaveLength(1)
+    expect(details[0]?.text()).toContain('first output')
+    expect(wrapper.text()).not.toContain('second output')
+  })
+
   it('keeps in-progress work expanded and shows working elapsed time', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-05-21T00:00:03.000Z'))
@@ -343,9 +466,110 @@ describe('CodexConversation', () => {
       ]),
     )
     expect(report.text()).toContain('Turn report')
-    expect(wrapper.get('[data-codex-turn-report-files]').text()).toContain('2 files')
+    expect(report.text()).toContain('2 files changed')
+    expect(wrapper.findAll('[data-codex-turn-report-files]')).toHaveLength(2)
+    expect(wrapper.findAll('[data-codex-turn-report-files]')[0]?.text()).toContain('src/App.vue')
     expect(wrapper.get('[data-codex-turn-report-lines]').text()).toContain('+14 / -3')
     expect(wrapper.get('[data-codex-turn-report-commands]').text()).toContain('1 command')
+  })
+
+  it('renders turn report files one per row from unified diff stats', () => {
+    const wrapper = mountConversation([
+      {
+        id: 'files-1',
+        type: 'fileChange',
+        changes: [
+          {
+            path: 'web/src/codex/__tests__/CodexConversation.spec.ts',
+            kind: 'add',
+            diff: '+++ b/web/src/codex/__tests__/CodexConversation.spec.ts\n+one\n+two\n',
+          },
+          {
+            path: 'web/src/codex/components/CodexConversation.vue',
+            kind: 'modify',
+            diff: '--- a/web/src/codex/components/CodexConversation.vue\n+++ b/web/src/codex/components/CodexConversation.vue\n-old\n+new\n',
+          },
+        ],
+      },
+      {
+        id: 'agent-1',
+        type: 'agentMessage',
+        text: 'Done.',
+      },
+    ])
+
+    const rows = wrapper.findAll('[data-codex-turn-report-files]')
+    expect(rows).toHaveLength(2)
+    expect(rows[0]?.text()).toContain('web/src/codex/__tests__/CodexConversation.spec.ts')
+    expect(rows[0]?.text()).toContain('+2')
+    expect(rows[1]?.text()).toContain('web/src/codex/components/CodexConversation.vue')
+    expect(rows[1]?.text()).toContain('+1')
+    expect(rows[1]?.text()).toContain('-1')
+  })
+
+  it('renders web search work without falling back to raw json', async () => {
+    const wrapper = mountConversation([
+      {
+        id: 'search-1',
+        type: 'webSearch',
+        status: 'completed',
+        action: { type: 'search', queries: ['codex app goal mode'] },
+      },
+      {
+        id: 'agent-1',
+        type: 'agentMessage',
+        text: 'Found it.',
+      },
+    ])
+
+    await wrapper.get('[data-codex-work-toggle]').trigger('click')
+
+    expect(wrapper.get('[data-codex-work-item]').text()).toContain('Searched the web')
+    expect(wrapper.get('[data-codex-work-item]').text()).toContain('codex app goal mode')
+    expect(wrapper.find('[data-codex-unknown-item]').exists()).toBe(false)
+  })
+
+  it('renders image user messages and goal hover metadata', () => {
+    const wrapper = mount(CodexConversation, {
+      props: {
+        state: {
+          id: 'thread-1',
+          completedThreadGoal: {
+            threadId: 'thread-1',
+            objective: 'Ship it',
+            status: 'complete',
+            timeUsedSeconds: 522,
+            updatedAt: new Date('2026-05-21T23:05:00Z').getTime(),
+          },
+          turns: [
+            {
+              turnId: 'turn-1',
+              status: 'completed',
+              turnStartedAtMs: new Date('2026-05-21T23:00:00Z').getTime(),
+              items: [
+                {
+                  id: 'user-1',
+                  type: 'userMessage',
+                  content: [
+                    { type: 'text', text: 'Ship it' },
+                    { type: 'image', url: 'data:image/png;base64,abc' },
+                  ],
+                },
+                { id: 'agent-1', type: 'agentMessage', text: 'Done.' },
+              ],
+            },
+          ],
+        },
+      },
+      attachTo: document.body,
+    })
+
+    expect(wrapper.get('[data-codex-message-image]').attributes('src')).toBe(
+      'data:image/png;base64,abc',
+    )
+    expect(wrapper.get('[data-codex-sent-as-goal]').text()).toContain('sent as goal')
+    expect(wrapper.get('[data-codex-goal-achieved]').text()).toContain('Goal achieved in 8m 42s')
+    expect(wrapper.find('[data-codex-fork-message]').exists()).toBe(true)
   })
 
   it('renders unknown items as contained raw json', () => {

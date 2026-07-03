@@ -48,6 +48,8 @@ const selectedModel = ref('')
 const selectedReasoningEffort = ref('')
 const goalTokenBudgetDraft = ref('')
 const isGoalComposeMode = ref(false)
+const imageInput = ref<HTMLInputElement | null>(null)
+const imageAttachments = ref<JsonRecord[]>([])
 const remoteMenuOpen = ref(false)
 const remoteSwitchingId = ref<string | null>(null)
 const remoteSwitchError = ref('')
@@ -61,7 +63,8 @@ const reasoningOptions = computed(() =>
 const activeModel = computed(() => selectedModel.value || latestModel.value)
 const activeReasoningEffort = computed(() => selectedReasoningEffort.value || latestReasoningEffort.value)
 const hasDraft = computed(() => draft.value.trim().length > 0)
-const canSubmitText = computed(() => hasDraft.value && !props.disabled && !props.busy)
+const hasPromptInput = computed(() => hasDraft.value || imageAttachments.value.length > 0)
+const canSubmitText = computed(() => hasPromptInput.value && !props.disabled && !props.busy)
 const primaryAction = computed(() => {
   if (props.isWorking && !hasDraft.value) {
     return 'stop'
@@ -147,6 +150,7 @@ watch(
   () => {
     goalTokenBudgetDraft.value = ''
     isGoalComposeMode.value = false
+    imageAttachments.value = []
   },
 )
 
@@ -154,12 +158,15 @@ function sendSubmission() {
   if (!canSubmitText.value || props.isWorking) {
     return
   }
+  const attachments = imageAttachments.value.map((attachment) => ({ ...attachment }))
   emit('sendPrompt', {
     prompt: draft.value,
     model: activeModel.value,
     reasoningEffort: activeReasoningEffort.value,
+    ...(attachments.length ? { attachments } : {}),
   })
   draft.value = ''
+  imageAttachments.value = []
 }
 
 function submitGoal() {
@@ -178,7 +185,7 @@ function parsedGoalTokenBudget() {
 }
 
 function submitQueue() {
-  if (!canSubmitText.value) {
+  if (!hasDraft.value || props.disabled || props.busy) {
     return
   }
   emit('enqueueFollowup', draft.value)
@@ -234,6 +241,54 @@ function onKeydown(event: KeyboardEvent) {
   if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
     submitPrimary()
   }
+}
+
+function chooseImages() {
+  if (props.busy || props.disabled || props.isWorking) {
+    return
+  }
+  imageInput.value?.click()
+}
+
+async function onImageInputChange(event: Event) {
+  const input = event.currentTarget as HTMLInputElement | null
+  const files = Array.from(input?.files ?? []).filter((file) => file.type.startsWith('image/'))
+  const loaded = await Promise.all(files.map(imageAttachmentFromFile))
+  imageAttachments.value = [...imageAttachments.value, ...loaded]
+  if (input) {
+    input.value = ''
+  }
+}
+
+function imageAttachmentFromFile(file: File): Promise<JsonRecord> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.addEventListener('load', () => {
+      resolve({
+        type: 'image',
+        imageUrl: typeof reader.result === 'string' ? reader.result : '',
+        name: file.name,
+        mimeType: file.type,
+      })
+    })
+    reader.addEventListener('error', () => reject(reader.error ?? new Error('Unable to read image.')))
+    reader.readAsDataURL(file)
+  })
+}
+
+function removeImageAttachment(index: number) {
+  imageAttachments.value = imageAttachments.value.filter((_, itemIndex) => itemIndex !== index)
+}
+
+function imageAttachmentName(attachment: JsonRecord, index: number) {
+  return typeof attachment.name === 'string' && attachment.name.trim()
+    ? attachment.name
+    : `Image ${index + 1}`
+}
+
+function imageAttachmentSrc(attachment: JsonRecord) {
+  const src = attachment.imageUrl ?? attachment.image_url ?? attachment.url ?? attachment.src
+  return typeof src === 'string' ? src : ''
 }
 
 function followupText(followup: CodexQueuedFollowup) {
@@ -542,6 +597,45 @@ function goalProgressText(goal: CodexThreadGoal | null) {
           </article>
         </div>
 
+        <input
+          ref="imageInput"
+          class="sr-only"
+          type="file"
+          accept="image/*"
+          multiple
+          data-codex-image-input
+          @change="onImageInputChange"
+        />
+
+        <div
+          v-if="imageAttachments.length"
+          class="flex min-w-0 gap-2 overflow-x-auto px-1 pb-1"
+          data-codex-image-attachments
+        >
+          <article
+            v-for="(attachment, index) in imageAttachments"
+            :key="`${imageAttachmentName(attachment, index)}-${index}`"
+            class="group relative h-16 w-16 shrink-0 overflow-hidden rounded-lg border border-[color:var(--app-border)] bg-[rgba(255,253,247,0.86)]"
+            data-codex-image-attachment
+          >
+            <img
+              v-if="imageAttachmentSrc(attachment)"
+              class="h-full w-full object-cover"
+              :src="imageAttachmentSrc(attachment)"
+              :alt="imageAttachmentName(attachment, index)"
+            />
+            <button
+              type="button"
+              class="absolute right-1 top-1 inline-flex h-5 w-5 items-center justify-center rounded-md bg-white/90 text-[0.56rem] text-[color:var(--app-text-soft)] opacity-0 shadow-sm transition hover:text-red-700 group-hover:opacity-100 group-focus-within:opacity-100"
+              :aria-label="`Remove ${imageAttachmentName(attachment, index)}`"
+              data-codex-image-remove
+              @click="removeImageAttachment(index)"
+            >
+              <i class="pi pi-times"></i>
+            </button>
+          </article>
+        </div>
+
         <textarea
           v-model="draft"
           class="min-h-24 w-full min-w-0 resize-y rounded-xl border-0 bg-transparent px-2 py-2 text-sm leading-6 text-[color:var(--app-text)] outline-none placeholder:text-[color:var(--app-text-soft)] max-sm:min-h-20"
@@ -658,6 +752,18 @@ function goalProgressText(goal: CodexThreadGoal | null) {
             >
               <i class="pi pi-flag text-[0.68rem]"></i>
               <span>Goal</span>
+            </button>
+
+            <button
+              type="button"
+              class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[color:var(--app-border)] bg-white text-sm text-[color:var(--app-text-soft)] transition hover:bg-[rgba(21,94,99,0.05)] hover:text-[color:var(--app-text)] disabled:cursor-not-allowed disabled:opacity-45"
+              :disabled="busy || disabled || isWorking"
+              aria-label="Attach images"
+              title="Attach images"
+              data-codex-image-attach
+              @click="chooseImages"
+            >
+              <i class="pi pi-image text-[0.72rem]"></i>
             </button>
 
             <input

@@ -76,7 +76,9 @@ class FakeCodexIpcSession:
         self.stream_role: dict[str, Any] | None = {"role": "owner"}
         self.queued_followups: list[dict[str, Any]] = []
         self.start_new_thread_calls: list[dict[str, Any]] = []
-        self.run_prompt_calls: list[tuple[str, bool, dict[str, Any] | None]] = []
+        self.run_prompt_calls: list[
+            tuple[str, bool, dict[str, Any] | None, list[dict[str, Any]] | None]
+        ] = []
         self.steer_prompt_calls: list[str] = []
         self.interrupt_turn_calls: list[str | None] = []
         self.compact_calls = 0
@@ -167,8 +169,11 @@ class FakeCodexIpcSession:
         *,
         wait_for_completion: bool,
         collaboration_mode: dict[str, Any] | None = None,
+        input_items: list[dict[str, Any]] | None = None,
     ) -> None:
-        self.run_prompt_calls.append((prompt, wait_for_completion, collaboration_mode))
+        self.run_prompt_calls.append(
+            (prompt, wait_for_completion, collaboration_mode, input_items)
+        )
 
     async def steer_prompt(self, prompt: str) -> None:
         self.steer_prompt_calls.append(prompt)
@@ -940,6 +945,7 @@ def test_codex_controller_http_and_websocket_contract(tmp_path: Path) -> None:
                 "hello",
                 False,
                 {"mode": "build"},
+                None,
             )
 
             default_collaboration_mode = {
@@ -971,6 +977,44 @@ def test_codex_controller_http_and_websocket_contract(tmp_path: Path) -> None:
                 "implement",
                 False,
                 default_collaboration_mode,
+                None,
+            )
+
+            ws.send_json(
+                {
+                    "id": "prompt-image",
+                    "type": "send_prompt",
+                    "payload": {
+                        "thread_id": "thread-a",
+                        "prompt": "",
+                        "attachments": [
+                            {
+                                "type": "image",
+                                "imageUrl": "data:image/png;base64,abc",
+                                "name": "preview.png",
+                            }
+                        ],
+                    },
+                }
+            )
+            receive_until(
+                lambda message: (
+                    message.get("type") == "ack"
+                    and message.get("id") == "prompt-image"
+                )
+            )
+            assert factory.by_thread_id("thread-a").run_prompt_calls[-1] == (
+                "",
+                False,
+                None,
+                [
+                    {"type": "text", "text": "", "text_elements": []},
+                    {
+                        "type": "image",
+                        "url": "data:image/png;base64,abc",
+                        "detail": "auto",
+                    },
+                ],
             )
 
             ws.send_json(

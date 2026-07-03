@@ -6,6 +6,7 @@ export interface CodexPromptSubmission {
   prompt: string
   model?: string | null
   reasoningEffort?: string | null
+  attachments?: JsonRecord[]
 }
 
 export interface CodexNativeSessionSummary {
@@ -198,6 +199,7 @@ export interface CodexConversationState extends JsonRecord {
   threadGoal?: CodexThreadGoal | null
   completedThreadGoal?: CodexThreadGoal | null
   threadGoalResumeConfirmation?: JsonRecord | null
+  gitInfo?: JsonRecord | null
   cwd?: string | null
   source?: string | null
   archived?: boolean

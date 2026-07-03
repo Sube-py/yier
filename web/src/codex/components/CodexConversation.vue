@@ -9,7 +9,13 @@ const props = defineProps<{
   state: CodexConversationState | null
 }>()
 
+const emit = defineEmits<{
+  forkThread: [threadId: string]
+  copyError: [message: string]
+}>()
+
 type ConversationItemKind = 'user' | 'assistant' | 'work' | 'unknown'
+type TurnBlockKind = 'user' | 'work' | 'assistant' | 'unknown'
 
 interface ConversationItemView {
   id: string
@@ -17,13 +23,18 @@ interface ConversationItemView {
   kind: ConversationItemKind
 }
 
+interface TurnBlockView {
+  id: string
+  kind: TurnBlockKind
+  items: ConversationItemView[]
+}
+
 interface TurnView {
   key: string
   turn: CodexTurnState
-  userItems: ConversationItemView[]
+  blocks: TurnBlockView[]
   workItems: ConversationItemView[]
-  responseItems: ConversationItemView[]
-  unknownItems: ConversationItemView[]
+  finalResponseItems: ConversationItemView[]
   report: TurnReport
 }
 
@@ -34,7 +45,7 @@ interface TurnReport {
   linesRemoved: number
   commandCount: number
   toolCount: number
-  changedPaths: string[]
+  changedFiles: FileChangeView[]
 }
 
 interface FileChangeView {
@@ -48,6 +59,9 @@ const workItemTypes = new Set([
   'reasoning',
   'commandExecution',
   'fileChange',
+  'webSearch',
+  'search',
+  'git',
   'dynamicToolCall',
   'mcpToolCall',
   'collabAgentToolCall',
@@ -62,40 +76,7 @@ const turns = computed<CodexTurnState[]>(() =>
   Array.isArray(props.state?.turns) ? props.state.turns : [],
 )
 const turnViews = computed<TurnView[]>(() =>
-  turns.value.map((turn, index) => {
-    const userItems: ConversationItemView[] = []
-    const workItems: ConversationItemView[] = []
-    const responseItems: ConversationItemView[] = []
-    const unknownItems: ConversationItemView[] = []
-
-    for (const [itemIndex, item] of (Array.isArray(turn.items) ? turn.items : []).entries()) {
-      const view = {
-        id: itemId(item, itemIndex),
-        item,
-        kind: itemKind(item),
-      }
-
-      if (view.kind === 'user') {
-        userItems.push(view)
-      } else if (view.kind === 'assistant') {
-        responseItems.push(view)
-      } else if (view.kind === 'work') {
-        workItems.push(view)
-      } else {
-        unknownItems.push(view)
-      }
-    }
-
-    return {
-      key: turnKey(turn, index),
-      turn,
-      userItems,
-      workItems,
-      responseItems,
-      unknownItems,
-      report: finalTurnReport(workItems.map((workItem) => workItem.item)),
-    }
-  }),
+  turns.value.map((turn, index) => turnView(turn, index)),
 )
 const { renderMarkdown, onMarkdownClick } = useCodexMarkdown()
 const conversationBody = ref<HTMLElement | null>(null)
@@ -144,6 +125,93 @@ function itemKind(item: JsonRecord): ConversationItemKind {
     return 'work'
   }
   return 'unknown'
+}
+
+function turnView(turn: CodexTurnState, index: number): TurnView {
+  const rawItems = Array.isArray(turn.items) ? turn.items : []
+  const finalAssistantIndex = finalAssistantItemIndex(rawItems)
+  const blocks: TurnBlockView[] = []
+  const allWorkItems: ConversationItemView[] = []
+  const finalResponseItems: ConversationItemView[] = []
+  let pendingWork: ConversationItemView[] = []
+  let workBlockIndex = 0
+
+  function flushWork() {
+    if (!pendingWork.length) {
+      return
+    }
+    blocks.push({
+      id: `${turnKey(turn, index)}-work-${workBlockIndex}`,
+      kind: 'work',
+      items: pendingWork,
+    })
+    pendingWork = []
+    workBlockIndex += 1
+  }
+
+  rawItems.forEach((item, itemIndex) => {
+    const baseKind = itemKind(item)
+    const view: ConversationItemView = {
+      id: `${turnKey(turn, index)}-item-${itemIndex}-${itemId(item, itemIndex)}`,
+      item,
+      kind: baseKind,
+    }
+
+    if (baseKind === 'user') {
+      flushWork()
+      blocks.push({ id: view.id, kind: 'user', items: [view] })
+      return
+    }
+
+    if (baseKind === 'assistant' && itemIndex === finalAssistantIndex) {
+      flushWork()
+      finalResponseItems.push(view)
+      blocks.push({ id: view.id, kind: 'assistant', items: [view] })
+      return
+    }
+
+    if (baseKind === 'assistant' || baseKind === 'work') {
+      pendingWork.push(view)
+      allWorkItems.push(view)
+      return
+    }
+
+    flushWork()
+    blocks.push({ id: view.id, kind: 'unknown', items: [view] })
+  })
+  flushWork()
+
+  return {
+    key: turnKey(turn, index),
+    turn,
+    blocks,
+    workItems: allWorkItems,
+    finalResponseItems,
+    report: finalTurnReport(allWorkItems.map((workItem) => workItem.item)),
+  }
+}
+
+function finalAssistantItemIndex(items: JsonRecord[]) {
+  const explicitIndex = findLastIndex(items, (item) => {
+    const phase = firstString(item.phase)
+    return itemType(item) === 'agentMessage' && phase === 'final_answer'
+  })
+  if (explicitIndex >= 0) {
+    return explicitIndex
+  }
+  return findLastIndex(
+    items,
+    (item) => responseItemTypes.has(itemType(item)) && !firstString(item.phase),
+  )
+}
+
+function findLastIndex<T>(items: T[], predicate: (item: T, index: number) => boolean) {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    if (predicate(items[index] as T, index)) {
+      return index
+    }
+  }
+  return -1
 }
 
 function itemType(item: JsonRecord) {
@@ -330,7 +398,76 @@ function itemText(item: JsonRecord) {
   if (type === 'contextCompaction') {
     return 'Context compacted.'
   }
+  if (type === 'webSearch' || type === 'search') {
+    return webSearchDetail(item)
+  }
+  if (type === 'git') {
+    return gitDetail(item)
+  }
   return firstString(item.text, outputText(item.content), outputText(item.input))
+}
+
+function itemImages(item: JsonRecord) {
+  const candidates = [
+    item.content,
+    item.input,
+    item.attachments,
+    item.imageAttachments,
+  ].flatMap((value) => (Array.isArray(value) ? value : []))
+  return candidates
+    .filter(isRecord)
+    .map((value) => ({
+      src: firstString(value.url, value.imageUrl, value.image_url, value.src, value.path),
+      alt: firstString(value.name, value.filename, value.alt) || 'Image',
+    }))
+    .filter((image) => image.src)
+}
+
+async function copyMessageText(text: string) {
+  try {
+    await navigator.clipboard.writeText(text)
+  } catch {
+    emit('copyError', 'Unable to copy message.')
+  }
+}
+
+function messageTimestamp(item: JsonRecord, turn: CodexTurnState) {
+  return formatTimestamp(
+    firstNumber(item.createdAt, item.created_at, item.startedAt, item.started_at)
+      ?? turn.turnStartedAtMs
+      ?? null,
+  )
+}
+
+function absoluteTime(value: number | null | undefined) {
+  const ms = coerceMs(value)
+  return ms ? new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : ''
+}
+
+function isGoalUserMessage(item: JsonRecord) {
+  const text = itemText(item).trim()
+  const goal = props.state?.threadGoal ?? props.state?.completedThreadGoal ?? null
+  return Boolean(
+    item.sentAsGoal === true ||
+      item.isGoal === true ||
+      item.asGoal === true ||
+      (goal?.objective && text && goal.objective.trim() === text),
+  )
+}
+
+function goalAchievementLabel(turn: CodexTurnState) {
+  const goal = props.state?.completedThreadGoal
+  if (!goal || goal.status !== 'complete' || isTurnInProgress(turn)) {
+    return ''
+  }
+  const seconds = firstNumber(goal.timeUsedSeconds)
+  const duration = seconds != null ? formatDuration(seconds * 1000) : ''
+  const completedAt = firstNumber(goal.updatedAt, turn.finalAssistantStartedAtMs, turn.turnStartedAtMs)
+  const time = absoluteTime(completedAt)
+  if (duration && time) {
+    return `Goal achieved in ${duration} ${time}`
+  }
+  return duration ? `Goal achieved in ${duration}` : 'Goal achieved'
 }
 
 function commandText(item: JsonRecord) {
@@ -393,12 +530,31 @@ function fileChangeViews(item: JsonRecord): FileChangeView[] {
 }
 
 function fileChangeView(change: JsonRecord): FileChangeView {
+  const diffStats = diffLineStats(firstString(change.diff, change.unifiedDiff, change.patch))
   return {
     path: firstString(change.path, change.file, change.filePath, change.target) || 'unknown',
     action: fileChangeAction(change),
-    linesAdded: firstNumber(change.linesAdded, change.added, change.additions) ?? 0,
-    linesRemoved: firstNumber(change.linesRemoved, change.removed, change.deletions) ?? 0,
+    linesAdded:
+      firstNumber(change.linesAdded, change.added, change.additions) ?? diffStats.linesAdded,
+    linesRemoved:
+      firstNumber(change.linesRemoved, change.removed, change.deletions) ?? diffStats.linesRemoved,
   }
+}
+
+function diffLineStats(diff: string) {
+  let linesAdded = 0
+  let linesRemoved = 0
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('+++') || line.startsWith('---')) {
+      continue
+    }
+    if (line.startsWith('+')) {
+      linesAdded += 1
+    } else if (line.startsWith('-')) {
+      linesRemoved += 1
+    }
+  }
+  return { linesAdded, linesRemoved }
 }
 
 function fileChangeAction(change: JsonRecord): FileChangeView['action'] {
@@ -451,6 +607,12 @@ function humanizeName(value: string) {
 
 function workItemTitle(item: JsonRecord) {
   const type = itemType(item)
+  if (type === 'agentMessage') {
+    return 'Message'
+  }
+  if (type === 'plan') {
+    return 'Plan'
+  }
   if (type === 'reasoning') {
     const duration = formatDuration(turnElapsedForItem(item))
     if (isItemInProgress(item)) {
@@ -467,6 +629,12 @@ function workItemTitle(item: JsonRecord) {
       return fileChangeActionLabel(changes[0]?.action ?? 'changed')
     }
     return `Changed ${changes.length} files`
+  }
+  if (type === 'webSearch' || type === 'search') {
+    return isItemInProgress(item) ? 'Searching the web' : 'Searched the web'
+  }
+  if (type === 'git') {
+    return 'Checked git'
   }
   if (type === 'dynamicToolCall') {
     return `${isItemInProgress(item) ? 'Calling' : 'Called'} ${humanizeName(toolName(item))}`
@@ -493,6 +661,9 @@ function workItemSubject(item: JsonRecord) {
   if (type === 'commandExecution') {
     return commandText(item)
   }
+  if (type === 'agentMessage' || type === 'plan') {
+    return itemText(item).split('\n').find(Boolean) ?? ''
+  }
   if (type === 'fileChange') {
     const primary = primaryFileChange(item)
     if (!primary) {
@@ -500,6 +671,12 @@ function workItemSubject(item: JsonRecord) {
     }
     const extraCount = fileChangeViews(item).length - 1
     return extraCount > 0 ? `${primary.path} +${extraCount}` : primary.path
+  }
+  if (type === 'webSearch' || type === 'search') {
+    return webSearchSubject(item)
+  }
+  if (type === 'git') {
+    return firstString(item.branch, item.sha, item.action)
   }
   if (type === 'dynamicToolCall' || type === 'mcpToolCall' || type === 'collabAgentToolCall') {
     return toolName(item)
@@ -546,12 +723,21 @@ function workItemTone(item: JsonRecord) {
 
 function workItemIcon(item: JsonRecord) {
   switch (itemType(item)) {
+    case 'agentMessage':
+      return 'pi pi-comment'
+    case 'plan':
+      return 'pi pi-list-check'
     case 'reasoning':
       return 'pi pi-sparkles'
     case 'commandExecution':
       return 'pi pi-terminal'
     case 'fileChange':
       return 'pi pi-file-edit'
+    case 'webSearch':
+    case 'search':
+      return 'pi pi-search'
+    case 'git':
+      return 'pi pi-code-branch'
     case 'mcpToolCall':
     case 'dynamicToolCall':
       return 'pi pi-wrench'
@@ -597,11 +783,50 @@ function workItemDetail(item: JsonRecord) {
       })
       .join('\n')
   }
+  if (type === 'webSearch' || type === 'search') {
+    return webSearchDetail(item)
+  }
+  if (type === 'git') {
+    return gitDetail(item)
+  }
   return itemText(item)
 }
 
+function webSearchSubject(item: JsonRecord) {
+  const action = isRecord(item.action) ? item.action : null
+  const queries = action?.queries
+  if (Array.isArray(queries) && queries.length) {
+    return queries.filter((query): query is string => typeof query === 'string').join(', ')
+  }
+  return firstString(item.query, item.searchTerm, item.search_term, action?.query, action?.url)
+}
+
+function webSearchDetail(item: JsonRecord) {
+  const action = isRecord(item.action) ? item.action : null
+  const actionType = firstString(action?.type, item.actionType, item.action_type)
+  const subject = webSearchSubject(item)
+  if (actionType === 'openPage' || actionType === 'open_page') {
+    return subject ? `Opened ${subject}` : 'Opened a web page'
+  }
+  if (actionType === 'findInPage' || actionType === 'find_in_page') {
+    const pattern = firstString(action?.pattern, item.pattern)
+    return [subject ? `Searched ${subject}` : 'Searched a page', pattern].filter(Boolean).join('\n')
+  }
+  return subject ? `Searched for ${subject}` : firstString(item.text, outputText(item.content))
+}
+
+function gitDetail(item: JsonRecord) {
+  const parts = [
+    firstString(item.branch) ? `branch ${firstString(item.branch)}` : '',
+    firstString(item.sha) ? `sha ${firstString(item.sha)}` : '',
+    firstString(item.originUrl, item.origin_url) ? `origin ${firstString(item.originUrl, item.origin_url)}` : '',
+    firstString(item.diff) ? firstString(item.diff) : '',
+  ]
+  return parts.filter(Boolean).join('\n')
+}
+
 function finalTurnReport(items: JsonRecord[]): TurnReport {
-  const changedPaths = new Set<string>()
+  const changedFilesByPath = new Map<string, FileChangeView>()
   let linesAdded = 0
   let linesRemoved = 0
   let commandCount = 0
@@ -609,36 +834,35 @@ function finalTurnReport(items: JsonRecord[]): TurnReport {
 
   for (const item of items) {
     const type = itemType(item)
-    if (type === 'commandExecution') {
-      commandCount += 1
-    }
+  if (type === 'commandExecution') {
+    commandCount += 1
+  }
     if (['dynamicToolCall', 'mcpToolCall', 'collabAgentToolCall'].includes(type)) {
       toolCount += 1
     }
     if (type === 'fileChange') {
-      for (const path of fileChangePaths(item)) {
-        changedPaths.add(path)
-      }
-      const changes = item.changes
-      const changeItems = Array.isArray(changes)
-        ? changes
-        : isRecord(changes)
-          ? Object.values(changes)
-          : []
-      for (const change of changeItems) {
-        if (!isRecord(change)) {
-          continue
-        }
-        linesAdded += firstNumber(change.linesAdded, change.added, change.additions) ?? 0
-        linesRemoved += firstNumber(change.linesRemoved, change.removed, change.deletions) ?? 0
+      for (const change of fileChangeViews(item)) {
+        const previous = changedFilesByPath.get(change.path)
+        const merged = previous
+          ? {
+              ...change,
+              linesAdded: previous.linesAdded + change.linesAdded,
+              linesRemoved: previous.linesRemoved + change.linesRemoved,
+            }
+          : change
+        changedFilesByPath.set(change.path, merged)
+        linesAdded += change.linesAdded
+        linesRemoved += change.linesRemoved
       }
     }
   }
 
-  const changedPathList = [...changedPaths].sort((left, right) => left.localeCompare(right))
+  const changedFiles = [...changedFilesByPath.values()].sort((left, right) =>
+    left.path.localeCompare(right.path),
+  )
   const parts: string[] = []
-  if (changedPaths.size > 0) {
-    parts.push(`${changedPaths.size} ${changedPaths.size === 1 ? 'file' : 'files'} changed`)
+  if (changedFiles.length > 0) {
+    parts.push(`${changedFiles.length} ${changedFiles.length === 1 ? 'file' : 'files'} changed`)
   }
   if (linesAdded || linesRemoved) {
     const lineParts = []
@@ -659,17 +883,17 @@ function finalTurnReport(items: JsonRecord[]): TurnReport {
 
   return {
     summary: parts.join(' · '),
-    changedFileCount: changedPaths.size,
+    changedFileCount: changedFiles.length,
     linesAdded,
     linesRemoved,
     commandCount,
     toolCount,
-    changedPaths: changedPathList,
+    changedFiles,
   }
 }
 
 function hasTurnReport(turnView: TurnView) {
-  return Boolean(turnView.responseItems.length && turnView.report.summary)
+  return Boolean(turnView.finalResponseItems.length && turnView.report.summary)
 }
 
 function reportStatLabel(count: number, singular: string, plural = `${singular}s`) {
@@ -784,153 +1008,248 @@ const justDebug = false
           </span>
         </div>
 
-        <article
-          v-for="userItem in turnView.userItems"
-          :key="userItem.id"
-          class="flex min-w-0 w-full justify-end"
-          data-codex-user-message
-        >
-          <div
-            class="min-w-0 w-fit max-w-[min(40rem,88%)] overflow-hidden rounded-2xl border border-[rgba(21,94,99,0.18)] bg-[rgba(21,94,99,0.08)] px-3.5 py-2.5 shadow-[0_10px_28px_rgba(24,44,48,0.04)] max-sm:max-w-[96%]"
-            data-codex-bubble
+        <template v-for="block in turnView.blocks" :key="block.id">
+          <article
+            v-if="block.kind === 'user'"
+            class="group/message flex min-w-0 w-full justify-end"
+            data-codex-user-message
           >
             <div
-              class="markdown-prose markdown-prose-compact min-w-0 [overflow-wrap:anywhere] [&>:first-child]:mt-0 [&>:last-child]:mb-0"
-              v-html="renderMarkdown(itemText(userItem.item))"
-              @click="onMarkdownClick"
-            ></div>
-          </div>
-        </article>
-
-        <div v-if="turnView.workItems.length" class="grid min-w-0 gap-2" data-codex-work-section>
-          <div class="flex min-w-0 items-center gap-2 text-sm text-[color:var(--app-text-soft)]">
-            <button
-              type="button"
-              class="group inline-flex max-w-full shrink-0 items-center gap-1.5 rounded-md border border-transparent px-1 py-0.5 text-left transition hover:bg-white/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(21,94,99,0.18)]"
-              :aria-expanded="isWorkExpanded(turnView)"
-              data-codex-work-toggle
-              @click="toggleWork(turnView)"
+              v-for="userItem in block.items"
+              :key="userItem.id"
+              class="relative min-w-0 w-fit max-w-[min(40rem,88%)] overflow-hidden rounded-2xl border border-[rgba(21,94,99,0.18)] bg-[rgba(21,94,99,0.08)] px-3.5 py-2.5 shadow-[0_10px_28px_rgba(24,44,48,0.04)] max-sm:max-w-[96%]"
+              data-codex-bubble
             >
-              <span class="truncate">{{ workedLabel(turnView.turn) }}</span>
-              <i
-                class="pi pi-chevron-right text-[0.65rem] opacity-50 transition-transform"
-                :class="isWorkExpanded(turnView) ? 'rotate-90' : ''"
-              ></i>
-            </button>
-            <span class="h-px min-w-0 flex-1 bg-[rgba(34,66,72,0.14)]"></span>
-          </div>
+              <div
+                class="markdown-prose markdown-prose-compact min-w-0 [overflow-wrap:anywhere] [&>:first-child]:mt-0 [&>:last-child]:mb-0"
+                v-html="renderMarkdown(itemText(userItem.item))"
+                @click="onMarkdownClick"
+              ></div>
+              <div
+                v-if="itemImages(userItem.item).length"
+                class="mt-2 grid grid-cols-[repeat(auto-fit,minmax(5rem,1fr))] gap-2"
+                data-codex-message-images
+              >
+                <img
+                  v-for="image in itemImages(userItem.item)"
+                  :key="image.src"
+                  class="max-h-64 min-h-20 w-full rounded-lg border border-[rgba(21,94,99,0.12)] object-cover"
+                  :src="image.src"
+                  :alt="image.alt"
+                  data-codex-message-image
+                />
+              </div>
+              <div
+                class="mt-1.5 flex min-w-0 items-center justify-end gap-1 text-[0.68rem] text-[color:var(--app-text-soft)] opacity-0 transition-opacity group-hover/message:opacity-100 group-focus-within/message:opacity-100"
+                data-codex-user-message-actions
+              >
+                <span
+                  v-if="isGoalUserMessage(userItem.item)"
+                  class="inline-flex min-w-0 items-center gap-1 font-semibold text-[color:var(--app-accent)]"
+                  data-codex-sent-as-goal
+                >
+                  <i class="pi pi-flag text-[0.56rem]"></i>
+                  <span>sent as goal</span>
+                </span>
+                <span v-if="messageTimestamp(userItem.item, turnView.turn)">
+                  {{ messageTimestamp(userItem.item, turnView.turn) }}
+                </span>
+                <button
+                  type="button"
+                  class="inline-flex h-6 w-6 items-center justify-center rounded-md transition hover:bg-white/70 hover:text-[color:var(--app-text)]"
+                  aria-label="Copy message"
+                  title="Copy"
+                  data-codex-copy-message
+                  @click="copyMessageText(itemText(userItem.item))"
+                >
+                  <i class="pi pi-copy text-[0.62rem]"></i>
+                </button>
+              </div>
+            </div>
+          </article>
 
-          <div
-            v-if="isWorkExpanded(turnView)"
-            class="grid min-w-0 gap-1.5 border-l border-[rgba(34,66,72,0.12)] pl-3 max-sm:pl-2"
-            data-codex-work-items
-          >
-            <div
-              v-for="workItem in turnView.workItems"
-              :key="workItem.id"
-              class="grid min-w-0 gap-1 rounded-md px-1 py-0.5 text-sm text-[color:var(--app-text-soft)] transition hover:bg-white/55"
-              data-codex-work-item
-            >
+          <div v-else-if="block.kind === 'work'" class="grid min-w-0 gap-2" data-codex-work-section>
+            <div class="flex min-w-0 items-center gap-2 text-sm text-[color:var(--app-text-soft)]">
               <button
                 type="button"
-                class="group grid min-w-0 grid-cols-[1.25rem_minmax(0,auto)_minmax(0,1fr)_auto_0.75rem] items-center gap-1.5 rounded-md px-1 py-0.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(21,94,99,0.18)] max-sm:grid-cols-[1.25rem_minmax(0,1fr)_auto_0.75rem]"
-                :aria-expanded="isItemExpanded(workItem.id)"
-                data-codex-work-row
-                @click="toggleItem(workItem.id)"
+                class="group inline-flex max-w-full shrink-0 items-center gap-1.5 rounded-md border border-transparent px-1 py-0.5 text-left transition hover:bg-white/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(21,94,99,0.18)]"
+                :aria-expanded="isWorkExpanded(turnView)"
+                data-codex-work-toggle
+                @click="toggleWork(turnView)"
               >
+                <span class="truncate">{{ workedLabel(turnView.turn) }}</span>
                 <i
-                  class="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-white/65 text-[0.78rem] shadow-[inset_0_0_0_1px_rgba(34,66,72,0.08)]"
-                  :class="[workItemIcon(workItem.item), workItemTone(workItem.item)]"
-                  data-codex-work-icon
-                ></i>
-                <span
-                  class="min-w-0 whitespace-nowrap font-medium"
-                  :class="workItemTone(workItem.item)"
-                  data-codex-work-action
-                >
-                  {{ workItemTitle(workItem.item) }}
-                </span>
-                <span
-                  v-if="workItemSubject(workItem.item)"
-                  class="min-w-0 truncate font-mono text-[0.78rem] text-[color:var(--app-text)]/80 max-sm:col-start-2"
-                  data-codex-work-subject
-                >
-                  {{ workItemSubject(workItem.item) }}
-                </span>
-                <span v-else class="min-w-0 max-sm:hidden"></span>
-                <span
-                  v-if="workItemMeta(workItem.item)"
-                  class="shrink-0 whitespace-nowrap text-[0.72rem] text-[color:var(--app-text-soft)]/80"
-                  data-codex-work-meta
-                >
-                  {{ workItemMeta(workItem.item) }}
-                </span>
-                <i
-                  class="pi pi-chevron-right shrink-0 text-[0.56rem] opacity-0 transition-all group-hover:opacity-50"
-                  :class="isItemExpanded(workItem.id) ? 'rotate-90 opacity-50' : ''"
+                  class="pi pi-chevron-right text-[0.65rem] opacity-50 transition-transform"
+                  :class="isWorkExpanded(turnView) ? 'rotate-90' : ''"
                 ></i>
               </button>
+              <span class="h-px min-w-0 flex-1 bg-[rgba(34,66,72,0.14)]"></span>
+            </div>
 
+            <div
+              v-if="isWorkExpanded(turnView)"
+              class="grid min-w-0 gap-1.5 border-l border-[rgba(34,66,72,0.12)] pl-3 max-sm:pl-2"
+              data-codex-work-items
+            >
               <div
-                v-if="isItemExpanded(workItem.id)"
-                class="min-w-0 pl-6 max-sm:pl-0"
-                data-codex-work-detail
+                v-for="workItem in block.items"
+                :key="workItem.id"
+                class="grid min-w-0 gap-1 rounded-md px-1 py-0.5 text-sm text-[color:var(--app-text-soft)] transition hover:bg-white/55"
+                data-codex-work-item
               >
-                <div
-                  v-if="itemType(workItem.item) === 'commandExecution'"
-                  class="code-surface code-surface-compact min-w-0"
-                  :class="
-                    !isItemInProgress(workItem.item) && !commandSucceeded(workItem.item)
-                      ? 'code-surface-danger'
-                      : ''
-                  "
-                  data-codex-command-output
+                <button
+                  type="button"
+                  class="group grid min-w-0 grid-cols-[1.25rem_minmax(0,auto)_minmax(0,1fr)_auto_0.75rem] items-center gap-1.5 rounded-md px-1 py-0.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(21,94,99,0.18)] max-sm:grid-cols-[1.25rem_minmax(0,1fr)_auto_0.75rem]"
+                  :aria-expanded="isItemExpanded(workItem.id)"
+                  data-codex-work-row
+                  @click="toggleItem(workItem.id)"
                 >
-                  <div class="code-surface-toolbar">
-                    <div class="code-surface-toolbar-meta">
-                      <span class="code-surface-label">Shell</span>
-                      <span v-if="commandText(workItem.item)" class="code-surface-runtime">
-                        $ {{ commandText(workItem.item) }}
-                      </span>
+                  <i
+                    class="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-white/65 text-[0.78rem] shadow-[inset_0_0_0_1px_rgba(34,66,72,0.08)]"
+                    :class="[workItemIcon(workItem.item), workItemTone(workItem.item)]"
+                    data-codex-work-icon
+                  ></i>
+                  <span
+                    class="min-w-0 whitespace-nowrap font-medium"
+                    :class="workItemTone(workItem.item)"
+                    data-codex-work-action
+                  >
+                    {{ workItemTitle(workItem.item) }}
+                  </span>
+                  <span
+                    v-if="workItemSubject(workItem.item)"
+                    class="min-w-0 truncate font-mono text-[0.78rem] text-[color:var(--app-text)]/80 max-sm:col-start-2"
+                    data-codex-work-subject
+                  >
+                    {{ workItemSubject(workItem.item) }}
+                  </span>
+                  <span v-else class="min-w-0 max-sm:hidden"></span>
+                  <span
+                    v-if="workItemMeta(workItem.item)"
+                    class="shrink-0 whitespace-nowrap text-[0.72rem] text-[color:var(--app-text-soft)]/80"
+                    data-codex-work-meta
+                  >
+                    {{ workItemMeta(workItem.item) }}
+                  </span>
+                  <i
+                    class="pi pi-chevron-right shrink-0 text-[0.56rem] opacity-0 transition-all group-hover:opacity-50"
+                    :class="isItemExpanded(workItem.id) ? 'rotate-90 opacity-50' : ''"
+                  ></i>
+                </button>
+
+                <div
+                  v-if="isItemExpanded(workItem.id)"
+                  class="min-w-0 pl-6 max-sm:pl-0"
+                  data-codex-work-detail
+                >
+                  <div
+                    v-if="itemType(workItem.item) === 'commandExecution'"
+                    class="code-surface code-surface-compact min-w-0"
+                    :class="
+                      !isItemInProgress(workItem.item) && !commandSucceeded(workItem.item)
+                        ? 'code-surface-danger'
+                        : ''
+                    "
+                    data-codex-command-output
+                  >
+                    <div class="code-surface-toolbar">
+                      <div class="code-surface-toolbar-meta">
+                        <span class="code-surface-label">Shell</span>
+                        <span v-if="commandText(workItem.item)" class="code-surface-runtime">
+                          $ {{ commandText(workItem.item) }}
+                        </span>
+                      </div>
+                    </div>
+                    <div class="code-surface-scroll code-surface-scroll-compact">
+                      <pre><code>{{ workItemDetail(workItem.item) || 'No output' }}</code></pre>
                     </div>
                   </div>
-                  <div class="code-surface-scroll code-surface-scroll-compact">
-                    <pre><code>{{ workItemDetail(workItem.item) || 'No output' }}</code></pre>
-                  </div>
+
+                  <div
+                    v-else-if="shouldRenderMarkdown(workItem.item)"
+                    class="markdown-prose markdown-prose-compact min-w-0 rounded-lg border border-[rgba(34,66,72,0.08)] bg-white/75 p-2.5 text-xs [overflow-wrap:anywhere] [&>:first-child]:mt-0 [&>:last-child]:mb-0"
+                    data-codex-work-markdown
+                    v-html="renderMarkdown(workItemDetail(workItem.item))"
+                    @click="onMarkdownClick"
+                  ></div>
+
+                  <pre
+                    v-else-if="workItemDetail(workItem.item)"
+                    class="m-0 max-h-56 max-w-full overflow-auto overscroll-contain rounded-lg border border-[rgba(34,66,72,0.08)] bg-white/75 p-2.5 text-xs leading-5 text-[color:var(--app-text-soft)]"
+                    data-codex-raw
+                    >{{ workItemDetail(workItem.item) }}</pre
+                  >
+
+                  <pre
+                    v-else
+                    class="m-0 max-h-56 max-w-full overflow-auto overscroll-contain rounded-lg border border-[rgba(34,66,72,0.08)] bg-white/75 p-2.5 text-xs leading-5 text-[color:var(--app-text-soft)]"
+                    data-codex-raw
+                    >{{ compactJson(workItem.item) }}</pre
+                  >
                 </div>
-
-                <pre
-                  v-else-if="workItemDetail(workItem.item)"
-                  class="m-0 max-h-56 max-w-full overflow-auto overscroll-contain rounded-lg border border-[rgba(34,66,72,0.08)] bg-white/75 p-2.5 text-xs leading-5 text-[color:var(--app-text-soft)]"
-                  data-codex-raw
-                  >{{ workItemDetail(workItem.item) }}</pre
-                >
-
-                <pre
-                  v-else
-                  class="m-0 max-h-56 max-w-full overflow-auto overscroll-contain rounded-lg border border-[rgba(34,66,72,0.08)] bg-white/75 p-2.5 text-xs leading-5 text-[color:var(--app-text-soft)]"
-                  data-codex-raw
-                  >{{ compactJson(workItem.item) }}</pre
-                >
               </div>
             </div>
           </div>
-        </div>
 
-        <article
-          v-for="responseItem in turnView.responseItems"
-          :key="responseItem.id"
-          class="min-w-0 max-w-[min(52rem,100%)]"
-          :class="responseTone(responseItem.item)"
-          data-codex-assistant-message
-        >
-          <div
-            v-if="shouldRenderMarkdown(responseItem.item)"
-            class="markdown-prose markdown-prose-conversation min-w-0 [overflow-wrap:anywhere] [&>:first-child]:mt-0 [&>:last-child]:mb-0"
-            v-html="renderMarkdown(itemText(responseItem.item))"
-            @click="onMarkdownClick"
-          ></div>
-        </article>
+          <article
+            v-else-if="block.kind === 'assistant'"
+            class="group/message min-w-0 max-w-[min(52rem,100%)]"
+            :class="responseTone(block.items[0]?.item ?? {})"
+            data-codex-assistant-message
+          >
+            <template v-for="responseItem in block.items" :key="responseItem.id">
+              <div
+                v-if="shouldRenderMarkdown(responseItem.item)"
+                class="markdown-prose markdown-prose-conversation min-w-0 [overflow-wrap:anywhere] [&>:first-child]:mt-0 [&>:last-child]:mb-0"
+                v-html="renderMarkdown(itemText(responseItem.item))"
+                @click="onMarkdownClick"
+              ></div>
+              <div
+                class="mt-1.5 flex min-w-0 items-center gap-1 text-[0.68rem] text-[color:var(--app-text-soft)] opacity-0 transition-opacity group-hover/message:opacity-100 group-focus-within/message:opacity-100"
+                data-codex-assistant-message-actions
+              >
+                <span v-if="goalAchievementLabel(turnView.turn)" data-codex-goal-achieved>
+                  {{ goalAchievementLabel(turnView.turn) }}
+                </span>
+                <button
+                  type="button"
+                  class="inline-flex h-6 w-6 items-center justify-center rounded-md transition hover:bg-white/70 hover:text-[color:var(--app-text)]"
+                  aria-label="Copy message"
+                  title="Copy"
+                  data-codex-copy-message
+                  @click="copyMessageText(itemText(responseItem.item))"
+                >
+                  <i class="pi pi-copy text-[0.62rem]"></i>
+                </button>
+                <button
+                  v-if="state?.id"
+                  type="button"
+                  class="inline-flex h-6 w-6 items-center justify-center rounded-md transition hover:bg-white/70 hover:text-[color:var(--app-text)]"
+                  aria-label="Fork from here"
+                  title="Fork"
+                  data-codex-fork-message
+                  @click="emit('forkThread', state.id)"
+                >
+                  <i class="pi pi-share-alt text-[0.62rem]"></i>
+                </button>
+              </div>
+            </template>
+          </article>
+
+          <article
+            v-else
+            class="min-w-0 max-w-[min(52rem,100%)] rounded-xl border border-[color:var(--app-border)] bg-white/70 p-3"
+            data-codex-unknown-item
+          >
+            <pre
+              v-for="unknownItem in block.items"
+              :key="unknownItem.id"
+              class="m-0 max-h-80 max-w-full overflow-auto overscroll-contain rounded-lg border border-[rgba(34,66,72,0.08)] bg-white/78 p-3 text-xs leading-5 text-[color:var(--app-text-soft)]"
+              data-codex-raw
+              >{{ shouldShowUnknownJson(unknownItem.item) ? compactJson(unknownItem.item) : itemText(unknownItem.item) }}</pre
+            >
+          </article>
+        </template>
 
         <div
           v-if="hasTurnReport(turnView)"
@@ -949,16 +1268,19 @@ const justDebug = false
           </div>
           <div class="grid min-w-0 gap-px p-1.5">
             <div
-              v-if="turnView.report.changedFileCount"
+              v-for="file in turnView.report.changedFiles"
+              :key="file.path"
               class="grid min-w-0 grid-cols-[1rem_minmax(0,1fr)_auto] items-center gap-2 rounded-md px-[var(--thread-resource-card-row-padding-x)] py-[var(--turn-diff-row-padding-y)]"
               data-codex-turn-report-files
             >
               <i class="pi pi-file-edit text-[0.68rem] text-[color:var(--app-text-soft)]"></i>
               <span class="min-w-0 truncate">
-                {{ turnView.report.changedPaths.join(', ') }}
+                {{ file.path }}
               </span>
-              <span class="font-semibold text-[color:var(--app-text)]">
-                {{ reportStatLabel(turnView.report.changedFileCount, 'file') }}
+              <span class="font-mono font-semibold text-[color:var(--app-text)]">
+                <span v-if="file.linesAdded" class="text-emerald-700">+{{ file.linesAdded }}</span>
+                <span v-if="file.linesAdded && file.linesRemoved"> </span>
+                <span v-if="file.linesRemoved" class="text-red-700">-{{ file.linesRemoved }}</span>
               </span>
             </div>
             <div
@@ -997,19 +1319,6 @@ const justDebug = false
           </div>
         </div>
 
-        <article
-          v-for="unknownItem in turnView.unknownItems"
-          :key="unknownItem.id"
-          class="min-w-0 max-w-[min(52rem,100%)] rounded-xl border border-[color:var(--app-border)] bg-white/70 p-3"
-          data-codex-unknown-item
-        >
-          <pre
-            v-if="shouldShowUnknownJson(unknownItem.item)"
-            class="m-0 max-h-80 max-w-full overflow-auto overscroll-contain rounded-lg border border-[rgba(34,66,72,0.08)] bg-white/78 p-3 text-xs leading-5 text-[color:var(--app-text-soft)]"
-            data-codex-raw
-            >{{ compactJson(unknownItem.item) }}</pre
-          >
-        </article>
       </section>
     </div>
   </section>

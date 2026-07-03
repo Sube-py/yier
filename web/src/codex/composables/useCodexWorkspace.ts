@@ -496,13 +496,15 @@ export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
     const threadId = activeThreadId.value
     const submission = promptSubmissionFromInput(input)
     const message = submission.prompt.trim()
-    if (!threadId || !message) {
+    const attachments = Array.isArray(submission.attachments) ? submission.attachments : []
+    if (!threadId || (!message && !attachments.length)) {
       return
     }
     await runCommand(async () => {
       await socket.sendCommand('send_prompt', {
         thread_id: threadId,
         prompt: message,
+        ...(attachments.length ? { attachments } : {}),
         collaboration_mode: buildCollaborationPayload(
           activeMode.value,
           activeThreadState.value,

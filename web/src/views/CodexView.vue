@@ -124,6 +124,8 @@ function startMobileThread(projectPath: string) {
           @steer-prompt="codex.steerPrompt"
           @enqueue-followup="codex.enqueueFollowup"
           @remove-followup="codex.removeFollowup"
+          @fork-thread="codex.forkThread"
+          @copy-error="showCodexError"
           @remote-connection-changed="codex.refreshWorkspace"
         />
       </div>

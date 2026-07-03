@@ -37,6 +37,13 @@ interface TurnReport {
   changedPaths: string[]
 }
 
+interface FileChangeView {
+  path: string
+  action: 'created' | 'edited' | 'deleted' | 'renamed' | 'changed'
+  linesAdded: number
+  linesRemoved: number
+}
+
 const workItemTypes = new Set([
   'reasoning',
   'commandExecution',
@@ -178,8 +185,11 @@ function coerceMs(value: number | null | undefined) {
 }
 
 function formatDuration(ms: number | null | undefined) {
-  if (!ms || ms < 1000) {
+  if (!ms || ms <= 0) {
     return ''
+  }
+  if (ms < 1000) {
+    return `${Math.max(1, Math.round(ms))}ms`
   }
   const seconds = Math.max(1, Math.round(ms / 1000))
   if (seconds < 60) {
@@ -193,6 +203,19 @@ function formatDuration(ms: number | null | undefined) {
   const hours = Math.floor(minutes / 60)
   const remainingMinutes = minutes % 60
   return remainingMinutes ? `${hours}h ${remainingMinutes}m` : `${hours}h`
+}
+
+function formatPreciseDuration(ms: number | null | undefined) {
+  if (!ms || ms <= 0) {
+    return ''
+  }
+  if (ms < 1000) {
+    return `${Math.max(1, Math.round(ms))}ms`
+  }
+  if (ms < 10_000) {
+    return `${(ms / 1000).toFixed(ms < 2000 ? 2 : 1)}s`
+  }
+  return formatDuration(ms)
 }
 
 function turnElapsedMs(turn: CodexTurnState) {
@@ -282,10 +305,18 @@ function itemText(item: JsonRecord) {
     return commandOutput(item)
   }
   if (type === 'dynamicToolCall') {
-    return firstString(item.aggregatedOutput, outputText(item.contentItems), outputText(item.result))
+    return firstString(
+      item.aggregatedOutput,
+      outputText(item.contentItems),
+      outputText(item.result),
+    )
   }
   if (type === 'mcpToolCall') {
-    return firstString(item.aggregatedOutput, outputText(item.result), outputText(item.contentItems))
+    return firstString(
+      item.aggregatedOutput,
+      outputText(item.result),
+      outputText(item.contentItems),
+    )
   }
   if (type === 'collabAgentToolCall') {
     return firstString(item.prompt, item.aggregatedOutput, outputText(item.result))
@@ -343,16 +374,67 @@ function cleanShellCommand(command: string) {
 }
 
 function fileChangePaths(item: JsonRecord) {
+  return fileChangeViews(item).map((change) => change.path)
+}
+
+function fileChangeViews(item: JsonRecord): FileChangeView[] {
   const changes = item.changes
   if (Array.isArray(changes)) {
     return changes
-      .map((change) => (isRecord(change) && typeof change.path === 'string' ? change.path : ''))
-      .filter(Boolean)
+      .map((change) => (isRecord(change) ? fileChangeView(change) : null))
+      .filter((change): change is FileChangeView => Boolean(change?.path))
   }
   if (isRecord(changes)) {
-    return Object.keys(changes)
+    return Object.entries(changes).map(([path, change]) =>
+      fileChangeView(isRecord(change) ? { path, ...change } : { path }),
+    )
   }
   return []
+}
+
+function fileChangeView(change: JsonRecord): FileChangeView {
+  return {
+    path: firstString(change.path, change.file, change.filePath, change.target) || 'unknown',
+    action: fileChangeAction(change),
+    linesAdded: firstNumber(change.linesAdded, change.added, change.additions) ?? 0,
+    linesRemoved: firstNumber(change.linesRemoved, change.removed, change.deletions) ?? 0,
+  }
+}
+
+function fileChangeAction(change: JsonRecord): FileChangeView['action'] {
+  const raw = firstString(change.type, change.kind, change.action, change.status).toLowerCase()
+  if (['add', 'added', 'create', 'created', 'new'].includes(raw)) {
+    return 'created'
+  }
+  if (['delete', 'deleted', 'remove', 'removed'].includes(raw)) {
+    return 'deleted'
+  }
+  if (['rename', 'renamed', 'move', 'moved'].includes(raw)) {
+    return 'renamed'
+  }
+  if (['edit', 'edited', 'modify', 'modified', 'update', 'updated'].includes(raw)) {
+    return 'edited'
+  }
+  return 'changed'
+}
+
+function fileChangeActionLabel(action: FileChangeView['action']) {
+  switch (action) {
+    case 'created':
+      return 'Created'
+    case 'deleted':
+      return 'Deleted'
+    case 'renamed':
+      return 'Renamed'
+    case 'edited':
+      return 'Edited'
+    default:
+      return 'Changed'
+  }
+}
+
+function primaryFileChange(item: JsonRecord) {
+  return fileChangeViews(item)[0] ?? null
 }
 
 function toolName(item: JsonRecord) {
@@ -377,11 +459,14 @@ function workItemTitle(item: JsonRecord) {
     return duration ? `Thought for ${duration}` : 'Thought'
   }
   if (type === 'commandExecution') {
-    return isItemInProgress(item) ? 'Running command' : 'Ran command'
+    return isItemInProgress(item) ? 'Running shell' : 'Ran shell'
   }
   if (type === 'fileChange') {
-    const count = fileChangePaths(item).length
-    return count === 1 ? 'Changed 1 file' : `Changed ${count} files`
+    const changes = fileChangeViews(item)
+    if (changes.length === 1) {
+      return fileChangeActionLabel(changes[0]?.action ?? 'changed')
+    }
+    return `Changed ${changes.length} files`
   }
   if (type === 'dynamicToolCall') {
     return `${isItemInProgress(item) ? 'Calling' : 'Called'} ${humanizeName(toolName(item))}`
@@ -401,6 +486,62 @@ function workItemTitle(item: JsonRecord) {
     return 'Compacted context'
   }
   return humanizeName(type)
+}
+
+function workItemSubject(item: JsonRecord) {
+  const type = itemType(item)
+  if (type === 'commandExecution') {
+    return commandText(item)
+  }
+  if (type === 'fileChange') {
+    const primary = primaryFileChange(item)
+    if (!primary) {
+      return ''
+    }
+    const extraCount = fileChangeViews(item).length - 1
+    return extraCount > 0 ? `${primary.path} +${extraCount}` : primary.path
+  }
+  if (type === 'dynamicToolCall' || type === 'mcpToolCall' || type === 'collabAgentToolCall') {
+    return toolName(item)
+  }
+  if (type === 'reasoning') {
+    return firstString(item.text, outputText(item.summary), outputText(item.content))
+  }
+  return ''
+}
+
+function workItemMeta(item: JsonRecord) {
+  const parts: string[] = []
+  const duration = formatPreciseDuration(turnElapsedForItem(item))
+  if (duration) {
+    parts.push(duration)
+  }
+  if (itemType(item) === 'commandExecution' && !isItemInProgress(item)) {
+    const exitCode = commandExitCode(item)
+    parts.push(commandSucceeded(item) ? 'exit 0' : `exit ${exitCode ?? 'unknown'}`)
+  }
+  const status = firstString(item.status, item.executionStatus)
+  if (status && !['completed', 'success'].includes(status.toLowerCase())) {
+    parts.push(humanizeName(status))
+  }
+  return parts.join(' · ')
+}
+
+function workItemTone(item: JsonRecord) {
+  const type = itemType(item)
+  if (type === 'commandExecution' && !isItemInProgress(item) && !commandSucceeded(item)) {
+    return 'text-red-700'
+  }
+  if (type === 'fileChange') {
+    const primary = primaryFileChange(item)
+    if (primary?.action === 'created') {
+      return 'text-emerald-700'
+    }
+    if (primary?.action === 'deleted') {
+      return 'text-red-700'
+    }
+  }
+  return 'text-[color:var(--app-text-soft)]'
 }
 
 function workItemIcon(item: JsonRecord) {
@@ -443,7 +584,18 @@ function workItemDetail(item: JsonRecord) {
     return commandOutput(item)
   }
   if (type === 'fileChange') {
-    return fileChangePaths(item).join('\n')
+    return fileChangeViews(item)
+      .map((change) => {
+        const lineParts = []
+        if (change.linesAdded) {
+          lineParts.push(`+${change.linesAdded}`)
+        }
+        if (change.linesRemoved) {
+          lineParts.push(`-${change.linesRemoved}`)
+        }
+        return `${fileChangeActionLabel(change.action)} ${change.path}${lineParts.length ? ` (${lineParts.join(' / ')})` : ''}`
+      })
+      .join('\n')
   }
   return itemText(item)
 }
@@ -486,9 +638,7 @@ function finalTurnReport(items: JsonRecord[]): TurnReport {
   const changedPathList = [...changedPaths].sort((left, right) => left.localeCompare(right))
   const parts: string[] = []
   if (changedPaths.size > 0) {
-    parts.push(
-      `${changedPaths.size} ${changedPaths.size === 1 ? 'file' : 'files'} changed`,
-    )
+    parts.push(`${changedPaths.size} ${changedPaths.size === 1 ? 'file' : 'files'} changed`)
   }
   if (linesAdded || linesRemoved) {
     const lineParts = []
@@ -614,25 +764,21 @@ const justDebug = false
       </div>
     </div>
 
-    <div
-      v-else
-      class="mx-auto grid w-full max-w-5xl min-w-0 gap-6 overflow-x-clip max-sm:gap-5"
-    >
+    <div v-else class="mx-auto grid w-full max-w-5xl min-w-0 gap-6 overflow-x-clip max-sm:gap-5">
       <section
         v-for="(turnView, turnIndex) in turnViews"
         :key="turnView.key"
         class="grid min-w-0 gap-3 overflow-x-clip border-b border-[color:var(--app-border)] pb-6 last:border-b-0"
         data-codex-turn
       >
-        <div class="flex min-w-0 flex-wrap items-center gap-2 text-[0.74rem] text-[color:var(--app-text-soft)]">
-          <span class="font-semibold text-[color:var(--app-text)]">
-            Turn {{ turnIndex + 1 }}
-          </span>
+        <div
+          class="flex min-w-0 flex-wrap items-center gap-2 text-[0.74rem] text-[color:var(--app-text-soft)]"
+        >
+          <span class="font-semibold text-[color:var(--app-text)]"> Turn {{ turnIndex + 1 }} </span>
           <span v-if="justDebug">{{ statusLabel(turnView.turn.status) }}</span>
-          <code
-            v-if="justDebug && turnView.turn.turnId"
-            class="truncate"
-          >{{ turnView.turn.turnId }}</code>
+          <code v-if="justDebug && turnView.turn.turnId" class="truncate">{{
+            turnView.turn.turnId
+          }}</code>
           <span v-if="turnView.turn.turnStartedAtMs">
             {{ formatTimestamp(turnView.turn.turnStartedAtMs) }}
           </span>
@@ -656,11 +802,7 @@ const justDebug = false
           </div>
         </article>
 
-        <div
-          v-if="turnView.workItems.length"
-          class="grid min-w-0 gap-2"
-          data-codex-work-section
-        >
+        <div v-if="turnView.workItems.length" class="grid min-w-0 gap-2" data-codex-work-section>
           <div class="flex min-w-0 items-center gap-2 text-sm text-[color:var(--app-text-soft)]">
             <button
               type="button"
@@ -686,36 +828,45 @@ const justDebug = false
             <div
               v-for="workItem in turnView.workItems"
               :key="workItem.id"
-              class="grid min-w-0 gap-1 rounded-lg px-1.5 py-1 text-sm text-[color:var(--app-text-soft)] transition hover:bg-white/55"
+              class="grid min-w-0 gap-1 rounded-md px-1 py-0.5 text-sm text-[color:var(--app-text-soft)] transition hover:bg-white/55"
               data-codex-work-item
             >
               <button
                 type="button"
-                class="group flex min-w-0 items-start gap-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(21,94,99,0.18)]"
+                class="group grid min-w-0 grid-cols-[1.25rem_minmax(0,auto)_minmax(0,1fr)_auto_0.75rem] items-center gap-1.5 rounded-md px-1 py-0.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(21,94,99,0.18)] max-sm:grid-cols-[1.25rem_minmax(0,1fr)_auto_0.75rem]"
                 :aria-expanded="isItemExpanded(workItem.id)"
+                data-codex-work-row
                 @click="toggleItem(workItem.id)"
               >
                 <i
-                  class="mt-0.5 shrink-0 text-[0.82rem] text-[color:var(--app-text-soft)] opacity-75"
-                  :class="workItemIcon(workItem.item)"
+                  class="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-white/65 text-[0.78rem] shadow-[inset_0_0_0_1px_rgba(34,66,72,0.08)]"
+                  :class="[workItemIcon(workItem.item), workItemTone(workItem.item)]"
+                  data-codex-work-icon
                 ></i>
-                <span class="min-w-0 flex-1 truncate text-[color:var(--app-text-soft)]">
+                <span
+                  class="min-w-0 whitespace-nowrap font-medium"
+                  :class="workItemTone(workItem.item)"
+                  data-codex-work-action
+                >
                   {{ workItemTitle(workItem.item) }}
                 </span>
                 <span
-                  v-if="itemType(workItem.item) === 'commandExecution' && commandText(workItem.item)"
-                  class="hidden min-w-0 max-w-[44%] truncate font-mono text-xs opacity-70 sm:inline"
+                  v-if="workItemSubject(workItem.item)"
+                  class="min-w-0 truncate font-mono text-[0.78rem] text-[color:var(--app-text)]/80 max-sm:col-start-2"
+                  data-codex-work-subject
                 >
-                  $ {{ commandText(workItem.item) }}
+                  {{ workItemSubject(workItem.item) }}
                 </span>
+                <span v-else class="min-w-0 max-sm:hidden"></span>
                 <span
-                  v-if="itemType(workItem.item) === 'commandExecution' && !isItemInProgress(workItem.item)"
-                  class="shrink-0 text-xs opacity-70"
+                  v-if="workItemMeta(workItem.item)"
+                  class="shrink-0 whitespace-nowrap text-[0.72rem] text-[color:var(--app-text-soft)]/80"
+                  data-codex-work-meta
                 >
-                  {{ commandSucceeded(workItem.item) ? 'Success' : `Exit ${commandExitCode(workItem.item) ?? 'unknown'}` }}
+                  {{ workItemMeta(workItem.item) }}
                 </span>
                 <i
-                  class="pi pi-chevron-right mt-1 shrink-0 text-[0.58rem] opacity-0 transition-all group-hover:opacity-50"
+                  class="pi pi-chevron-right shrink-0 text-[0.56rem] opacity-0 transition-all group-hover:opacity-50"
                   :class="isItemExpanded(workItem.id) ? 'rotate-90 opacity-50' : ''"
                 ></i>
               </button>
@@ -728,15 +879,17 @@ const justDebug = false
                 <div
                   v-if="itemType(workItem.item) === 'commandExecution'"
                   class="code-surface code-surface-compact min-w-0"
+                  :class="
+                    !isItemInProgress(workItem.item) && !commandSucceeded(workItem.item)
+                      ? 'code-surface-danger'
+                      : ''
+                  "
                   data-codex-command-output
                 >
                   <div class="code-surface-toolbar">
                     <div class="code-surface-toolbar-meta">
                       <span class="code-surface-label">Shell</span>
-                      <span
-                        v-if="commandText(workItem.item)"
-                        class="code-surface-runtime"
-                      >
+                      <span v-if="commandText(workItem.item)" class="code-surface-runtime">
                         $ {{ commandText(workItem.item) }}
                       </span>
                     </div>
@@ -750,13 +903,15 @@ const justDebug = false
                   v-else-if="workItemDetail(workItem.item)"
                   class="m-0 max-h-56 max-w-full overflow-auto overscroll-contain rounded-lg border border-[rgba(34,66,72,0.08)] bg-white/75 p-2.5 text-xs leading-5 text-[color:var(--app-text-soft)]"
                   data-codex-raw
-                >{{ workItemDetail(workItem.item) }}</pre>
+                  >{{ workItemDetail(workItem.item) }}</pre
+                >
 
                 <pre
                   v-else
                   class="m-0 max-h-56 max-w-full overflow-auto overscroll-contain rounded-lg border border-[rgba(34,66,72,0.08)] bg-white/75 p-2.5 text-xs leading-5 text-[color:var(--app-text-soft)]"
                   data-codex-raw
-                >{{ compactJson(workItem.item) }}</pre>
+                  >{{ compactJson(workItem.item) }}</pre
+                >
               </div>
             </div>
           </div>
@@ -783,7 +938,9 @@ const justDebug = false
           data-codex-turn-summary
           data-codex-turn-report
         >
-          <div class="flex min-w-0 items-center gap-2 border-b border-[rgba(34,66,72,0.08)] px-[var(--thread-resource-card-row-padding-x)] py-2 font-semibold text-[color:var(--app-text)]">
+          <div
+            class="flex min-w-0 items-center gap-2 border-b border-[rgba(34,66,72,0.08)] px-[var(--thread-resource-card-row-padding-x)] py-2 font-semibold text-[color:var(--app-text)]"
+          >
             <i class="pi pi-check-circle shrink-0 text-[0.72rem] text-emerald-600"></i>
             <span class="min-w-0 truncate">Turn report</span>
             <span class="ml-auto min-w-0 truncate text-[color:var(--app-text-soft)]">
@@ -850,7 +1007,8 @@ const justDebug = false
             v-if="shouldShowUnknownJson(unknownItem.item)"
             class="m-0 max-h-80 max-w-full overflow-auto overscroll-contain rounded-lg border border-[rgba(34,66,72,0.08)] bg-white/78 p-3 text-xs leading-5 text-[color:var(--app-text-soft)]"
             data-codex-raw
-          >{{ compactJson(unknownItem.item) }}</pre>
+            >{{ compactJson(unknownItem.item) }}</pre
+          >
         </article>
       </section>
     </div>

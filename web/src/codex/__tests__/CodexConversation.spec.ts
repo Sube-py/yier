@@ -108,7 +108,9 @@ describe('CodexConversation', () => {
     const bubble = wrapper.get('[data-codex-bubble]')
     const prose = wrapper.get('.markdown-prose')
 
-    expect(row.classes()).toEqual(expect.arrayContaining(['flex', 'min-w-0', 'w-full', 'justify-end']))
+    expect(row.classes()).toEqual(
+      expect.arrayContaining(['flex', 'min-w-0', 'w-full', 'justify-end']),
+    )
     expect(bubble.classes()).toEqual(
       expect.arrayContaining([
         'min-w-0',
@@ -250,6 +252,58 @@ describe('CodexConversation', () => {
     await wrapper.get('[data-codex-work-item] button').trigger('click')
 
     expect(wrapper.get('[data-codex-raw]').text()).toContain('{"ok":true}')
+  })
+
+  it('labels shell, edit, create, and tool activities with compact metadata', async () => {
+    const wrapper = mountConversation([
+      {
+        id: 'command-1',
+        type: 'commandExecution',
+        command: '/bin/zsh -lc "pnpm test"',
+        aggregatedOutput: 'ok',
+        durationMs: 1530,
+        output: { exitCode: 0 },
+      },
+      {
+        id: 'file-create',
+        type: 'fileChange',
+        changes: {
+          'src/NewFile.ts': { type: 'create', linesAdded: 12 },
+        },
+      },
+      {
+        id: 'file-edit',
+        type: 'fileChange',
+        changes: {
+          'src/App.vue': { type: 'update', linesAdded: 2, linesRemoved: 1 },
+        },
+      },
+      {
+        id: 'tool-1',
+        type: 'mcpToolCall',
+        server: 'figma',
+        tool: 'get_design_context',
+        status: 'completed',
+        durationMs: 425,
+      },
+    ])
+
+    await wrapper.get('[data-codex-work-toggle]').trigger('click')
+    const rows = wrapper.findAll('[data-codex-work-row]')
+    expect(rows).toHaveLength(4)
+    const [shellRow, createdRow, editedRow, toolRow] = rows
+
+    expect(shellRow?.text()).toContain('Ran shell')
+    expect(shellRow?.text()).toContain('pnpm test')
+    expect(shellRow?.text()).toContain('1.53s')
+    expect(shellRow?.text()).toContain('exit 0')
+    expect(createdRow?.text()).toContain('Created')
+    expect(createdRow?.text()).toContain('src/NewFile.ts')
+    expect(editedRow?.text()).toContain('Edited')
+    expect(editedRow?.text()).toContain('src/App.vue')
+    expect(toolRow?.text()).toContain('Called figma / Get Design Context')
+    expect(toolRow?.text()).toContain('get_design_context')
+    expect(toolRow?.text()).toContain('425ms')
   })
 
   it('renders final turn work as a report card after the assistant response', () => {

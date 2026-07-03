@@ -160,6 +160,15 @@ function turnView(turn: CodexTurnState, index: number): TurnView {
     workBlockIndex += 1
   }
 
+  const inputUserMessage = turnInputUserMessage(turn, index)
+  if (inputUserMessage) {
+    blocks.push({
+      id: inputUserMessage.id,
+      kind: 'user',
+      items: [inputUserMessage],
+    })
+  }
+
   rawItems.forEach((item, itemIndex) => {
     const baseKind = itemKind(item)
     const view: ConversationItemView = {
@@ -199,6 +208,33 @@ function turnView(turn: CodexTurnState, index: number): TurnView {
     workItems: allWorkItems,
     finalResponseItems,
     report: finalTurnReport(allWorkItems.map((workItem) => workItem.item)),
+  }
+}
+
+function turnInputUserMessage(turn: CodexTurnState, index: number): ConversationItemView | null {
+  if (Array.isArray(turn.items) && turn.items.some((item) => itemKind(item) === 'user')) {
+    return null
+  }
+  const params = isRecord(turn.params) ? turn.params : null
+  const text = outputText(params?.input)
+  if (!text) {
+    return null
+  }
+  const goal = props.state?.threadGoal ?? props.state?.completedThreadGoal ?? null
+  const isGoal =
+    turn.turnId == null &&
+    Boolean(goal?.objective && goal.objective.trim() === text.trim())
+  return {
+    id: `${turnKey(turn, index)}-params-input-user-message`,
+    item: {
+      id: `${turnKey(turn, index)}-params-input`,
+      type: 'userMessage',
+      content: text,
+      goal: isGoal,
+      sentAsGoal: isGoal,
+      createdAt: turn.turnStartedAtMs ?? undefined,
+    },
+    kind: 'user',
   }
 }
 
@@ -558,6 +594,25 @@ function commandSucceeded(item: JsonRecord) {
   return exitCode === 0 || item.success === true
 }
 
+function commandWasInterrupted(item: JsonRecord) {
+  const status = firstString(item.executionStatus, item.status).toLowerCase()
+  return status === 'interrupted' || status === 'stopped'
+}
+
+function commandFooterText(item: JsonRecord) {
+  if (isItemInProgress(item)) {
+    return ''
+  }
+  if (commandWasInterrupted(item)) {
+    return 'Stopped'
+  }
+  if (commandSucceeded(item)) {
+    return 'Success'
+  }
+  const exitCode = commandExitCode(item)
+  return `Exit code ${exitCode ?? 'unknown'}`
+}
+
 function cleanShellCommand(command: string) {
   let text = command.trim().replace(/^\$\s+/, '')
   const shellMatch = text.match(/^(?:\/bin\/)?(?:zsh|bash|sh)\s+-lc\s+([\s\S]+)$/)
@@ -671,7 +726,7 @@ function humanizeName(value: string) {
 function workItemTitle(item: JsonRecord) {
   const type = itemType(item)
   if (type === 'commandExecution') {
-    return isItemInProgress(item) ? 'Running shell' : 'Ran shell'
+    return `${isItemInProgress(item) ? 'Running' : 'Ran'} ${commandText(item) || 'command'}`
   }
   if (type === 'fileChange') {
     const changes = fileChangeViews(item)
@@ -703,10 +758,14 @@ function workItemTitle(item: JsonRecord) {
   return humanizeName(type)
 }
 
+function hasExpandableWorkDetail(item: JsonRecord) {
+  return Boolean(workItemDetail(item))
+}
+
 function workItemSubject(item: JsonRecord) {
   const type = itemType(item)
   if (type === 'commandExecution') {
-    return commandText(item)
+    return ''
   }
   if (type === 'fileChange') {
     const primary = primaryFileChange(item)
@@ -836,53 +895,89 @@ function gitDetail(item: JsonRecord) {
 }
 
 function activitySummary(items: ConversationItemView[]) {
-  const labels = items.map((item) => activityItemSummary(item.item)).filter(Boolean)
-  const uniqueLabels = [...new Set(labels)]
-  if (!uniqueLabels.length) {
+  const counts = {
+    runningCommands: 0,
+    completedCommands: 0,
+    searchedCode: 0,
+    createdFiles: 0,
+    editedFiles: 0,
+    deletedFiles: 0,
+    webSearches: 0,
+    runningWebSearches: 0,
+    toolCalls: 0,
+    runningToolCalls: 0,
+    agentCalls: 0,
+  }
+
+  for (const view of items) {
+    const item = view.item
+    const type = itemType(item)
+    if (type === 'commandExecution') {
+      if (isCodeSearchCommand(commandText(item))) {
+        counts.searchedCode += 1
+      } else if (isItemInProgress(item)) {
+        counts.runningCommands += 1
+      } else {
+        counts.completedCommands += 1
+      }
+    } else if (type === 'fileChange') {
+      for (const change of fileChangeViews(item)) {
+        if (change.action === 'created') {
+          counts.createdFiles += 1
+        } else if (change.action === 'deleted') {
+          counts.deletedFiles += 1
+        } else {
+          counts.editedFiles += 1
+        }
+      }
+    } else if (type === 'webSearch' || type === 'search') {
+      if (isItemInProgress(item)) {
+        counts.runningWebSearches += 1
+      } else {
+        counts.webSearches += 1
+      }
+    } else if (type === 'dynamicToolCall' || type === 'mcpToolCall') {
+      if (isItemInProgress(item)) {
+        counts.runningToolCalls += 1
+      } else {
+        counts.toolCalls += 1
+      }
+    } else if (type === 'collabAgentToolCall') {
+      counts.agentCalls += 1
+    }
+  }
+
+  const segments = [
+    countSegment(counts.searchedCode, 'Searched code', 'searched code'),
+    countSegment(counts.runningCommands, 'Running a command', 'running # commands'),
+    countSegment(counts.completedCommands, 'Ran a command', 'ran # commands'),
+    countSegment(counts.createdFiles, 'Created a file', 'created # files'),
+    countSegment(counts.editedFiles, 'Edited a file', 'edited # files'),
+    countSegment(counts.deletedFiles, 'Deleted a file', 'deleted # files'),
+    countSegment(counts.runningWebSearches, 'Searching the web', 'searching the web'),
+    countSegment(counts.webSearches, 'Searched the web', 'searched the web'),
+    countSegment(counts.runningToolCalls, 'Calling a tool', 'calling # tools'),
+    countSegment(counts.toolCalls, 'Called a tool', 'called # tools'),
+    countSegment(counts.agentCalls, 'Used an agent', 'used # agents'),
+  ].filter((segment): segment is string => Boolean(segment))
+
+  if (!segments.length) {
     return 'Worked'
   }
-  return uniqueLabels.join(', ')
+  return segments
+    .map((segment, index) =>
+      index === 0
+        ? segment.charAt(0).toUpperCase() + segment.slice(1)
+        : segment.charAt(0).toLowerCase() + segment.slice(1),
+    )
+    .join(', ')
 }
 
-function activityItemSummary(item: JsonRecord) {
-  const type = itemType(item)
-  if (type === 'commandExecution') {
-    const command = commandText(item)
-    if (isCodeSearchCommand(command)) {
-      return isItemInProgress(item) ? 'Searching code' : 'Searched code'
-    }
-    return isItemInProgress(item) ? 'Running a command' : 'Ran a command'
+function countSegment(count: number, singular: string, plural: string) {
+  if (count <= 0) {
+    return ''
   }
-  if (type === 'fileChange') {
-    const changes = fileChangeViews(item)
-    if (changes.length === 1) {
-      const action = changes[0]?.action
-      if (action === 'created') {
-        return 'Created a file'
-      }
-      if (action === 'deleted') {
-        return 'Deleted a file'
-      }
-      return 'Edited a file'
-    }
-    return `Edited ${changes.length} files`
-  }
-  if (type === 'webSearch' || type === 'search') {
-    return isItemInProgress(item) ? 'Searching the web' : 'Searched the web'
-  }
-  if (type === 'dynamicToolCall' || type === 'mcpToolCall') {
-    return isItemInProgress(item) ? 'Calling a tool' : 'Called a tool'
-  }
-  if (type === 'collabAgentToolCall') {
-    return isItemInProgress(item) ? 'Starting an agent' : 'Used an agent'
-  }
-  if (type === 'git') {
-    return 'Checked git'
-  }
-  if (type === 'userInputResponse') {
-    return 'Answered a request'
-  }
-  return humanizeName(type)
+  return count === 1 ? singular : plural.replace('#', String(count))
 }
 
 function isCodeSearchCommand(command: string) {
@@ -1239,48 +1334,113 @@ const justDebug = false
                     <div
                       v-for="workItem in unit.items"
                       :key="workItem.id"
-                      class="grid min-w-0 gap-1 rounded-md px-1 py-1"
+                      class="grid min-w-0 gap-1 rounded-md px-1 py-0.5"
                       data-codex-work-item
                     >
-                      <div
-                        class="min-w-0 truncate text-xs text-[color:var(--app-text-soft)]"
+                      <button
+                        type="button"
+                        class="group flex min-w-0 items-center gap-1 rounded-md px-1 py-0.5 text-left text-xs text-[color:var(--app-text-soft)] transition hover:bg-white/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(21,94,99,0.18)]"
+                        :aria-expanded="isItemExpanded(workItem.id)"
                         data-codex-work-row
+                        @click="hasExpandableWorkDetail(workItem.item) && toggleItem(workItem.id)"
                       >
-                        {{ workItemTitle(workItem.item) }}
-                        <span v-if="workItemSubject(workItem.item)">
+                        <span class="min-w-0 truncate">{{ workItemTitle(workItem.item) }}</span>
+                        <span v-if="workItemSubject(workItem.item)" class="min-w-0 truncate">
                           · {{ workItemSubject(workItem.item) }}
                         </span>
-                      </div>
+                        <i
+                          v-if="hasExpandableWorkDetail(workItem.item)"
+                          class="pi pi-chevron-right ml-auto shrink-0 text-[0.52rem] opacity-50 transition-transform"
+                          :class="isItemExpanded(workItem.id) ? 'rotate-90' : ''"
+                        ></i>
+                      </button>
 
-                      <div
-                        v-if="itemType(workItem.item) === 'commandExecution'"
-                        class="code-surface code-surface-compact min-w-0"
-                        :class="
-                          !isItemInProgress(workItem.item) && !commandSucceeded(workItem.item)
-                            ? 'code-surface-danger'
-                            : ''
-                        "
-                        data-codex-command-output
-                      >
-                        <div class="code-surface-toolbar">
-                          <div class="code-surface-toolbar-meta">
-                            <span class="code-surface-label">Shell</span>
-                            <span v-if="commandText(workItem.item)" class="code-surface-runtime">
-                              $ {{ commandText(workItem.item) }}
+                      <div v-if="isItemExpanded(workItem.id)" class="min-w-0 pl-2">
+                        <div
+                          v-if="itemType(workItem.item) === 'commandExecution'"
+                          class="group/shell min-w-0 overflow-hidden rounded-lg border border-[color:var(--app-border)] bg-[rgba(245,247,246,0.92)] text-[color:var(--app-text)]"
+                          :class="
+                            !isItemInProgress(workItem.item) && !commandSucceeded(workItem.item)
+                              ? 'border-red-200 bg-red-50/55'
+                              : ''
+                          "
+                          data-codex-command-output
+                        >
+                          <div
+                            class="flex min-w-0 items-center justify-between gap-2 bg-[rgba(34,66,72,0.04)] px-2 py-1 font-sans text-sm text-[color:var(--app-text-soft)] select-none"
+                            data-codex-command-header
+                          >
+                            <span>Shell</span>
+                          </div>
+                          <div class="relative min-w-0">
+                            <div
+                              v-if="commandText(workItem.item)"
+                              class="px-2 pt-2"
+                              data-codex-command-line
+                            >
+                              <div class="group/command relative min-w-0 pr-7">
+                                <code
+                                  class="block min-w-0 whitespace-pre-wrap break-words font-mono text-[0.8rem] leading-5 text-[color:var(--app-text-soft)] line-clamp-2"
+                                  data-codex-command-text
+                                  role="button"
+                                  tabindex="0"
+                                  @click="copyMessageText(commandText(workItem.item))"
+                                  @keydown.enter.prevent="copyMessageText(commandText(workItem.item))"
+                                  @keydown.space.prevent="copyMessageText(commandText(workItem.item))"
+                                >
+                                  $ {{ commandText(workItem.item) }}
+                                </code>
+                                <button
+                                  type="button"
+                                  class="absolute right-0 top-0 inline-flex h-6 w-6 items-center justify-center rounded-md text-[color:var(--app-text-soft)] opacity-0 transition hover:bg-white/70 hover:text-[color:var(--app-text)] group-hover/command:opacity-100 focus-visible:opacity-100"
+                                  aria-label="Copy command"
+                                  title="Copy command"
+                                  data-codex-copy-command
+                                  @click.stop="copyMessageText(commandText(workItem.item))"
+                                >
+                                  <i class="pi pi-copy text-[0.62rem]"></i>
+                                </button>
+                              </div>
+                            </div>
+
+                            <div class="group/output relative min-h-5 pr-0" data-codex-shell-content>
+                              <pre
+                                class="m-0 flex max-h-[140px] max-w-full flex-col-reverse overflow-x-auto overflow-y-auto whitespace-pre p-2 font-mono text-[0.78rem] font-medium leading-5 text-[color:var(--app-text-soft)]"
+                                data-codex-command-output-text
+                              ><code>{{ workItemDetail(workItem.item) || 'No output' }}</code></pre>
+                              <button
+                                type="button"
+                                class="absolute right-2.5 top-0 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[color:var(--app-text-soft)] opacity-0 transition hover:bg-white/70 hover:text-[color:var(--app-text)] group-hover/output:opacity-100 focus-visible:opacity-100"
+                                aria-label="Copy output"
+                                title="Copy output"
+                                data-codex-copy-output
+                                @click.stop="copyMessageText(workItemDetail(workItem.item))"
+                              >
+                                <i class="pi pi-copy text-[0.62rem]"></i>
+                              </button>
+                            </div>
+                          </div>
+                          <div
+                            class="flex min-h-6 items-center gap-2 px-2.5 pb-1 pt-0.5 text-xs text-[color:var(--app-text-soft)]"
+                            data-codex-command-footer
+                          >
+                            <span class="ml-auto inline-flex items-center gap-1">
+                              <i
+                                v-if="commandFooterText(workItem.item) === 'Success'"
+                                class="pi pi-check text-[0.56rem]"
+                              ></i>
+                              {{ commandFooterText(workItem.item) }}
                             </span>
                           </div>
                         </div>
-                        <div class="code-surface-scroll code-surface-scroll-compact">
-                          <pre><code>{{ workItemDetail(workItem.item) || 'No output' }}</code></pre>
-                        </div>
-                      </div>
 
-                      <pre
-                        v-else-if="workItemDetail(workItem.item)"
-                        class="m-0 max-h-56 max-w-full overflow-auto overscroll-contain rounded-lg border border-[rgba(34,66,72,0.08)] bg-white/75 p-2.5 text-xs leading-5 text-[color:var(--app-text-soft)]"
-                        data-codex-raw
-                        >{{ workItemDetail(workItem.item) }}</pre
-                      >
+                        <pre
+                          v-else-if="workItemDetail(workItem.item)"
+                          class="m-0 max-h-56 max-w-full overflow-auto overscroll-contain rounded-lg border border-[rgba(34,66,72,0.08)] bg-white/75 p-2.5 text-xs leading-5 text-[color:var(--app-text-soft)]"
+                          data-codex-raw
+                          >{{ workItemDetail(workItem.item) }}</pre
+                        >
+                      </div>
                     </div>
                   </div>
                 </div>

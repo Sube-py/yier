@@ -138,6 +138,7 @@ describe('CodexConversation', () => {
 
     await wrapper.get('[data-codex-work-toggle]').trigger('click')
     await wrapper.get('[data-codex-activity-toggle]').trigger('click')
+    await wrapper.get('[data-codex-work-row]').trigger('click')
 
     expect(wrapper.get('[data-codex-work-items]').classes()).toEqual(
       expect.arrayContaining(['min-w-0', 'max-sm:pl-2']),
@@ -171,9 +172,11 @@ describe('CodexConversation', () => {
     await wrapper.get('[data-codex-work-toggle]').trigger('click')
     expect(wrapper.get('[data-codex-activity-toggle]').text()).toContain('Ran a command')
     await wrapper.get('[data-codex-activity-toggle]').trigger('click')
+    expect(wrapper.find('[data-codex-command-output]').exists()).toBe(false)
+    await wrapper.get('[data-codex-work-row]').trigger('click')
 
     const output = wrapper.get('[data-codex-command-output]')
-    expect(output.text()).toContain('$ printf "**raw**"')
+    expect(output.text()).toContain('printf "**raw**"')
     expect(output.text()).toContain('**raw** output')
     expect(wrapper.html()).not.toContain('<strong>raw</strong>')
   })
@@ -319,10 +322,10 @@ describe('CodexConversation', () => {
 
     const activityToggles = wrapper.findAll('[data-codex-activity-toggle]')
     await activityToggles[0]?.trigger('click')
+    const rows = wrapper.findAll('[data-codex-work-row]')
+    await rows[0]?.trigger('click')
 
-    const details = wrapper.findAll('[data-codex-work-detail]')
-    expect(details).toHaveLength(1)
-    expect(details[0]?.text()).toContain('first output')
+    expect(wrapper.get('[data-codex-command-output]').text()).toContain('first output')
     expect(wrapper.text()).not.toContain('second output')
   })
 
@@ -375,6 +378,9 @@ describe('CodexConversation', () => {
     expect(wrapper.find('[data-codex-raw]').exists()).toBe(false)
 
     await wrapper.get('[data-codex-activity-toggle]').trigger('click')
+    expect(wrapper.get('[data-codex-work-row]').text()).toContain('Called Generate Diagram')
+    expect(wrapper.find('[data-codex-raw]').exists()).toBe(false)
+    await wrapper.get('[data-codex-work-row]').trigger('click')
 
     expect(wrapper.get('[data-codex-raw]').text()).toContain('{"ok":true}')
   })
@@ -416,22 +422,100 @@ describe('CodexConversation', () => {
     await wrapper.get('[data-codex-work-toggle]').trigger('click')
     const activity = wrapper.get('[data-codex-work-activity]')
     expect(activity.text()).toContain('Ran a command')
-    expect(activity.text()).toContain('Created a file')
-    expect(activity.text()).toContain('Edited a file')
-    expect(activity.text()).toContain('Called a tool')
+    expect(activity.text()).toContain('created a file')
+    expect(activity.text()).toContain('edited a file')
+    expect(activity.text()).toContain('called a tool')
     expect(wrapper.findAll('[data-codex-work-row]')).toHaveLength(0)
 
     await wrapper.get('[data-codex-activity-toggle]').trigger('click')
 
     const rows = wrapper.findAll('[data-codex-work-row]')
     expect(rows).toHaveLength(4)
-    expect(rows[0]?.text()).toContain('Ran shell')
+    expect(rows[0]?.text()).toContain('Ran pnpm test')
     expect(rows[0]?.text()).toContain('pnpm test')
     expect(rows[1]?.text()).toContain('Created')
     expect(rows[1]?.text()).toContain('src/NewFile.ts')
     expect(rows[2]?.text()).toContain('Edited')
     expect(rows[2]?.text()).toContain('src/App.vue')
     expect(rows[3]?.text()).toContain('Called figma / Get Design Context')
+  })
+
+  it('summarizes multiple shell commands with a counted command label', async () => {
+    const wrapper = mountConversation([
+      {
+        id: 'command-1',
+        type: 'commandExecution',
+        command: 'git diff --check',
+        aggregatedOutput: '',
+      },
+      {
+        id: 'command-2',
+        type: 'commandExecution',
+        command: 'pnpm test:unit',
+        aggregatedOutput: 'passed',
+      },
+      {
+        id: 'command-3',
+        type: 'commandExecution',
+        command: 'pnpm build',
+        aggregatedOutput: 'built',
+      },
+      {
+        id: 'agent-1',
+        type: 'agentMessage',
+        phase: 'final_answer',
+        text: 'Done.',
+      },
+    ])
+
+    await wrapper.get('[data-codex-work-toggle]').trigger('click')
+
+    expect(wrapper.get('[data-codex-activity-toggle]').text()).toContain('Ran 3 commands')
+
+    await wrapper.get('[data-codex-activity-toggle]').trigger('click')
+
+    const rows = wrapper.findAll('[data-codex-work-row]')
+    expect(rows).toHaveLength(3)
+    expect(rows[0]?.text()).toContain('Ran git diff --check')
+    expect(rows[1]?.text()).toContain('Ran pnpm test:unit')
+    expect(rows[2]?.text()).toContain('Ran pnpm build')
+    expect(wrapper.find('[data-codex-command-output]').exists()).toBe(false)
+  })
+
+  it('copies command and output from the shell card', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('navigator', {
+      clipboard: {
+        writeText,
+      },
+    })
+    const wrapper = mountConversation([
+      {
+        id: 'command-1',
+        type: 'commandExecution',
+        command: 'pnpm build --filter very-long-package-name -- --mode production',
+        aggregatedOutput: 'build output',
+      },
+    ])
+
+    await wrapper.get('[data-codex-work-toggle]').trigger('click')
+    await wrapper.get('[data-codex-activity-toggle]').trigger('click')
+    await wrapper.get('[data-codex-work-row]').trigger('click')
+
+    expect(wrapper.get('[data-codex-command-header]').text()).toContain('Shell')
+    expect(wrapper.get('[data-codex-command-text]').classes()).toContain('line-clamp-2')
+    expect(wrapper.get('[data-codex-command-footer]').text()).toContain('Exit code unknown')
+    expect(wrapper.find('[data-codex-copy-shell]').exists()).toBe(false)
+    expect(wrapper.find('[data-codex-command-cwd]').exists()).toBe(false)
+
+    await wrapper.get('[data-codex-copy-command]').trigger('click')
+    await wrapper.get('[data-codex-copy-output]').trigger('click')
+
+    expect(writeText).toHaveBeenNthCalledWith(
+      1,
+      'pnpm build --filter very-long-package-name -- --mode production',
+    )
+    expect(writeText).toHaveBeenNthCalledWith(2, 'build output')
   })
 
   it('renders final turn work as a report card after the assistant response', () => {
@@ -635,6 +719,44 @@ describe('CodexConversation', () => {
     expect(wrapper.get('[data-codex-sent-as-goal]').text()).toContain('sent as goal')
     expect(wrapper.get('[data-codex-goal-achieved]').text()).toContain('Goal achieved in 8m 42s')
     expect(wrapper.find('[data-codex-fork-message]').exists()).toBe(true)
+  })
+
+  it('renders synthetic goal turn input as a goal user message', () => {
+    const wrapper = mount(CodexConversation, {
+      props: {
+        state: {
+          id: 'thread-1',
+          threadGoal: {
+            threadId: 'thread-1',
+            objective: 'Keep working until tests pass',
+            status: 'active',
+          },
+          turns: [
+            {
+              turnId: null,
+              status: 'completed',
+              turnStartedAtMs: 1_756_800_000_000,
+              params: {
+                input: [
+                  {
+                    type: 'text',
+                    text: 'Keep working until tests pass',
+                    text_elements: [],
+                  },
+                ],
+              },
+              items: [],
+            },
+          ],
+        },
+      },
+      attachTo: document.body,
+    })
+
+    expect(wrapper.get('[data-codex-user-message]').text()).toContain(
+      'Keep working until tests pass',
+    )
+    expect(wrapper.get('[data-codex-sent-as-goal]').text()).toContain('sent as goal')
   })
 
   it('renders unknown items as contained raw json', () => {

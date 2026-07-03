@@ -11,6 +11,7 @@ import type {
   CodexSocketStatus,
   CodexThreadGoal,
   CodexThreadGoalStatus,
+  CodexTurnState,
   CodexThreadCreateResponse,
   CodexThreadForkResponse,
   CodexThreadStatePayload,
@@ -220,10 +221,153 @@ function normalizeGoal(value: unknown): CodexThreadGoal | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return null
   }
-  const goal = value as Partial<CodexThreadGoal>
-  return typeof goal.objective === 'string' && goal.objective.trim()
-    ? (goal as CodexThreadGoal)
-    : null
+  const record = value as JsonRecord
+  const objective = typeof record.objective === 'string' ? record.objective.trim() : ''
+  if (!objective) {
+    return null
+  }
+  const status = typeof record.status === 'string' ? record.status : 'active'
+  return {
+    ...(record as Partial<CodexThreadGoal>),
+    threadId:
+      typeof record.threadId === 'string'
+        ? record.threadId
+        : typeof record.thread_id === 'string'
+          ? record.thread_id
+          : undefined,
+    thread_id:
+      typeof record.thread_id === 'string'
+        ? record.thread_id
+        : typeof record.threadId === 'string'
+          ? record.threadId
+          : undefined,
+    objective,
+    status,
+    tokenBudget: numberOrNull(record.tokenBudget, record.token_budget),
+    tokensUsed: numberOrUndefined(record.tokensUsed, record.tokens_used),
+    timeUsedSeconds: numberOrUndefined(record.timeUsedSeconds, record.time_used_seconds),
+    createdAt: numberOrUndefined(record.createdAt, record.created_at),
+    updatedAt: numberOrUndefined(record.updatedAt, record.updated_at),
+  }
+}
+
+function normalizeGoalResponse(value: unknown): CodexThreadGoal | null {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const record = value as JsonRecord
+    return normalizeGoal(record.goal) ?? normalizeGoal(record)
+  }
+  return null
+}
+
+function numberOrUndefined(...values: unknown[]) {
+  for (const value of values) {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value
+    }
+  }
+  return undefined
+}
+
+function numberOrNull(...values: unknown[]) {
+  return numberOrUndefined(...values) ?? null
+}
+
+function goalUpdatedAtMs(goal: CodexThreadGoal) {
+  if (typeof goal.updatedAt !== 'number' || !Number.isFinite(goal.updatedAt)) {
+    return Date.now()
+  }
+  return goal.updatedAt > 10_000_000_000 ? goal.updatedAt : goal.updatedAt * 1000
+}
+
+function goalObjective(goal: CodexThreadGoal) {
+  return goal.objective.trim()
+}
+
+function turnInputText(turn: CodexTurnState) {
+  const params = turn.params
+  if (!params || typeof params !== 'object' || Array.isArray(params)) {
+    return ''
+  }
+  const input = (params as JsonRecord).input
+  if (typeof input === 'string') {
+    return input.trim()
+  }
+  if (!Array.isArray(input)) {
+    return ''
+  }
+  return input
+    .map((item) => {
+      if (typeof item === 'string') {
+        return item
+      }
+      if (item && typeof item === 'object' && !Array.isArray(item)) {
+        const text = (item as JsonRecord).text
+        return typeof text === 'string' ? text : ''
+      }
+      return ''
+    })
+    .join('')
+    .trim()
+}
+
+function goalSyntheticTurn(goal: CodexThreadGoal): CodexTurnState {
+  const objective = goalObjective(goal)
+  return {
+    turnId: null,
+    status: 'completed',
+    turnStartedAtMs: goalUpdatedAtMs(goal),
+    params: {
+      input: [{ type: 'text', text: objective, text_elements: [] }],
+    },
+    items: [],
+  }
+}
+
+function withGoalSyntheticTurn(
+  state: CodexConversationState,
+  goal: CodexThreadGoal | null,
+): CodexConversationState {
+  if (!goal || !goalObjective(goal)) {
+    return state
+  }
+  const turns = Array.isArray(state.turns) ? state.turns : []
+  const objective = goalObjective(goal)
+  const hasGoalTurn = turns.some(
+    (turn) =>
+      turn.turnId == null &&
+      turnInputText(turn) === objective &&
+      Array.isArray(turn.items) &&
+      turn.items.length === 0,
+  )
+  if (hasGoalTurn) {
+    return state
+  }
+  return {
+    ...state,
+    turns: [goalSyntheticTurn(goal), ...turns],
+  }
+}
+
+function mergePersistedGoalState(
+  incoming: CodexConversationState,
+  previous: CodexConversationState | null | undefined,
+) {
+  const incomingGoal =
+    incoming.threadGoal === undefined ? undefined : normalizeGoal(incoming.threadGoal)
+  const previousGoal = normalizeGoal(previous?.threadGoal)
+  const incomingCompletedGoal =
+    incoming.completedThreadGoal === undefined
+      ? undefined
+      : normalizeGoal(incoming.completedThreadGoal)
+  const previousCompletedGoal = normalizeGoal(previous?.completedThreadGoal)
+  const goal = incomingGoal === undefined ? previousGoal : incomingGoal
+  const completedGoal =
+    incomingCompletedGoal === undefined ? previousCompletedGoal : incomingCompletedGoal
+  return {
+    ...incoming,
+    threadGoal: goal,
+    completedThreadGoal: completedGoal,
+  }
 }
 
 export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
@@ -294,9 +438,17 @@ export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
   })
 
   function setThreadPayload(payload: CodexThreadStatePayload) {
+    const previousState = threadPayloads.value[payload.thread_id]?.state
+    const state = payload.state
+      ? mergePersistedGoalState(payload.state, previousState)
+      : payload.state
+    const goal = normalizeGoal(state?.threadGoal)
     threadPayloads.value = {
       ...threadPayloads.value,
-      [payload.thread_id]: payload,
+      [payload.thread_id]: {
+        ...payload,
+        state: state ? withGoalSyntheticTurn(state, goal) : state,
+      },
     }
   }
 
@@ -310,13 +462,15 @@ export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
     if (!state) {
       return
     }
+    const nextState = {
+      ...state,
+      ...patch,
+    }
+    const goal = normalizeGoal(nextState.threadGoal)
     setThreadPayload({
       ...current,
       thread_id: threadId,
-      state: {
-        ...state,
-        ...patch,
-      },
+      state: withGoalSyntheticTurn(nextState, goal),
     })
   }
 
@@ -600,7 +754,7 @@ export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
         'get_thread_goal',
         { thread_id: threadId },
       )
-      const goal = normalizeGoal(response.goal)
+      const goal = normalizeGoalResponse(response)
       if (goal) {
         patchThreadState(threadId, { threadGoal: goal })
       }
@@ -615,13 +769,15 @@ export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
     if (!current || !state) {
       return
     }
+    const nextState = {
+      ...state,
+      ...patch,
+    }
+    const goal = normalizeGoal(nextState.threadGoal)
     setThreadPayload({
       ...current,
       thread_id: threadId,
-      state: {
-        ...state,
-        ...patch,
-      },
+      state: withGoalSyntheticTurn(nextState, goal),
     })
   }
 
@@ -642,6 +798,7 @@ export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
         },
       )
       const goal = normalizeGoal(response.goal)
+        ?? normalizeGoalResponse(response)
       if (goal) {
         updateActiveState({
           threadGoal: goal,
@@ -666,6 +823,7 @@ export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
         },
       )
       const goal = normalizeGoal(response.goal)
+        ?? normalizeGoalResponse(response)
       if (goal) {
         updateActiveState({
           threadGoal: goal,

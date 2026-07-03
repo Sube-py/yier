@@ -137,13 +137,13 @@ describe('CodexConversation', () => {
     ])
 
     await wrapper.get('[data-codex-work-toggle]').trigger('click')
-    await wrapper.get('[data-codex-work-item] button').trigger('click')
+    await wrapper.get('[data-codex-activity-toggle]').trigger('click')
 
     expect(wrapper.get('[data-codex-work-items]').classes()).toEqual(
       expect.arrayContaining(['min-w-0', 'max-sm:pl-2']),
     )
     expect(wrapper.get('[data-codex-work-detail]').classes()).toEqual(
-      expect.arrayContaining(['min-w-0', 'max-sm:pl-0']),
+      expect.arrayContaining(['min-w-0']),
     )
     expect(wrapper.get('[data-codex-command-output]').classes()).toContain('min-w-0')
   })
@@ -169,7 +169,8 @@ describe('CodexConversation', () => {
     expect(wrapper.find('[data-codex-work-section] .markdown-prose').exists()).toBe(false)
 
     await wrapper.get('[data-codex-work-toggle]').trigger('click')
-    await wrapper.get('[data-codex-work-item] button').trigger('click')
+    expect(wrapper.get('[data-codex-activity-toggle]').text()).toContain('Ran a command')
+    await wrapper.get('[data-codex-activity-toggle]').trigger('click')
 
     const output = wrapper.get('[data-codex-command-output]')
     expect(output.text()).toContain('$ printf "**raw**"')
@@ -248,13 +249,13 @@ describe('CodexConversation', () => {
     expect(assistant.text()).not.toContain('I will inspect the relevant files first.')
 
     await wrapper.get('[data-codex-work-toggle]').trigger('click')
-    const workRows = wrapper.findAll('[data-codex-work-item]')
 
-    expect(workRows).toHaveLength(2)
-    expect(workRows[0]?.text()).toContain('Message')
-    expect(workRows[0]?.text()).toContain('I will inspect the relevant files first.')
-    expect(workRows[1]?.text()).toContain('Ran shell')
-    expect(workRows[1]?.text()).toContain('rg "goal" web/src/codex')
+    expect(wrapper.get('[data-codex-work-message]').text()).toContain(
+      'I will inspect the relevant files first.',
+    )
+    expect(wrapper.get('[data-codex-work-message]').text()).not.toContain('Message')
+    expect(wrapper.get('[data-codex-activity-toggle]').text()).toContain('Searched code')
+    expect(wrapper.find('[data-codex-command-output]').exists()).toBe(false)
   })
 
   it('does not render explicit commentary as the final assistant response', async () => {
@@ -271,7 +272,7 @@ describe('CodexConversation', () => {
 
     await wrapper.get('[data-codex-work-toggle]').trigger('click')
 
-    expect(wrapper.get('[data-codex-work-item]').text()).toContain('Still working through this.')
+    expect(wrapper.get('[data-codex-work-message]').text()).toContain('Still working through this.')
   })
 
   it('keeps work item expansion scoped per turn even when item ids repeat', async () => {
@@ -316,8 +317,8 @@ describe('CodexConversation', () => {
     await workToggles[0]?.trigger('click')
     await workToggles[1]?.trigger('click')
 
-    const rows = wrapper.findAll('[data-codex-work-row]')
-    await rows[0]?.trigger('click')
+    const activityToggles = wrapper.findAll('[data-codex-activity-toggle]')
+    await activityToggles[0]?.trigger('click')
 
     const details = wrapper.findAll('[data-codex-work-detail]')
     expect(details).toHaveLength(1)
@@ -346,7 +347,8 @@ describe('CodexConversation', () => {
 
     expect(wrapper.text()).toContain('Working for 3s')
     expect(wrapper.get('[data-codex-work-toggle]').attributes('aria-expanded')).toBe('true')
-    expect(wrapper.get('[data-codex-work-item]').text()).toContain('Thinking')
+    expect(wrapper.find('[data-codex-work-item]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('Inspecting the code')
 
     vi.useRealTimers()
   })
@@ -369,15 +371,15 @@ describe('CodexConversation', () => {
 
     await wrapper.get('[data-codex-work-toggle]').trigger('click')
 
-    expect(wrapper.get('[data-codex-work-item]').text()).toContain('Called Generate Diagram')
+    expect(wrapper.get('[data-codex-activity-toggle]').text()).toContain('Called a tool')
     expect(wrapper.find('[data-codex-raw]').exists()).toBe(false)
 
-    await wrapper.get('[data-codex-work-item] button').trigger('click')
+    await wrapper.get('[data-codex-activity-toggle]').trigger('click')
 
     expect(wrapper.get('[data-codex-raw]').text()).toContain('{"ok":true}')
   })
 
-  it('labels shell, edit, create, and tool activities with compact metadata', async () => {
+  it('summarizes adjacent tool activities behind one compact disclosure', async () => {
     const wrapper = mountConversation([
       {
         id: 'command-1',
@@ -412,21 +414,24 @@ describe('CodexConversation', () => {
     ])
 
     await wrapper.get('[data-codex-work-toggle]').trigger('click')
+    const activity = wrapper.get('[data-codex-work-activity]')
+    expect(activity.text()).toContain('Ran a command')
+    expect(activity.text()).toContain('Created a file')
+    expect(activity.text()).toContain('Edited a file')
+    expect(activity.text()).toContain('Called a tool')
+    expect(wrapper.findAll('[data-codex-work-row]')).toHaveLength(0)
+
+    await wrapper.get('[data-codex-activity-toggle]').trigger('click')
+
     const rows = wrapper.findAll('[data-codex-work-row]')
     expect(rows).toHaveLength(4)
-    const [shellRow, createdRow, editedRow, toolRow] = rows
-
-    expect(shellRow?.text()).toContain('Ran shell')
-    expect(shellRow?.text()).toContain('pnpm test')
-    expect(shellRow?.text()).toContain('1.53s')
-    expect(shellRow?.text()).toContain('exit 0')
-    expect(createdRow?.text()).toContain('Created')
-    expect(createdRow?.text()).toContain('src/NewFile.ts')
-    expect(editedRow?.text()).toContain('Edited')
-    expect(editedRow?.text()).toContain('src/App.vue')
-    expect(toolRow?.text()).toContain('Called figma / Get Design Context')
-    expect(toolRow?.text()).toContain('get_design_context')
-    expect(toolRow?.text()).toContain('425ms')
+    expect(rows[0]?.text()).toContain('Ran shell')
+    expect(rows[0]?.text()).toContain('pnpm test')
+    expect(rows[1]?.text()).toContain('Created')
+    expect(rows[1]?.text()).toContain('src/NewFile.ts')
+    expect(rows[2]?.text()).toContain('Edited')
+    expect(rows[2]?.text()).toContain('src/App.vue')
+    expect(rows[3]?.text()).toContain('Called figma / Get Design Context')
   })
 
   it('renders final turn work as a report card after the assistant response', () => {
@@ -524,9 +529,69 @@ describe('CodexConversation', () => {
 
     await wrapper.get('[data-codex-work-toggle]').trigger('click')
 
+    expect(wrapper.get('[data-codex-activity-toggle]').text()).toContain('Searched the web')
+    expect(wrapper.find('[data-codex-raw]').exists()).toBe(false)
+
+    await wrapper.get('[data-codex-activity-toggle]').trigger('click')
+
     expect(wrapper.get('[data-codex-work-item]').text()).toContain('Searched the web')
     expect(wrapper.get('[data-codex-work-item]').text()).toContain('codex app goal mode')
     expect(wrapper.find('[data-codex-unknown-item]').exists()).toBe(false)
+  })
+
+  it('renders todo-list items as a compact task summary instead of raw json', async () => {
+    const wrapper = mountConversation([
+      {
+        id: 'todo-1',
+        type: 'todo-list',
+        plan: [
+          { step: 'Read the official renderer', status: 'completed' },
+          { step: 'Align the local UI', status: 'in_progress' },
+        ],
+      },
+      {
+        id: 'agent-1',
+        type: 'agentMessage',
+        phase: 'final_answer',
+        text: 'Done.',
+      },
+    ])
+
+    await wrapper.get('[data-codex-work-toggle]').trigger('click')
+
+    expect(wrapper.get('[data-codex-todo-list]').text()).toContain('1 out of 2 tasks completed')
+    expect(wrapper.find('[data-codex-raw]').exists()).toBe(false)
+
+    await wrapper.get('[data-codex-todo-toggle]').trigger('click')
+
+    const todos = wrapper.findAll('[data-codex-todo-item]')
+    expect(todos).toHaveLength(2)
+    expect(todos[0]?.text()).toContain('1.')
+    expect(todos[0]?.text()).toContain('Read the official renderer')
+    expect(todos[1]?.text()).toContain('Align the local UI')
+  })
+
+  it('renders context compaction as a divider', async () => {
+    const wrapper = mountConversation([
+      {
+        id: 'compact-1',
+        type: 'contextCompaction',
+        completed: true,
+        source: 'automatic',
+      },
+      {
+        id: 'agent-1',
+        type: 'agentMessage',
+        phase: 'final_answer',
+        text: 'Resumed.',
+      },
+    ])
+
+    await wrapper.get('[data-codex-work-toggle]').trigger('click')
+
+    const divider = wrapper.get('[data-codex-context-compaction]')
+    expect(divider.text()).toContain('Context automatically compacted')
+    expect(wrapper.find('[data-codex-work-item]').exists()).toBe(false)
   })
 
   it('renders image user messages and goal hover metadata', () => {

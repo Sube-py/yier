@@ -16,6 +16,7 @@ const emit = defineEmits<{
 
 type ConversationItemKind = 'user' | 'assistant' | 'work' | 'unknown'
 type TurnBlockKind = 'user' | 'work' | 'assistant' | 'unknown'
+type WorkRenderUnitKind = 'message' | 'activity' | 'todo' | 'context'
 
 interface ConversationItemView {
   id: string
@@ -26,6 +27,12 @@ interface ConversationItemView {
 interface TurnBlockView {
   id: string
   kind: TurnBlockKind
+  items: ConversationItemView[]
+}
+
+interface WorkRenderUnit {
+  id: string
+  kind: WorkRenderUnitKind
   items: ConversationItemView[]
 }
 
@@ -67,6 +74,10 @@ const workItemTypes = new Set([
   'collabAgentToolCall',
   'userInputResponse',
   'contextCompaction',
+  'context-compaction',
+  'todo-list',
+  'todoList',
+  'todo_list',
 ])
 
 const responseItemTypes = new Set(['agentMessage', 'plan'])
@@ -352,6 +363,58 @@ function toggleItem(itemId: string) {
   }
 }
 
+function workRenderUnits(items: ConversationItemView[]): WorkRenderUnit[] {
+  const units: WorkRenderUnit[] = []
+  let activityItems: ConversationItemView[] = []
+  let activityIndex = 0
+
+  function flushActivity() {
+    if (!activityItems.length) {
+      return
+    }
+    units.push({
+      id: `${activityItems[0]?.id ?? 'activity'}-activity-${activityIndex}`,
+      kind: 'activity',
+      items: activityItems,
+    })
+    activityItems = []
+    activityIndex += 1
+  }
+
+  for (const item of items) {
+    const type = itemType(item.item)
+    if (type === 'reasoning') {
+      continue
+    }
+    if (type === 'agentMessage' || type === 'plan') {
+      flushActivity()
+      units.push({ id: item.id, kind: 'message', items: [item] })
+      continue
+    }
+    if (isTodoListItem(item.item)) {
+      flushActivity()
+      units.push({ id: item.id, kind: 'todo', items: [item] })
+      continue
+    }
+    if (isContextCompactionItem(item.item)) {
+      flushActivity()
+      units.push({ id: item.id, kind: 'context', items: [item] })
+      continue
+    }
+    activityItems.push(item)
+  }
+  flushActivity()
+  return units
+}
+
+function isTodoListItem(item: JsonRecord) {
+  return ['todo-list', 'todoList', 'todo_list'].includes(itemType(item))
+}
+
+function isContextCompactionItem(item: JsonRecord) {
+  return ['contextCompaction', 'context-compaction'].includes(itemType(item))
+}
+
 function itemText(item: JsonRecord) {
   const type = itemType(item)
   if (type === 'userMessage') {
@@ -395,7 +458,7 @@ function itemText(item: JsonRecord) {
   if (type === 'userInputResponse') {
     return compactJson(item.answers ?? {})
   }
-  if (type === 'contextCompaction') {
+  if (isContextCompactionItem(item)) {
     return 'Context compacted.'
   }
   if (type === 'webSearch' || type === 'search') {
@@ -607,19 +670,6 @@ function humanizeName(value: string) {
 
 function workItemTitle(item: JsonRecord) {
   const type = itemType(item)
-  if (type === 'agentMessage') {
-    return 'Message'
-  }
-  if (type === 'plan') {
-    return 'Plan'
-  }
-  if (type === 'reasoning') {
-    const duration = formatDuration(turnElapsedForItem(item))
-    if (isItemInProgress(item)) {
-      return 'Thinking'
-    }
-    return duration ? `Thought for ${duration}` : 'Thought'
-  }
   if (type === 'commandExecution') {
     return isItemInProgress(item) ? 'Running shell' : 'Ran shell'
   }
@@ -650,9 +700,6 @@ function workItemTitle(item: JsonRecord) {
   if (type === 'userInputResponse') {
     return 'Answered request'
   }
-  if (type === 'contextCompaction') {
-    return 'Compacted context'
-  }
   return humanizeName(type)
 }
 
@@ -660,9 +707,6 @@ function workItemSubject(item: JsonRecord) {
   const type = itemType(item)
   if (type === 'commandExecution') {
     return commandText(item)
-  }
-  if (type === 'agentMessage' || type === 'plan') {
-    return itemText(item).split('\n').find(Boolean) ?? ''
   }
   if (type === 'fileChange') {
     const primary = primaryFileChange(item)
@@ -680,9 +724,6 @@ function workItemSubject(item: JsonRecord) {
   }
   if (type === 'dynamicToolCall' || type === 'mcpToolCall' || type === 'collabAgentToolCall') {
     return toolName(item)
-  }
-  if (type === 'reasoning') {
-    return firstString(item.text, outputText(item.summary), outputText(item.content))
   }
   return ''
 }
@@ -719,37 +760,6 @@ function workItemTone(item: JsonRecord) {
     }
   }
   return 'text-[color:var(--app-text-soft)]'
-}
-
-function workItemIcon(item: JsonRecord) {
-  switch (itemType(item)) {
-    case 'agentMessage':
-      return 'pi pi-comment'
-    case 'plan':
-      return 'pi pi-list-check'
-    case 'reasoning':
-      return 'pi pi-sparkles'
-    case 'commandExecution':
-      return 'pi pi-terminal'
-    case 'fileChange':
-      return 'pi pi-file-edit'
-    case 'webSearch':
-    case 'search':
-      return 'pi pi-search'
-    case 'git':
-      return 'pi pi-code-branch'
-    case 'mcpToolCall':
-    case 'dynamicToolCall':
-      return 'pi pi-wrench'
-    case 'collabAgentToolCall':
-      return 'pi pi-users'
-    case 'userInputResponse':
-      return 'pi pi-reply'
-    case 'contextCompaction':
-      return 'pi pi-compress'
-    default:
-      return 'pi pi-circle'
-  }
 }
 
 function turnElapsedForItem(item: JsonRecord) {
@@ -825,6 +835,108 @@ function gitDetail(item: JsonRecord) {
   return parts.filter(Boolean).join('\n')
 }
 
+function activitySummary(items: ConversationItemView[]) {
+  const labels = items.map((item) => activityItemSummary(item.item)).filter(Boolean)
+  const uniqueLabels = [...new Set(labels)]
+  if (!uniqueLabels.length) {
+    return 'Worked'
+  }
+  return uniqueLabels.join(', ')
+}
+
+function activityItemSummary(item: JsonRecord) {
+  const type = itemType(item)
+  if (type === 'commandExecution') {
+    const command = commandText(item)
+    if (isCodeSearchCommand(command)) {
+      return isItemInProgress(item) ? 'Searching code' : 'Searched code'
+    }
+    return isItemInProgress(item) ? 'Running a command' : 'Ran a command'
+  }
+  if (type === 'fileChange') {
+    const changes = fileChangeViews(item)
+    if (changes.length === 1) {
+      const action = changes[0]?.action
+      if (action === 'created') {
+        return 'Created a file'
+      }
+      if (action === 'deleted') {
+        return 'Deleted a file'
+      }
+      return 'Edited a file'
+    }
+    return `Edited ${changes.length} files`
+  }
+  if (type === 'webSearch' || type === 'search') {
+    return isItemInProgress(item) ? 'Searching the web' : 'Searched the web'
+  }
+  if (type === 'dynamicToolCall' || type === 'mcpToolCall') {
+    return isItemInProgress(item) ? 'Calling a tool' : 'Called a tool'
+  }
+  if (type === 'collabAgentToolCall') {
+    return isItemInProgress(item) ? 'Starting an agent' : 'Used an agent'
+  }
+  if (type === 'git') {
+    return 'Checked git'
+  }
+  if (type === 'userInputResponse') {
+    return 'Answered a request'
+  }
+  return humanizeName(type)
+}
+
+function isCodeSearchCommand(command: string) {
+  return /\b(rg|grep|ag|fd|find)\b/.test(command)
+}
+
+function todoItems(item: JsonRecord) {
+  const plan = Array.isArray(item.plan)
+    ? item.plan
+    : Array.isArray(item.items)
+      ? item.items
+      : Array.isArray(item.todos)
+        ? item.todos
+        : []
+  return plan
+    .filter(isRecord)
+    .map((todo, index) => ({
+      id: firstString(todo.id) || `${index}`,
+      step: firstString(todo.step, todo.text, todo.content, todo.title) || `Task ${index + 1}`,
+      status: firstString(todo.status, todo.state).toLowerCase() || 'pending',
+    }))
+}
+
+function todoCompletedCount(item: JsonRecord) {
+  return todoItems(item).filter(
+    (todo) => todo.status === 'completed' || todo.status === 'complete',
+  ).length
+}
+
+function todoSummary(item: JsonRecord) {
+  const todos = todoItems(item)
+  const completed = todoCompletedCount(item)
+  if (!todos.length) {
+    return 'To do list'
+  }
+  if (completed === 0) {
+    return `To do list created with ${todos.length} ${todos.length === 1 ? 'task' : 'tasks'}`
+  }
+  return `${completed} out of ${todos.length} ${todos.length === 1 ? 'task' : 'tasks'} completed`
+}
+
+function isTodoComplete(status: string) {
+  return status === 'completed' || status === 'complete'
+}
+
+function contextCompactionLabel(item: JsonRecord) {
+  const completed = item.completed !== false && !isItemInProgress(item)
+  const source = firstString(item.source).toLowerCase()
+  if (completed) {
+    return source === 'manual' ? 'Context compacted' : 'Context automatically compacted'
+  }
+  return source === 'manual' ? 'Compacting context' : 'Automatically compacting context'
+}
+
 function finalTurnReport(items: JsonRecord[]): TurnReport {
   const changedFilesByPath = new Map<string, FileChangeView>()
   let linesAdded = 0
@@ -834,9 +946,9 @@ function finalTurnReport(items: JsonRecord[]): TurnReport {
 
   for (const item of items) {
     const type = itemType(item)
-  if (type === 'commandExecution') {
-    commandCount += 1
-  }
+    if (type === 'commandExecution') {
+      commandCount += 1
+    }
     if (['dynamicToolCall', 'mcpToolCall', 'collabAgentToolCall'].includes(type)) {
       toolCount += 1
     }
@@ -1091,103 +1203,150 @@ const justDebug = false
               class="grid min-w-0 gap-1.5 border-l border-[rgba(34,66,72,0.12)] pl-3 max-sm:pl-2"
               data-codex-work-items
             >
-              <div
-                v-for="workItem in block.items"
-                :key="workItem.id"
-                class="grid min-w-0 gap-1 rounded-md px-1 py-0.5 text-sm text-[color:var(--app-text-soft)] transition hover:bg-white/55"
-                data-codex-work-item
-              >
-                <button
-                  type="button"
-                  class="group grid min-w-0 grid-cols-[1.25rem_minmax(0,auto)_minmax(0,1fr)_auto_0.75rem] items-center gap-1.5 rounded-md px-1 py-0.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(21,94,99,0.18)] max-sm:grid-cols-[1.25rem_minmax(0,1fr)_auto_0.75rem]"
-                  :aria-expanded="isItemExpanded(workItem.id)"
-                  data-codex-work-row
-                  @click="toggleItem(workItem.id)"
-                >
-                  <i
-                    class="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-white/65 text-[0.78rem] shadow-[inset_0_0_0_1px_rgba(34,66,72,0.08)]"
-                    :class="[workItemIcon(workItem.item), workItemTone(workItem.item)]"
-                    data-codex-work-icon
-                  ></i>
-                  <span
-                    class="min-w-0 whitespace-nowrap font-medium"
-                    :class="workItemTone(workItem.item)"
-                    data-codex-work-action
-                  >
-                    {{ workItemTitle(workItem.item) }}
-                  </span>
-                  <span
-                    v-if="workItemSubject(workItem.item)"
-                    class="min-w-0 truncate font-mono text-[0.78rem] text-[color:var(--app-text)]/80 max-sm:col-start-2"
-                    data-codex-work-subject
-                  >
-                    {{ workItemSubject(workItem.item) }}
-                  </span>
-                  <span v-else class="min-w-0 max-sm:hidden"></span>
-                  <span
-                    v-if="workItemMeta(workItem.item)"
-                    class="shrink-0 whitespace-nowrap text-[0.72rem] text-[color:var(--app-text-soft)]/80"
-                    data-codex-work-meta
-                  >
-                    {{ workItemMeta(workItem.item) }}
-                  </span>
-                  <i
-                    class="pi pi-chevron-right shrink-0 text-[0.56rem] opacity-0 transition-all group-hover:opacity-50"
-                    :class="isItemExpanded(workItem.id) ? 'rotate-90 opacity-50' : ''"
-                  ></i>
-                </button>
+              <template v-for="unit in workRenderUnits(block.items)" :key="unit.id">
+                <div
+                  v-if="unit.kind === 'message'"
+                  class="markdown-prose markdown-prose-conversation min-w-0 py-1 [overflow-wrap:anywhere] [&>:first-child]:mt-0 [&>:last-child]:mb-0"
+                  data-codex-work-message
+                  v-html="renderMarkdown(itemText(unit.items[0]?.item ?? {}))"
+                  @click="onMarkdownClick"
+                ></div>
 
                 <div
-                  v-if="isItemExpanded(workItem.id)"
-                  class="min-w-0 pl-6 max-sm:pl-0"
-                  data-codex-work-detail
+                  v-else-if="unit.kind === 'activity'"
+                  class="grid min-w-0 gap-1 py-0.5 text-sm text-[color:var(--app-text-soft)]"
+                  data-codex-work-activity
                 >
-                  <div
-                    v-if="itemType(workItem.item) === 'commandExecution'"
-                    class="code-surface code-surface-compact min-w-0"
-                    :class="
-                      !isItemInProgress(workItem.item) && !commandSucceeded(workItem.item)
-                        ? 'code-surface-danger'
-                        : ''
-                    "
-                    data-codex-command-output
+                  <button
+                    type="button"
+                    class="group inline-flex min-w-0 items-center gap-1 rounded-md px-1 py-0.5 text-left transition hover:bg-white/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(21,94,99,0.18)]"
+                    :aria-expanded="isItemExpanded(unit.id)"
+                    data-codex-activity-toggle
+                    @click="toggleItem(unit.id)"
                   >
-                    <div class="code-surface-toolbar">
-                      <div class="code-surface-toolbar-meta">
-                        <span class="code-surface-label">Shell</span>
-                        <span v-if="commandText(workItem.item)" class="code-surface-runtime">
-                          $ {{ commandText(workItem.item) }}
+                    <span class="min-w-0 truncate">{{ activitySummary(unit.items) }}</span>
+                    <i
+                      class="pi pi-chevron-right shrink-0 text-[0.56rem] opacity-50 transition-transform"
+                      :class="isItemExpanded(unit.id) ? 'rotate-90' : ''"
+                    ></i>
+                  </button>
+
+                  <div
+                    v-if="isItemExpanded(unit.id)"
+                    class="grid min-w-0 gap-1 pl-2"
+                    data-codex-work-detail
+                  >
+                    <div
+                      v-for="workItem in unit.items"
+                      :key="workItem.id"
+                      class="grid min-w-0 gap-1 rounded-md px-1 py-1"
+                      data-codex-work-item
+                    >
+                      <div
+                        class="min-w-0 truncate text-xs text-[color:var(--app-text-soft)]"
+                        data-codex-work-row
+                      >
+                        {{ workItemTitle(workItem.item) }}
+                        <span v-if="workItemSubject(workItem.item)">
+                          · {{ workItemSubject(workItem.item) }}
                         </span>
                       </div>
-                    </div>
-                    <div class="code-surface-scroll code-surface-scroll-compact">
-                      <pre><code>{{ workItemDetail(workItem.item) || 'No output' }}</code></pre>
+
+                      <div
+                        v-if="itemType(workItem.item) === 'commandExecution'"
+                        class="code-surface code-surface-compact min-w-0"
+                        :class="
+                          !isItemInProgress(workItem.item) && !commandSucceeded(workItem.item)
+                            ? 'code-surface-danger'
+                            : ''
+                        "
+                        data-codex-command-output
+                      >
+                        <div class="code-surface-toolbar">
+                          <div class="code-surface-toolbar-meta">
+                            <span class="code-surface-label">Shell</span>
+                            <span v-if="commandText(workItem.item)" class="code-surface-runtime">
+                              $ {{ commandText(workItem.item) }}
+                            </span>
+                          </div>
+                        </div>
+                        <div class="code-surface-scroll code-surface-scroll-compact">
+                          <pre><code>{{ workItemDetail(workItem.item) || 'No output' }}</code></pre>
+                        </div>
+                      </div>
+
+                      <pre
+                        v-else-if="workItemDetail(workItem.item)"
+                        class="m-0 max-h-56 max-w-full overflow-auto overscroll-contain rounded-lg border border-[rgba(34,66,72,0.08)] bg-white/75 p-2.5 text-xs leading-5 text-[color:var(--app-text-soft)]"
+                        data-codex-raw
+                        >{{ workItemDetail(workItem.item) }}</pre
+                      >
                     </div>
                   </div>
-
-                  <div
-                    v-else-if="shouldRenderMarkdown(workItem.item)"
-                    class="markdown-prose markdown-prose-compact min-w-0 rounded-lg border border-[rgba(34,66,72,0.08)] bg-white/75 p-2.5 text-xs [overflow-wrap:anywhere] [&>:first-child]:mt-0 [&>:last-child]:mb-0"
-                    data-codex-work-markdown
-                    v-html="renderMarkdown(workItemDetail(workItem.item))"
-                    @click="onMarkdownClick"
-                  ></div>
-
-                  <pre
-                    v-else-if="workItemDetail(workItem.item)"
-                    class="m-0 max-h-56 max-w-full overflow-auto overscroll-contain rounded-lg border border-[rgba(34,66,72,0.08)] bg-white/75 p-2.5 text-xs leading-5 text-[color:var(--app-text-soft)]"
-                    data-codex-raw
-                    >{{ workItemDetail(workItem.item) }}</pre
-                  >
-
-                  <pre
-                    v-else
-                    class="m-0 max-h-56 max-w-full overflow-auto overscroll-contain rounded-lg border border-[rgba(34,66,72,0.08)] bg-white/75 p-2.5 text-xs leading-5 text-[color:var(--app-text-soft)]"
-                    data-codex-raw
-                    >{{ compactJson(workItem.item) }}</pre
-                  >
                 </div>
-              </div>
+
+                <div
+                  v-else-if="unit.kind === 'todo'"
+                  class="min-w-0 rounded-lg bg-[rgba(255,255,255,0.58)] px-2.5 py-2 text-sm text-[color:var(--app-text-soft)]"
+                  data-codex-todo-list
+                >
+                  <button
+                    type="button"
+                    class="group flex w-full min-w-0 items-center justify-between gap-2 text-left"
+                    :aria-expanded="isItemExpanded(unit.id)"
+                    data-codex-todo-toggle
+                    @click="toggleItem(unit.id)"
+                  >
+                    <span class="min-w-0 truncate">{{ todoSummary(unit.items[0]?.item ?? {}) }}</span>
+                    <i
+                      class="pi pi-chevron-down shrink-0 text-[0.62rem] opacity-0 transition-all group-hover:opacity-60"
+                      :class="isItemExpanded(unit.id) ? 'rotate-180 opacity-80' : ''"
+                    ></i>
+                  </button>
+                  <div
+                    v-if="isItemExpanded(unit.id)"
+                    class="mt-2 grid max-h-40 gap-1 overflow-y-auto"
+                    data-codex-todo-items
+                  >
+                    <div
+                      v-for="(todo, todoIndex) in todoItems(unit.items[0]?.item ?? {})"
+                      :key="todo.id"
+                      class="flex min-w-0 items-center gap-2"
+                      data-codex-todo-item
+                    >
+                      <i
+                        class="pi shrink-0 text-[0.64rem]"
+                        :class="isTodoComplete(todo.status) ? 'pi-check text-emerald-700' : 'pi-circle text-[color:var(--app-text-soft)]'"
+                      ></i>
+                      <span class="shrink-0 text-[color:var(--app-text-soft)]">
+                        {{ todoIndex + 1 }}.
+                      </span>
+                      <span
+                        class="min-w-0 [overflow-wrap:anywhere]"
+                        :class="isTodoComplete(todo.status) ? 'line-through' : ''"
+                      >
+                        {{ todo.step }}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <div
+                  v-else-if="unit.kind === 'context'"
+                  class="my-2 flex items-center gap-2 text-sm text-[color:var(--app-text-soft)]"
+                  data-codex-context-compaction
+                >
+                  <span class="h-px min-w-0 flex-1 bg-current opacity-20"></span>
+                  <span class="inline-flex shrink-0 items-center gap-1">
+                    <i
+                      v-if="!isItemInProgress(unit.items[0]?.item ?? {})"
+                      class="pi pi-check text-[0.62rem]"
+                    ></i>
+                    {{ contextCompactionLabel(unit.items[0]?.item ?? {}) }}
+                  </span>
+                  <span class="h-px min-w-0 flex-1 bg-current opacity-20"></span>
+                </div>
+              </template>
             </div>
           </div>
 

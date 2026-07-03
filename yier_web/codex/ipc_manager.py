@@ -68,6 +68,7 @@ CodexSessionFactory = Callable[..., CodexIpcSession]
 class ManagedCodexThread:
     session: CodexIpcSession
     watcher_task: asyncio.Task[None]
+    event_watcher_task: asyncio.Task[None] | None = None
     state: JsonDict | None = None
 
 
@@ -195,10 +196,9 @@ class CodexIpcManager:
     async def stop(self) -> None:
         self._started = False
         for managed in list(self._threads.values()):
-            managed.watcher_task.cancel()
+            self._cancel_managed_watchers(managed)
         for managed in list(self._threads.values()):
-            with contextlib.suppress(asyncio.CancelledError):
-                await managed.watcher_task
+            await self._wait_managed_watchers(managed)
             await managed.session.stop()
         self._threads.clear()
         self._session_events.clear_thread_subscribers()
@@ -742,9 +742,16 @@ class CodexIpcManager:
             self._watch_thread(thread_id, session),
             name=f"codex-ipc-watch:{thread_id}",
         )
+        event_watcher_task = None
+        if self._session_has_native_events(session):
+            event_watcher_task = asyncio.create_task(
+                self._watch_session_events(thread_id, session),
+                name=f"codex-ipc-events:{thread_id}",
+            )
         managed = ManagedCodexThread(
             session=session,
             watcher_task=watcher_task,
+            event_watcher_task=event_watcher_task,
             state=session.state,
         )
         self._threads[thread_id] = managed
@@ -756,18 +763,16 @@ class CodexIpcManager:
         managed = self._threads.pop(thread_id, None)
         if managed is None:
             return
-        managed.watcher_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await managed.watcher_task
+        self._cancel_managed_watchers(managed)
+        await self._wait_managed_watchers(managed)
         await managed.session.stop()
         self._session_events.clear_thread(thread_id)
 
     async def _restart_sessions(self) -> None:
         for managed in list(self._threads.values()):
-            managed.watcher_task.cancel()
+            self._cancel_managed_watchers(managed)
         for managed in list(self._threads.values()):
-            with contextlib.suppress(asyncio.CancelledError):
-                await managed.watcher_task
+            await self._wait_managed_watchers(managed)
             await managed.session.stop()
         self._threads.clear()
         self._session_events.clear_thread_subscribers()
@@ -785,6 +790,30 @@ class CodexIpcManager:
             if managed is not None:
                 managed.state = state
             await self._fanout_thread_state(thread_id, state, session=session)
+
+    async def _watch_session_events(
+        self,
+        thread_id: str,
+        session: CodexIpcSession,
+    ) -> None:
+        async for event in session.watch_session_events():  # type: ignore[attr-defined]
+            payload = self._native_session_event(thread_id, event)
+            await self._session_events.publish_thread_event(thread_id, payload)
+
+    def _session_has_native_events(self, session: CodexIpcSession) -> bool:
+        return callable(getattr(session, "watch_session_events", None))
+
+    def _cancel_managed_watchers(self, managed: ManagedCodexThread) -> None:
+        managed.watcher_task.cancel()
+        if managed.event_watcher_task is not None:
+            managed.event_watcher_task.cancel()
+
+    async def _wait_managed_watchers(self, managed: ManagedCodexThread) -> None:
+        with contextlib.suppress(asyncio.CancelledError):
+            await managed.watcher_task
+        if managed.event_watcher_task is not None:
+            with contextlib.suppress(asyncio.CancelledError):
+                await managed.event_watcher_task
 
     async def _fanout_thread_state(
         self,
@@ -807,14 +836,15 @@ class CodexIpcManager:
                 "payload": payload,
             },
         )
-        await self._session_events.publish_thread_event(
-            thread_id,
-            self._session_state_event(
+        if not self._session_has_native_events(session):
+            await self._session_events.publish_thread_event(
                 thread_id,
-                state_with_host,
-                session=session,
-            ),
-        )
+                self._session_state_event(
+                    thread_id,
+                    state_with_host,
+                    session=session,
+                ),
+            )
         await self.event_broker.publish(
             "codex_thread_state",
             payload,
@@ -857,6 +887,23 @@ class CodexIpcManager:
                     "streamRole": session.stream_role,
                     "queuedFollowups": session.queued_followups,
                 },
+            },
+        }
+
+    def _native_session_event(
+        self,
+        thread_id: str,
+        event: JsonDict,
+    ) -> CodexSessionEvent:
+        params = event.get("params")
+        return {
+            "type": "codex_session_event",
+            "payload": {
+                "thread_id": thread_id,
+                "method": event.get("method"),
+                "params": params if isinstance(params, dict) else {},
+                "source_client_id": event.get("sourceClientId"),
+                "version": event.get("version"),
             },
         }
 

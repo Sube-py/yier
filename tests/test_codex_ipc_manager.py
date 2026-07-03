@@ -290,6 +290,21 @@ class FakeCodexIpcSession:
         self._state_queue.put_nowait(state)
 
 
+class NativeEventFakeCodexIpcSession(FakeCodexIpcSession):
+    def __init__(
+        self, config: Any, *, notify: Callable[[str], None] | None = None
+    ) -> None:
+        super().__init__(config, notify=notify)
+        self._session_event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+    async def watch_session_events(self):
+        while True:
+            yield await self._session_event_queue.get()
+
+    def emit_session_event(self, event: dict[str, Any]) -> None:
+        self._session_event_queue.put_nowait(event)
+
+
 class FakeSessionFactory:
     def __init__(self) -> None:
         self.sessions: list[FakeCodexIpcSession] = []
@@ -312,6 +327,15 @@ class FakeSessionFactory:
             if session.config.thread_id is None:
                 return session
         raise KeyError("workspace")
+
+
+class NativeEventSessionFactory(FakeSessionFactory):
+    def __call__(
+        self, config: Any, *, notify: Callable[[str], None] | None = None
+    ) -> NativeEventFakeCodexIpcSession:
+        session = NativeEventFakeCodexIpcSession(config, notify=notify)
+        self.sessions.append(session)
+        return session
 
 
 class FakeDirectoryPickerService:
@@ -561,6 +585,75 @@ def test_codex_manager_fans_out_session_events_to_sinks(tmp_path: Path) -> None:
             for event in sink_events
             if event.get("type") == "codex_session_event"
         )
+
+        await manager.stop()
+
+    asyncio.run(scenario())
+
+
+def test_codex_manager_forwards_native_ipc_session_events(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        config_service = AppConfigService(
+            project_root=tmp_path / "project",
+            home_dir=tmp_path / "home",
+        )
+        factory = NativeEventSessionFactory()
+        manager = CodexIpcManager(
+            config_service=config_service,
+            event_broker=EventStreamBroker(),
+            session_factory=factory,
+        )
+        sink_events: list[dict[str, Any]] = []
+        manager.add_session_event_sink(lambda event: sink_events.append(event))
+
+        await manager.start()
+        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        await manager.subscribe("thread-a", queue)
+        await _wait_for_event(queue, lambda event: event["type"] == "thread_snapshot")
+
+        native_event = {
+            "type": "broadcast",
+            "method": "thread-stream-state-changed",
+            "sourceClientId": "owner-1",
+            "version": 7,
+            "params": {
+                "conversationId": "thread-a",
+                "hostId": "local",
+                "type": "thread-stream-state-changed",
+                "change": {
+                    "type": "patches",
+                    "baseRevision": 1,
+                    "revision": 2,
+                    "patches": [
+                        {
+                            "op": "replace",
+                            "path": ["phase"],
+                            "value": "streaming",
+                        }
+                    ],
+                },
+            },
+        }
+        await asyncio.sleep(0)
+        factory.by_thread_id("thread-a").emit_session_event(native_event)
+
+        forwarded = await _wait_for_event(
+            queue,
+            lambda event: (
+                event["type"] == "codex_session_event"
+                and event["payload"]["params"].get("change", {}).get("type")
+                == "patches"
+            ),
+        )
+
+        assert forwarded["payload"] == {
+            "thread_id": "thread-a",
+            "method": "thread-stream-state-changed",
+            "params": native_event["params"],
+            "source_client_id": "owner-1",
+            "version": 7,
+        }
+        assert sink_events[-1] == forwarded
 
         await manager.stop()
 

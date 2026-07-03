@@ -484,6 +484,71 @@ def test_codex_manager_keeps_separate_sessions_alive(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
+def test_codex_manager_builds_thread_defaults_from_codex_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def scenario() -> None:
+        codex_home = tmp_path / "codex-home"
+        codex_home.mkdir()
+        (codex_home / "config.toml").write_text(
+            "\n".join(
+                [
+                    'model = "gpt-5.5"',
+                    'model_provider = "cheftin"',
+                    'model_reasoning_effort = "high"',
+                    'approval_policy = "never"',
+                    'approvals_reviewer = "guardian_subagent"',
+                    'sandbox_mode = "read-only"',
+                    'service_tier = "priority"',
+                    'personality = "pragmatic"',
+                    'developer_instructions = "Use concise status updates."',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("CODEX_HOME", str(codex_home))
+        config_service = AppConfigService(
+            project_root=tmp_path / "project",
+            home_dir=tmp_path / "home",
+        )
+        factory = FakeSessionFactory()
+        manager = CodexIpcManager(
+            config_service=config_service,
+            event_broker=EventStreamBroker(),
+            session_factory=factory,
+        )
+
+        await manager.start()
+        await manager.start_thread(project_path="/tmp/project-c")
+
+        created_session = factory.by_thread_id("thread-created")
+        assert created_session.config.model == "gpt-5.5"
+        assert created_session.config.reasoning_effort == "high"
+        assert created_session.config.app_server_config.env == {
+            "CODEX_HOME": str(codex_home)
+        }
+        assert created_session.config.default_thread_params == {
+            "cwd": str(config_service.project_root),
+            "model": "gpt-5.5",
+            "model_provider": "cheftin",
+            "approval_policy": "never",
+            "approvals_reviewer": "guardian_subagent",
+            "sandbox": "read-only",
+            "service_tier": "priority",
+            "personality": "pragmatic",
+            "developer_instructions": "Use concise status updates.",
+            "config": {"model_reasoning_effort": "high"},
+        }
+        assert created_session.start_new_thread_calls[-1] == {
+            "cwd": config_service.resolve_project_path("/tmp/project-c")
+        }
+
+        await manager.stop()
+
+    asyncio.run(scenario())
+
+
 def test_codex_manager_updates_cached_mode_for_future_snapshots(tmp_path: Path) -> None:
     async def scenario() -> None:
         config_service = AppConfigService(

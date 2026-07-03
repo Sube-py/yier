@@ -4,8 +4,10 @@ import asyncio
 import contextlib
 from dataclasses import dataclass
 import logging
+import os
 from pathlib import Path
 import shlex
+import tomllib
 import uuid
 from typing import Any, Callable
 
@@ -49,6 +51,7 @@ from yier_web.schemas import (
 
 logger = logging.getLogger(__name__)
 CODEX_POSIX_INSTALL_URL = "https://chatgpt.com/codex/install.sh"
+CODEX_CONFIG_FILE = "config.toml"
 
 CodexSubscriberQueue = asyncio.Queue[dict[str, Any]]
 CodexSessionFactory = Callable[..., CodexIpcSession]
@@ -101,6 +104,33 @@ def _project_from_cwd(cwd: AbsolutePathBuf) -> tuple[str, str]:
 
 def _summary_used_at(summary: CodexNativeSessionSummary) -> float:
     return summary.updated_at or summary.started_at
+
+
+def _codex_home(home_dir: Path | None = None) -> Path:
+    configured = os.environ.get("CODEX_HOME")
+    if configured:
+        return Path(configured).expanduser()
+    return (home_dir or Path.home()).expanduser() / ".codex"
+
+
+def _load_codex_home_config(codex_home: Path) -> JsonDict:
+    config_path = codex_home / CODEX_CONFIG_FILE
+    try:
+        with config_path.open("rb") as handle:
+            payload = tomllib.load(handle)
+    except FileNotFoundError:
+        return {}
+    except tomllib.TOMLDecodeError as exc:
+        logger.warning("Unable to parse %s: %s", config_path, exc)
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _config_string(config: JsonDict, key: str) -> str | None:
+    value = config.get(key)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
 
 
 def _thread_summary(
@@ -826,19 +856,31 @@ class CodexIpcManager:
 
     def _config(self, *, thread_id: str | None = None) -> CodexIpcConfig:
         settings = self.config_service.load_web_settings().codex
+        codex_home = _codex_home(self.config_service.home_dir)
+        codex_config = _load_codex_home_config(codex_home)
         return CodexIpcConfig(
             thread_id=thread_id,
             host_id=self._host_id(settings),
             client_type="yier",
-            model=settings.model or None,
-            reasoning_effort=self._reasoning_effort(settings),
-            app_server_config=self._app_server_config(settings),
+            model=self._thread_model(settings, codex_config),
+            reasoning_effort=self._reasoning_effort(settings, codex_config),
+            app_server_config=self._app_server_config(settings, codex_home=codex_home),
+            default_thread_params=self._default_thread_params(
+                settings,
+                codex_config,
+                cwd=self._default_thread_cwd(settings),
+            ),
         )
 
     def _new_session(self, config: CodexIpcConfig) -> CodexIpcSession:
         return self._session_factory(config, notify=self._notify)
 
-    def _app_server_config(self, settings: StoredCodexSettings) -> AppServerConfig:
+    def _app_server_config(
+        self,
+        settings: StoredCodexSettings,
+        *,
+        codex_home: Path,
+    ) -> AppServerConfig:
         remote_connection = self._active_remote_connection(settings)
         if remote_connection is not None:
             return self._remote_app_server_config(
@@ -858,6 +900,7 @@ class CodexIpcManager:
         return AppServerConfig(
             launch_args_override=args,
             cwd=str(self.config_service.project_root),
+            env={"CODEX_HOME": str(codex_home)},
             client_name="yier_codex",
             client_title="Yier Codex",
         )
@@ -1027,20 +1070,104 @@ class CodexIpcManager:
             resolved_project_path = self.config_service.resolve_project_path(
                 project_path
             )
+        return {"cwd": resolved_project_path}
+
+    def _default_thread_cwd(self, settings: StoredCodexSettings) -> str:
+        remote_connection = self._active_remote_connection(settings)
+        if remote_connection is not None:
+            return remote_connection.remote_path or "~"
+        return str(self.config_service.project_root)
+
+    def _default_thread_params(
+        self,
+        settings: StoredCodexSettings,
+        codex_config: JsonDict,
+        *,
+        cwd: str,
+    ) -> JsonDict:
         params: JsonDict = {
-            "cwd": resolved_project_path,
-            "model": settings.model or None,
-            "approval_policy": settings.approval_policy,
-            "approvals_reviewer": settings.approvals_reviewer,
-            "sandbox": settings.sandbox,
-            "service_tier": settings.service_tier or None,
+            "cwd": cwd,
+            "model": self._thread_model(settings, codex_config),
+            "model_provider": _config_string(codex_config, "model_provider"),
+            "approval_policy": self._approval_policy(settings, codex_config),
+            "approvals_reviewer": self._approvals_reviewer(settings, codex_config),
+            "sandbox": self._sandbox_mode(settings, codex_config),
+            "service_tier": self._service_tier(settings, codex_config),
+            "personality": self._personality(settings, codex_config),
+            "base_instructions": _config_string(codex_config, "base_instructions"),
+            "developer_instructions": _config_string(
+                codex_config,
+                "developer_instructions",
+            ),
         }
-        if settings.personality != "none":
-            params["personality"] = settings.personality
+        reasoning_effort = self._reasoning_effort(settings, codex_config)
+        if reasoning_effort is not None:
+            params["config"] = {"model_reasoning_effort": reasoning_effort}
+        ephemeral = codex_config.get("ephemeral")
+        if isinstance(ephemeral, bool):
+            params["ephemeral"] = ephemeral
         return {key: value for key, value in params.items() if value is not None}
 
-    def _reasoning_effort(self, settings: StoredCodexSettings) -> str | None:
-        value = settings.reasoning_effort.strip()
+    def _thread_model(
+        self,
+        settings: StoredCodexSettings,
+        codex_config: JsonDict,
+    ) -> str | None:
+        return _config_string(codex_config, "model") or settings.model or None
+
+    def _approval_policy(
+        self,
+        settings: StoredCodexSettings,
+        codex_config: JsonDict,
+    ) -> str | None:
+        return (
+            _config_string(codex_config, "approval_policy") or settings.approval_policy
+        )
+
+    def _approvals_reviewer(
+        self,
+        settings: StoredCodexSettings,
+        codex_config: JsonDict,
+    ) -> str | None:
+        return (
+            _config_string(codex_config, "approvals_reviewer")
+            or settings.approvals_reviewer
+        )
+
+    def _sandbox_mode(
+        self,
+        settings: StoredCodexSettings,
+        codex_config: JsonDict,
+    ) -> str | None:
+        return _config_string(codex_config, "sandbox_mode") or settings.sandbox
+
+    def _service_tier(
+        self,
+        settings: StoredCodexSettings,
+        codex_config: JsonDict,
+    ) -> str | None:
+        return (
+            _config_string(codex_config, "service_tier")
+            or settings.service_tier
+            or None
+        )
+
+    def _personality(
+        self,
+        settings: StoredCodexSettings,
+        codex_config: JsonDict,
+    ) -> str | None:
+        value = _config_string(codex_config, "personality") or settings.personality
+        return value if value != "none" else None
+
+    def _reasoning_effort(
+        self,
+        settings: StoredCodexSettings,
+        codex_config: JsonDict,
+    ) -> str | None:
+        value = _config_string(codex_config, "model_reasoning_effort")
+        if value is None:
+            value = settings.reasoning_effort.strip()
         return value if value and value != "none" else None
 
     def _workspace_from_threads(

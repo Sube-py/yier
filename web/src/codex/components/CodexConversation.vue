@@ -14,8 +14,8 @@ const emit = defineEmits<{
   copyError: [message: string]
 }>()
 
-type ConversationItemKind = 'user' | 'assistant' | 'work' | 'unknown'
-type TurnBlockKind = 'user' | 'work' | 'assistant' | 'unknown'
+type ConversationItemKind = 'user' | 'assistant' | 'work' | 'system' | 'unknown'
+type TurnBlockKind = 'user' | 'work' | 'assistant' | 'system' | 'unknown'
 type WorkRenderUnitKind = 'message' | 'activity' | 'todo' | 'context'
 
 interface ConversationItemView {
@@ -126,6 +126,9 @@ async function resetBottomStickiness() {
 
 function itemKind(item: JsonRecord): ConversationItemKind {
   const type = itemType(item)
+  if (isReviewModeItem(item)) {
+    return 'system'
+  }
   if (userItemTypes.has(type)) {
     return 'user'
   }
@@ -141,6 +144,7 @@ function itemKind(item: JsonRecord): ConversationItemKind {
 function turnView(turn: CodexTurnState, index: number): TurnView {
   const rawItems = Array.isArray(turn.items) ? turn.items : []
   const finalAssistantIndex = finalAssistantItemIndex(rawItems)
+  const hasReviewMode = rawItems.some(isReviewModeItem)
   const blocks: TurnBlockView[] = []
   const allWorkItems: ConversationItemView[] = []
   const finalResponseItems: ConversationItemView[] = []
@@ -160,7 +164,7 @@ function turnView(turn: CodexTurnState, index: number): TurnView {
     workBlockIndex += 1
   }
 
-  const inputUserMessage = turnInputUserMessage(turn, index)
+  const inputUserMessage = hasReviewMode ? null : turnInputUserMessage(turn, index)
   if (inputUserMessage) {
     blocks.push({
       id: inputUserMessage.id,
@@ -178,8 +182,17 @@ function turnView(turn: CodexTurnState, index: number): TurnView {
     }
 
     if (baseKind === 'user') {
+      if (hasReviewMode) {
+        return
+      }
       flushWork()
       blocks.push({ id: view.id, kind: 'user', items: [view] })
+      return
+    }
+
+    if (baseKind === 'system') {
+      flushWork()
+      blocks.push({ id: view.id, kind: 'system', items: [view] })
       return
     }
 
@@ -448,6 +461,10 @@ function isContextCompactionItem(item: JsonRecord) {
   return ['contextCompaction', 'context-compaction'].includes(itemType(item))
 }
 
+function isReviewModeItem(item: JsonRecord) {
+  return ['enteredReviewMode', 'exitedReviewMode'].includes(itemType(item))
+}
+
 function itemText(item: JsonRecord) {
   const type = itemType(item)
   if (type === 'userMessage') {
@@ -493,6 +510,9 @@ function itemText(item: JsonRecord) {
   }
   if (isContextCompactionItem(item)) {
     return 'Context compacted.'
+  }
+  if (isReviewModeItem(item)) {
+    return reviewModeLabel(item)
   }
   if (type === 'webSearch' || type === 'search') {
     return webSearchDetail(item)
@@ -560,6 +580,14 @@ function isGoalUserMessage(item: JsonRecord) {
       item.asGoal === true ||
       isGoalCommandText(rawUserMessageText(item)),
   )
+}
+
+function reviewModeLabel(item: JsonRecord) {
+  const review = firstString(item.review)
+  if (itemType(item) === 'enteredReviewMode') {
+    return review ? `Code review started: ${review}` : 'Code review started'
+  }
+  return 'Code review finished'
 }
 
 function goalAchievementLabel(turn: CodexTurnState) {
@@ -1232,30 +1260,35 @@ const justDebug = false
             <div
               v-for="userItem in block.items"
               :key="userItem.id"
-              class="relative min-w-0 w-fit max-w-[min(40rem,88%)] overflow-hidden rounded-2xl border border-[rgba(21,94,99,0.18)] bg-[rgba(21,94,99,0.08)] px-3.5 py-2.5 shadow-[0_10px_28px_rgba(24,44,48,0.04)] max-sm:max-w-[96%]"
-              data-codex-bubble
+              class="flex min-w-0 w-fit max-w-[min(40rem,88%)] flex-col items-end max-sm:max-w-[96%]"
+              data-codex-user-message-shell
             >
               <div
-                class="markdown-prose markdown-prose-compact min-w-0 [overflow-wrap:anywhere] [&>:first-child]:mt-0 [&>:last-child]:mb-0"
-                v-html="renderMarkdown(itemText(userItem.item))"
-                @click="onMarkdownClick"
-              ></div>
-              <div
-                v-if="itemImages(userItem.item).length"
-                class="mt-2 grid grid-cols-[repeat(auto-fit,minmax(5rem,1fr))] gap-2"
-                data-codex-message-images
+                class="relative min-w-0 w-full overflow-hidden rounded-2xl border border-[rgba(21,94,99,0.18)] bg-[rgba(21,94,99,0.08)] px-3.5 py-2.5 shadow-[0_10px_28px_rgba(24,44,48,0.04)]"
+                data-codex-bubble
               >
-                <img
-                  v-for="image in itemImages(userItem.item)"
-                  :key="image.src"
-                  class="max-h-64 min-h-20 w-full rounded-lg border border-[rgba(21,94,99,0.12)] object-cover"
-                  :src="image.src"
-                  :alt="image.alt"
-                  data-codex-message-image
-                />
+                <div
+                  class="markdown-prose markdown-prose-compact min-w-0 [overflow-wrap:anywhere] [&>:first-child]:mt-0 [&>:last-child]:mb-0"
+                  v-html="renderMarkdown(itemText(userItem.item))"
+                  @click="onMarkdownClick"
+                ></div>
+                <div
+                  v-if="itemImages(userItem.item).length"
+                  class="mt-2 grid grid-cols-[repeat(auto-fit,minmax(5rem,1fr))] gap-2"
+                  data-codex-message-images
+                >
+                  <img
+                    v-for="image in itemImages(userItem.item)"
+                    :key="image.src"
+                    class="max-h-64 min-h-20 w-full rounded-lg border border-[rgba(21,94,99,0.12)] object-cover"
+                    :src="image.src"
+                    :alt="image.alt"
+                    data-codex-message-image
+                  />
+                </div>
               </div>
               <div
-                class="mt-1.5 flex min-w-0 items-center justify-end gap-1 text-[0.68rem] text-[color:var(--app-text-soft)] opacity-0 transition-opacity group-hover/message:opacity-100 group-focus-within/message:opacity-100"
+                class="mt-1 flex min-w-0 items-center justify-end gap-1 pr-1 text-[0.68rem] text-[color:var(--app-text-soft)] opacity-0 transition-opacity group-hover/message:opacity-100 group-focus-within/message:opacity-100"
                 data-codex-user-message-actions
               >
                 <span
@@ -1282,6 +1315,27 @@ const justDebug = false
               </div>
             </div>
           </article>
+
+          <div
+            v-else-if="block.kind === 'system'"
+            class="my-2 flex max-w-[min(52rem,100%)] items-center gap-2 text-sm text-[color:var(--app-text-soft)]"
+            data-codex-system-message
+          >
+            <span class="h-px min-w-0 flex-1 bg-current opacity-20"></span>
+            <span
+              v-for="systemItem in block.items"
+              :key="systemItem.id"
+              class="inline-flex min-w-0 shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5"
+              data-codex-review-mode
+            >
+              <i
+                class="pi text-[0.62rem]"
+                :class="itemType(systemItem.item) === 'enteredReviewMode' ? 'pi-search' : 'pi-check'"
+              ></i>
+              <span class="min-w-0 truncate">{{ reviewModeLabel(systemItem.item) }}</span>
+            </span>
+            <span class="h-px min-w-0 flex-1 bg-current opacity-20"></span>
+          </div>
 
           <div v-else-if="block.kind === 'work'" class="grid min-w-0 gap-2" data-codex-work-section>
             <div class="flex min-w-0 items-center gap-2 text-sm text-[color:var(--app-text-soft)]">

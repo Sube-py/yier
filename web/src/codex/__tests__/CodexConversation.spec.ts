@@ -95,7 +95,7 @@ describe('CodexConversation', () => {
     expect(wrapper.get('[data-copy-markdown-code]').attributes('aria-label')).toBe('Copied')
   })
 
-  it('keeps long user messages constrained to the right-aligned bubble', () => {
+  it('keeps long user messages constrained to the right-aligned shell', () => {
     const wrapper = mountConversation([
       {
         id: 'user-1',
@@ -105,21 +105,27 @@ describe('CodexConversation', () => {
     ])
 
     const row = wrapper.get('[data-codex-user-message]')
+    const shell = wrapper.get('[data-codex-user-message-shell]')
     const bubble = wrapper.get('[data-codex-bubble]')
+    const actions = wrapper.get('[data-codex-user-message-actions]')
     const prose = wrapper.get('.markdown-prose')
 
     expect(row.classes()).toEqual(
       expect.arrayContaining(['flex', 'min-w-0', 'w-full', 'justify-end']),
     )
-    expect(bubble.classes()).toEqual(
+    expect(shell.classes()).toEqual(
       expect.arrayContaining([
+        'flex',
         'min-w-0',
-        'overflow-hidden',
         'w-fit',
         'max-w-[min(40rem,88%)]',
+        'flex-col',
+        'items-end',
         'max-sm:max-w-[96%]',
       ]),
     )
+    expect(bubble.classes()).toEqual(expect.arrayContaining(['min-w-0', 'w-full', 'overflow-hidden']))
+    expect(actions.element.parentElement).toBe(shell.element)
     expect(prose.classes()).toContain('[overflow-wrap:anywhere]')
     expect(wrapper.find('section').classes()).toEqual(
       expect.arrayContaining(['min-w-0', 'overflow-x-clip']),
@@ -752,6 +758,47 @@ describe('CodexConversation', () => {
 
     expect(wrapper.get('.markdown-prose').text()).toBe('Keep working until tests pass')
     expect(wrapper.get('[data-codex-sent-as-goal]').text()).toContain('sent as goal')
+  })
+
+  it('renders review mode items as status lines and hides the synthetic review prompt', () => {
+    const wrapper = mountConversation([
+      {
+        id: 'review-start',
+        type: 'enteredReviewMode',
+        review: "changes against 'main'",
+      },
+      {
+        id: 'review-prompt',
+        type: 'userMessage',
+        content: [
+          {
+            type: 'text',
+            text: "Review the code changes against the base branch 'main'.",
+          },
+        ],
+      },
+      {
+        id: 'agent-1',
+        type: 'agentMessage',
+        text: 'No actionable issues found.',
+      },
+      {
+        id: 'review-end',
+        type: 'exitedReviewMode',
+        review: "changes against 'main'",
+      },
+    ])
+
+    const reviewLines = wrapper.findAll('[data-codex-review-mode]')
+    expect(reviewLines).toHaveLength(2)
+    expect(reviewLines[0]?.text()).toContain("Code review started: changes against 'main'")
+    expect(reviewLines[1]?.text()).toContain('Code review finished')
+    expect(wrapper.find('[data-codex-user-message]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('Review the code changes against the base branch')
+    expect(wrapper.find('[data-codex-unknown-item]').exists()).toBe(false)
+    expect(wrapper.get('[data-codex-assistant-message]').text()).toContain(
+      'No actionable issues found.',
+    )
   })
 
   it('renders unknown items as contained raw json', () => {

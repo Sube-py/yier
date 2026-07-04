@@ -170,9 +170,20 @@ class FakeCodexIpcSession:
         wait_for_completion: bool,
         collaboration_mode: dict[str, Any] | None = None,
         input_items: list[dict[str, Any]] | None = None,
+        approval_policy: str | None = None,
+        approvals_reviewer: str | None = None,
+        sandbox: str | None = None,
     ) -> None:
         self.run_prompt_calls.append(
-            (prompt, wait_for_completion, collaboration_mode, input_items)
+            (
+                prompt,
+                wait_for_completion,
+                collaboration_mode,
+                input_items,
+                approval_policy,
+                approvals_reviewer,
+                sandbox,
+            )
         )
 
     async def steer_prompt(self, prompt: str) -> None:
@@ -946,6 +957,9 @@ def test_codex_controller_http_and_websocket_contract(tmp_path: Path) -> None:
                 False,
                 {"mode": "build"},
                 None,
+                None,
+                None,
+                None,
             )
 
             default_collaboration_mode = {
@@ -978,6 +992,38 @@ def test_codex_controller_http_and_websocket_contract(tmp_path: Path) -> None:
                 False,
                 default_collaboration_mode,
                 None,
+                None,
+                None,
+                None,
+            )
+
+            ws.send_json(
+                {
+                    "id": "prompt-permissions",
+                    "type": "send_prompt",
+                    "payload": {
+                        "thread_id": "thread-a",
+                        "prompt": "use full access",
+                        "approval_policy": "never",
+                        "approvals_reviewer": "user",
+                        "sandbox": "danger-full-access",
+                    },
+                }
+            )
+            receive_until(
+                lambda message: (
+                    message.get("type") == "ack"
+                    and message.get("id") == "prompt-permissions"
+                )
+            )
+            assert factory.by_thread_id("thread-a").run_prompt_calls[-1] == (
+                "use full access",
+                False,
+                None,
+                None,
+                "never",
+                "user",
+                "danger-full-access",
             )
 
             ws.send_json(
@@ -1015,6 +1061,53 @@ def test_codex_controller_http_and_websocket_contract(tmp_path: Path) -> None:
                         "detail": "auto",
                     },
                 ],
+                None,
+                None,
+                None,
+            )
+
+            ws.send_json(
+                {
+                    "id": "prompt-file",
+                    "type": "send_prompt",
+                    "payload": {
+                        "thread_id": "thread-a",
+                        "prompt": "review this file",
+                        "attachments": [
+                            {
+                                "type": "mention",
+                                "name": "main.py",
+                                "path": "/tmp/project/main.py",
+                            }
+                        ],
+                    },
+                }
+            )
+            receive_until(
+                lambda message: (
+                    message.get("type") == "ack"
+                    and message.get("id") == "prompt-file"
+                )
+            )
+            assert factory.by_thread_id("thread-a").run_prompt_calls[-1] == (
+                "review this file",
+                False,
+                None,
+                [
+                    {
+                        "type": "text",
+                        "text": "review this file",
+                        "text_elements": [],
+                    },
+                    {
+                        "type": "mention",
+                        "name": "main.py",
+                        "path": "/tmp/project/main.py",
+                    },
+                ],
+                None,
+                None,
+                None,
             )
 
             ws.send_json(

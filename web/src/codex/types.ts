@@ -7,6 +7,9 @@ export interface CodexPromptSubmission {
   model?: string | null
   reasoningEffort?: string | null
   attachments?: JsonRecord[]
+  approvalPolicy?: string | null
+  approvalsReviewer?: string | null
+  sandbox?: string | null
 }
 
 export interface CodexNativeSessionSummary {
@@ -184,6 +187,26 @@ export interface CodexThreadGoal extends JsonRecord {
   updatedAt?: number
 }
 
+export interface CodexTokenUsageBreakdown extends JsonRecord {
+  cachedInputTokens?: number
+  inputTokens?: number
+  outputTokens?: number
+  reasoningOutputTokens?: number
+  totalTokens?: number
+}
+
+export interface CodexThreadTokenUsage extends JsonRecord {
+  total?: CodexTokenUsageBreakdown | null
+  last?: CodexTokenUsageBreakdown | null
+  modelContextWindow?: number | null
+}
+
+export interface CodexThreadTokenUsageInfo extends JsonRecord {
+  threadId?: string
+  turnId?: string
+  tokenUsage?: CodexThreadTokenUsage | null
+}
+
 export interface CodexConversationState extends JsonRecord {
   id?: string
   hostId?: string
@@ -204,6 +227,7 @@ export interface CodexConversationState extends JsonRecord {
   source?: string | null
   archived?: boolean
   queuedFollowups?: CodexQueuedFollowup[]
+  latestTokenUsageInfo?: CodexThreadTokenUsageInfo | null
 }
 
 export interface CodexThreadStatePayload {

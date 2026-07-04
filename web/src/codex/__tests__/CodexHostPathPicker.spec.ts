@@ -155,6 +155,29 @@ describe('CodexHostPathPicker', () => {
     expect(apiGetMock).toHaveBeenLastCalledWith('/api/codex/filesystem?path=%2Ftmp')
   })
 
+  it('selects files when file selection is enabled', async () => {
+    apiGetMock.mockResolvedValueOnce(
+      filesystemResponse('/tmp', [
+        {
+          name: 'main.py',
+          path: '/tmp/main.py',
+          kind: 'file',
+          extension: '.py',
+          readable: true,
+        },
+      ]),
+    )
+
+    const wrapper = mountPicker({ selectedPath: '/tmp', allowFiles: true })
+    await flushPromises()
+
+    await wrapper.get('[data-codex-host-path-file]').trigger('click')
+
+    expect(wrapper.emitted('select')).toEqual([['/tmp/main.py']])
+    const visibleUpdates = wrapper.emitted('update:visible') ?? []
+    expect(visibleUpdates[visibleUpdates.length - 1]).toEqual([false])
+  })
+
   it('shows load errors without selecting a path', async () => {
     apiGetMock.mockRejectedValueOnce(new Error('Permission denied: /private'))
 

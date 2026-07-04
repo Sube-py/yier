@@ -308,6 +308,38 @@ describe('useCodexWorkspace', () => {
     })
   })
 
+  it('sends permission overrides with prompt submissions', async () => {
+    const socket = new FakeCodexSocket()
+    const { workspace } = mountHarness(socket)
+    await flushPromises()
+
+    await workspace.sendPrompt({
+      prompt: 'Use full access',
+      approvalPolicy: 'never',
+      approvalsReviewer: 'user',
+      sandbox: 'danger-full-access',
+    })
+
+    expect(socket.commands[socket.commands.length - 1]).toEqual({
+      type: 'send_prompt',
+      payload: {
+        thread_id: 'thread-a',
+        prompt: 'Use full access',
+        approval_policy: 'never',
+        approvals_reviewer: 'user',
+        sandbox: 'danger-full-access',
+        collaboration_mode: {
+          mode: 'default',
+          settings: {
+            model: '',
+            reasoning_effort: null,
+            developer_instructions: null,
+          },
+        },
+      },
+    })
+  })
+
   it('sets, updates, and clears thread goals', async () => {
     const socket = new FakeCodexSocket()
     const { workspace } = mountHarness(socket)

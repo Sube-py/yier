@@ -13,10 +13,17 @@ import type { CodexFilesystemEntry, CodexFilesystemResponse } from '../types'
 
 const visible = defineModel<boolean>('visible', { required: true })
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   selectedPath?: string
   disabled?: boolean
-}>()
+  title?: string
+  confirmLabel?: string
+  allowFiles?: boolean
+  allowCurrentFolder?: boolean
+}>(), {
+  allowCurrentFolder: true,
+  allowFiles: false,
+})
 
 const emit = defineEmits<{
   select: [path: string]
@@ -40,8 +47,12 @@ const isMobile = ref(false)
 let mediaQuery: MediaQueryList | null = null
 
 const drawerPosition = computed(() => (isMobile.value ? 'full' : 'right'))
-const canUseCurrentFolder = computed(() => Boolean(currentPath.value) && !loading.value)
+const canUseCurrentFolder = computed(() =>
+  Boolean(currentPath.value) && !loading.value && props.allowCurrentFolder !== false,
+)
 const currentLabel = computed(() => currentPath.value || 'Loading folders')
+const drawerTitle = computed(() => props.title || 'Choose project folder')
+const confirmLabel = computed(() => props.confirmLabel || 'Use this folder')
 
 const breadcrumbHome = computed<BreadcrumbItem>(() => {
   const root = rootForPath(currentPath.value) ?? roots.value[0]
@@ -120,6 +131,14 @@ function selectCurrentFolder() {
     return
   }
   emit('select', currentPath.value)
+  visible.value = false
+}
+
+function selectFile(entry: CodexFilesystemEntry) {
+  if (!props.allowFiles || entry.kind !== 'file' || !entry.readable) {
+    return
+  }
+  emit('select', entry.path)
   visible.value = false
 }
 
@@ -211,7 +230,7 @@ function isImageExtension(extension: string) {
 <template>
   <Drawer
     v-model:visible="visible"
-    header="Choose project folder"
+    :header="drawerTitle"
     :position="drawerPosition"
     class="!w-full sm:!w-[34rem]"
     data-codex-host-path-picker
@@ -296,8 +315,14 @@ function isImageExtension(extension: string) {
 
             <div
               v-else
-              class="grid min-w-0 grid-cols-[1.5rem_minmax(0,1fr)_auto] items-center gap-2 rounded-lg px-2 py-2 text-sm text-[color:var(--app-text-soft)]"
+              class="grid min-w-0 grid-cols-[1.5rem_minmax(0,1fr)_auto] items-center gap-2 rounded-lg px-2 py-2 text-left text-sm transition"
+              :class="
+                allowFiles && entry.readable
+                  ? 'cursor-pointer text-[color:var(--app-text)] hover:bg-[rgba(21,94,99,0.08)]'
+                  : 'text-[color:var(--app-text-soft)]'
+              "
               data-codex-host-path-file
+              @click="selectFile(entry)"
             >
               <i class="pi text-sm" :class="entryIcon(entry)"></i>
               <span class="truncate">{{ entry.name }}</span>
@@ -326,7 +351,7 @@ function isImageExtension(extension: string) {
           @click="visible = false"
         />
         <Button
-          label="Use this folder"
+          :label="confirmLabel"
           icon="pi pi-check"
           :disabled="disabled || !canUseCurrentFolder"
           data-codex-host-path-confirm

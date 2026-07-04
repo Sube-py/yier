@@ -217,6 +217,20 @@ function buildCollaborationPayload(
     : defaultCollaborationMode(state, submission)
 }
 
+function promptPermissionPayload(submission: Partial<CodexPromptSubmission>): JsonRecord {
+  const payload: JsonRecord = {}
+  if (submission.approvalPolicy) {
+    payload.approval_policy = submission.approvalPolicy
+  }
+  if (submission.approvalsReviewer) {
+    payload.approvals_reviewer = submission.approvalsReviewer
+  }
+  if (submission.sandbox) {
+    payload.sandbox = submission.sandbox
+  }
+  return payload
+}
+
 function normalizeGoal(value: unknown): CodexThreadGoal | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return null
@@ -581,6 +595,7 @@ export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
         thread_id: threadId,
         prompt: message,
         ...(attachments.length ? { attachments } : {}),
+        ...promptPermissionPayload(submission),
         collaboration_mode: buildCollaborationPayload(
           activeMode.value,
           activeThreadState.value,

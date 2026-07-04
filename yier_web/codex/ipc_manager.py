@@ -555,6 +555,9 @@ class CodexIpcManager:
         *,
         collaboration_mode: JsonDict | None = None,
         attachments: list[JsonDict] | None = None,
+        approval_policy: str | None = None,
+        approvals_reviewer: str | None = None,
+        sandbox: str | None = None,
     ) -> None:
         managed = await self._ensure_thread(thread_id)
         input_items = self._prompt_input_items(prompt.strip(), attachments or [])
@@ -563,6 +566,9 @@ class CodexIpcManager:
             wait_for_completion=False,
             collaboration_mode=collaboration_mode,
             input_items=input_items if attachments else None,
+            approval_policy=approval_policy,
+            approvals_reviewer=approvals_reviewer,
+            sandbox=sandbox,
         )
         if collaboration_mode is not None:
             await self._apply_latest_collaboration_mode(
@@ -592,6 +598,23 @@ class CodexIpcManager:
                             "type": "image",
                             "url": image_url.strip(),
                             "detail": "auto",
+                        }
+                    )
+                continue
+            if item_type in {"mention", "file"}:
+                path = attachment.get("path") or attachment.get("fsPath")
+                name = attachment.get("name") or attachment.get("label")
+                if isinstance(path, str) and path.strip():
+                    clean_path = path.strip()
+                    items.append(
+                        {
+                            "type": "mention",
+                            "name": (
+                                name.strip()
+                                if isinstance(name, str) and name.strip()
+                                else Path(clean_path).name
+                            ),
+                            "path": clean_path,
                         }
                     )
         return items

@@ -1,6 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
-import Select from 'primevue/select'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import type {
   CodexConversationState,
@@ -16,6 +15,7 @@ import type {
 } from '../types'
 import { isRecord } from '../lib/format'
 import { apiPost } from '../../lib/api'
+import CodexHostPathPicker from './CodexHostPathPicker.vue'
 
 const draft = defineModel<string>({ required: true })
 
@@ -48,11 +48,47 @@ const selectedModel = ref('')
 const selectedReasoningEffort = ref('')
 const goalTokenBudgetDraft = ref('')
 const isGoalComposeMode = ref(false)
-const imageInput = ref<HTMLInputElement | null>(null)
 const imageAttachments = ref<JsonRecord[]>([])
+const fileAttachments = ref<JsonRecord[]>([])
+const filePickerOpen = ref(false)
+const addMenuTrigger = ref<HTMLElement | null>(null)
+const permissionMenuTrigger = ref<HTMLElement | null>(null)
 const remoteMenuOpen = ref(false)
+const composerSettingsOpen = ref(false)
+const addMenuOpen = ref(false)
+const permissionMenuOpen = ref(false)
+const addMenuStyle = ref<Record<string, string>>({})
+const permissionMenuStyle = ref<Record<string, string>>({})
+const selectedPermissionMode = ref<'ask' | 'guardian' | 'full'>('full')
 const remoteSwitchingId = ref<string | null>(null)
 const remoteSwitchError = ref('')
+
+const permissionOptions = [
+  {
+    value: 'ask',
+    label: 'Ask for approval',
+    description: 'Always ask to edit external files and use the internet',
+    approvalPolicy: 'on-request',
+    approvalsReviewer: 'user',
+    sandbox: 'workspace-write',
+  },
+  {
+    value: 'guardian',
+    label: 'Approve for me',
+    description: 'Only ask for actions detected as potentially unsafe',
+    approvalPolicy: 'on-request',
+    approvalsReviewer: 'guardian_subagent',
+    sandbox: 'workspace-write',
+  },
+  {
+    value: 'full',
+    label: 'Full access',
+    description: 'Unrestricted access to the internet and any file on your computer',
+    approvalPolicy: 'never',
+    approvalsReviewer: 'user',
+    sandbox: 'danger-full-access',
+  },
+] as const
 
 const latestModel = computed(() => props.state?.latestModel?.trim() || 'gpt-5.4')
 const latestReasoningEffort = computed(() => props.state?.latestReasoningEffort?.trim() || 'medium')
@@ -62,8 +98,15 @@ const reasoningOptions = computed(() =>
 )
 const activeModel = computed(() => selectedModel.value || latestModel.value)
 const activeReasoningEffort = computed(() => selectedReasoningEffort.value || latestReasoningEffort.value)
+const activePermissionOption = computed(
+  () =>
+    permissionOptions.find((option) => option.value === selectedPermissionMode.value) ??
+    permissionOptions[2],
+)
 const hasDraft = computed(() => draft.value.trim().length > 0)
-const hasPromptInput = computed(() => hasDraft.value || imageAttachments.value.length > 0)
+const hasPromptInput = computed(
+  () => hasDraft.value || imageAttachments.value.length > 0 || fileAttachments.value.length > 0,
+)
 const canSubmitText = computed(() => hasPromptInput.value && !props.disabled && !props.busy)
 const primaryAction = computed(() => {
   if (props.isWorking && !hasDraft.value) {
@@ -111,6 +154,19 @@ const primaryDisabled = computed(() => {
   return !canSubmitText.value
 })
 const context = computed(() => contextWindowState(props.state))
+const contextRingStyle = computed(() => {
+  const percent = Math.max(0, Math.min(context.value.percent, 100))
+  return {
+    background: `conic-gradient(var(--app-accent) ${percent}%, rgba(21,94,99,0.14) 0)`,
+  }
+})
+const contextHoverTitle = computed(() => {
+  const suffix = context.value.estimated ? ' estimated' : ''
+  if (context.value.label === '--') {
+    return `${context.value.detail}${suffix}`
+  }
+  return `${context.value.label} used · ${context.value.detail}${suffix}`
+})
 const threadGoal = computed(() => props.state?.threadGoal ?? null)
 const hasThreadGoal = computed(() => Boolean(threadGoal.value))
 const goalObjective = computed(() => threadGoal.value?.objective?.trim() ?? '')
@@ -134,6 +190,9 @@ const composerPlaceholder = computed(() => {
   if (isGoalComposeMode.value) {
     return 'Describe a goal for this thread...'
   }
+  if (props.mode === 'plan') {
+    return 'Describe your task to generate a plan...'
+  }
   return props.isWorking ? 'Add a follow-up for the queue...' : 'Ask Codex to work in this thread...'
 })
 
@@ -142,6 +201,9 @@ watch(
   () => {
     selectedModel.value = ''
     selectedReasoningEffort.value = ''
+    composerSettingsOpen.value = false
+    addMenuOpen.value = false
+    permissionMenuOpen.value = false
   },
 )
 
@@ -151,6 +213,10 @@ watch(
     goalTokenBudgetDraft.value = ''
     isGoalComposeMode.value = false
     imageAttachments.value = []
+    fileAttachments.value = []
+    remoteMenuOpen.value = false
+    addMenuOpen.value = false
+    permissionMenuOpen.value = false
   },
 )
 
@@ -158,15 +224,22 @@ function sendSubmission() {
   if (!canSubmitText.value || props.isWorking) {
     return
   }
-  const attachments = imageAttachments.value.map((attachment) => ({ ...attachment }))
+  const attachments = [
+    ...fileAttachments.value.map((attachment) => ({ ...attachment })),
+    ...imageAttachments.value.map((attachment) => ({ ...attachment })),
+  ]
   emit('sendPrompt', {
     prompt: draft.value,
     model: activeModel.value,
     reasoningEffort: activeReasoningEffort.value,
+    approvalPolicy: activePermissionOption.value.approvalPolicy,
+    approvalsReviewer: activePermissionOption.value.approvalsReviewer,
+    sandbox: activePermissionOption.value.sandbox,
     ...(attachments.length ? { attachments } : {}),
   })
   draft.value = ''
   imageAttachments.value = []
+  fileAttachments.value = []
 }
 
 function submitGoal() {
@@ -215,6 +288,145 @@ function toggleGoalComposeMode() {
     return
   }
   isGoalComposeMode.value = !isGoalComposeMode.value
+  if (isGoalComposeMode.value) {
+    emit('setMode', 'build')
+  }
+  addMenuOpen.value = false
+}
+
+function toggleMode() {
+  if (props.busy || props.disabled) {
+    return
+  }
+  emit('setMode', props.mode === 'plan' ? 'build' : 'plan')
+}
+
+function startPlanMode() {
+  if (props.busy || props.disabled) {
+    return
+  }
+  isGoalComposeMode.value = false
+  emit('setMode', 'plan')
+  addMenuOpen.value = false
+}
+
+function startGoalMode() {
+  toggleGoalComposeMode()
+}
+
+async function toggleAddMenu() {
+  if (props.busy || props.disabled) {
+    return
+  }
+  addMenuOpen.value = !addMenuOpen.value
+  permissionMenuOpen.value = false
+  composerSettingsOpen.value = false
+  if (addMenuOpen.value) {
+    await nextTick()
+    updateFloatingMenuPosition(addMenuTrigger.value, addMenuStyle, 320)
+  }
+}
+
+async function togglePermissionMenu() {
+  if (props.busy || props.disabled) {
+    return
+  }
+  permissionMenuOpen.value = !permissionMenuOpen.value
+  addMenuOpen.value = false
+  composerSettingsOpen.value = false
+  if (permissionMenuOpen.value) {
+    await nextTick()
+    updateFloatingMenuPosition(permissionMenuTrigger.value, permissionMenuStyle, 360)
+  }
+}
+
+function toggleComposerSettings() {
+  if (props.busy || props.disabled) {
+    return
+  }
+  composerSettingsOpen.value = !composerSettingsOpen.value
+  addMenuOpen.value = false
+  permissionMenuOpen.value = false
+}
+
+function closeFloatingMenus() {
+  addMenuOpen.value = false
+  permissionMenuOpen.value = false
+  composerSettingsOpen.value = false
+}
+
+function onDocumentClick(event: MouseEvent) {
+  const target = event.target
+  if (!(target instanceof Element)) {
+    closeFloatingMenus()
+    return
+  }
+  if (
+    target.closest('[data-codex-add-menu]') ||
+    target.closest('[data-codex-add-menu-trigger]') ||
+    target.closest('[data-codex-permission-menu]') ||
+    target.closest('[data-codex-permission-trigger]') ||
+    target.closest('[data-codex-composer-settings-menu]') ||
+    target.closest('[data-codex-composer-settings-trigger]')
+  ) {
+    return
+  }
+  closeFloatingMenus()
+}
+
+function onDocumentKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape') {
+    closeFloatingMenus()
+  }
+}
+
+function choosePermissionMode(mode: 'ask' | 'guardian' | 'full') {
+  selectedPermissionMode.value = mode
+  permissionMenuOpen.value = false
+}
+
+function repositionOpenMenus() {
+  if (addMenuOpen.value) {
+    updateFloatingMenuPosition(addMenuTrigger.value, addMenuStyle, 320)
+  }
+  if (permissionMenuOpen.value) {
+    updateFloatingMenuPosition(permissionMenuTrigger.value, permissionMenuStyle, 360)
+  }
+}
+
+function updateFloatingMenuPosition(
+  trigger: HTMLElement | null,
+  target: typeof addMenuStyle,
+  width: number,
+) {
+  if (!trigger || typeof window === 'undefined') {
+    target.value = {}
+    return
+  }
+  const rect = trigger.getBoundingClientRect()
+  const viewportPadding = 12
+  const left = Math.min(
+    Math.max(rect.left, viewportPadding),
+    Math.max(viewportPadding, window.innerWidth - width - viewportPadding),
+  )
+  target.value = {
+    left: `${left}px`,
+    bottom: `${Math.max(viewportPadding, window.innerHeight - rect.top + 8)}px`,
+  }
+}
+
+function chooseModel(model: string) {
+  if (props.busy || props.disabled) {
+    return
+  }
+  selectedModel.value = model === latestModel.value ? '' : model
+}
+
+function chooseReasoningEffort(reasoningEffort: string) {
+  if (props.busy || props.disabled) {
+    return
+  }
+  selectedReasoningEffort.value = reasoningEffort === latestReasoningEffort.value ? '' : reasoningEffort
 }
 
 async function activateRunLocation(connectionId: string) {
@@ -240,24 +452,86 @@ async function activateRunLocation(connectionId: string) {
 function onKeydown(event: KeyboardEvent) {
   if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
     submitPrimary()
+    return
+  }
+  if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === 'p') {
+    event.preventDefault()
+    toggleMode()
+    return
+  }
+  if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === 'g') {
+    event.preventDefault()
+    toggleGoalComposeMode()
   }
 }
 
-function chooseImages() {
+function openFileAttachmentPicker() {
   if (props.busy || props.disabled || props.isWorking) {
     return
   }
-  imageInput.value?.click()
+  filePickerOpen.value = true
+  addMenuOpen.value = false
 }
 
-async function onImageInputChange(event: Event) {
-  const input = event.currentTarget as HTMLInputElement | null
-  const files = Array.from(input?.files ?? []).filter((file) => file.type.startsWith('image/'))
+function addFileAttachment(path: string) {
+  const normalizedPath = path.trim()
+  if (!normalizedPath) {
+    return
+  }
+  const attachment = {
+    type: 'mention',
+    name: pathName(normalizedPath),
+    path: normalizedPath,
+  }
+  fileAttachments.value = [
+    ...fileAttachments.value.filter((item) => item.path !== normalizedPath),
+    attachment,
+  ]
+}
+
+function removeFileAttachment(index: number) {
+  fileAttachments.value = fileAttachments.value.filter((_, itemIndex) => itemIndex !== index)
+}
+
+onMounted(() => {
+  window.addEventListener('resize', repositionOpenMenus)
+  window.addEventListener('scroll', repositionOpenMenus, true)
+  document.addEventListener('click', onDocumentClick)
+  document.addEventListener('keydown', onDocumentKeydown)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', repositionOpenMenus)
+  window.removeEventListener('scroll', repositionOpenMenus, true)
+  document.removeEventListener('click', onDocumentClick)
+  document.removeEventListener('keydown', onDocumentKeydown)
+})
+
+async function onPaste(event: ClipboardEvent) {
+  if (props.busy || props.disabled || props.isWorking) {
+    return
+  }
+  const files = imageFilesFromClipboard(event.clipboardData)
+  if (!files.length) {
+    return
+  }
+  event.preventDefault()
   const loaded = await Promise.all(files.map(imageAttachmentFromFile))
   imageAttachments.value = [...imageAttachments.value, ...loaded]
-  if (input) {
-    input.value = ''
+}
+
+function imageFilesFromClipboard(data: DataTransfer | null) {
+  if (!data) {
+    return []
   }
+  const files = Array.from(data.files).filter((file) => file.type.startsWith('image/'))
+  if (files.length) {
+    return files
+  }
+  return Array.from(data.items ?? [])
+    .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => Boolean(file))
 }
 
 function imageAttachmentFromFile(file: File): Promise<JsonRecord> {
@@ -289,6 +563,22 @@ function imageAttachmentName(attachment: JsonRecord, index: number) {
 function imageAttachmentSrc(attachment: JsonRecord) {
   const src = attachment.imageUrl ?? attachment.image_url ?? attachment.url ?? attachment.src
   return typeof src === 'string' ? src : ''
+}
+
+function fileAttachmentName(attachment: JsonRecord, index: number) {
+  return typeof attachment.name === 'string' && attachment.name.trim()
+    ? attachment.name
+    : `File ${index + 1}`
+}
+
+function fileAttachmentPath(attachment: JsonRecord) {
+  const path = attachment.path ?? attachment.fsPath ?? attachment.fs_path
+  return typeof path === 'string' ? path : ''
+}
+
+function pathName(path: string) {
+  const normalized = path.replace(/\\/g, '/').replace(/\/$/, '')
+  return normalized.split('/').filter(Boolean).pop() || normalized || path
 }
 
 function followupText(followup: CodexQueuedFollowup) {
@@ -335,27 +625,18 @@ function contextWindowState(state: CodexConversationState | null) {
     return explicit
   }
 
-  const textLength =
-    state?.turns?.reduce((total, turn) => {
-      const itemLength = (turn.items ?? []).reduce(
-        (sum, item) => sum + JSON.stringify(item).length,
-        0,
-      )
-      return total + itemLength
-    }, 0) ?? 0
-  const usedTokens = Math.round(textLength / 4)
-  const totalTokens = 128_000
-  const percent = Math.min(Math.round((usedTokens / totalTokens) * 100), 100)
   return {
-    label: `${percent}%`,
-    detail: `~${formatTokenCount(usedTokens)} / ${formatTokenCount(totalTokens)} tokens`,
-    percent,
-    estimated: true,
+    label: '--',
+    detail: 'Token usage unavailable',
+    percent: 0,
+    estimated: false,
   }
 }
 
 function explicitContextWindow(state: CodexConversationState | null) {
   const candidates = [
+    state?.latestTokenUsageInfo?.tokenUsage,
+    state?.latestTokenUsageInfo,
     state?.contextWindow,
     state?.context_window,
     state?.context,
@@ -366,14 +647,20 @@ function explicitContextWindow(state: CodexConversationState | null) {
     if (!isRecord(candidate)) {
       continue
     }
-    const used = numberFromRecord(candidate, ['usedTokens', 'used_tokens', 'inputTokens', 'input_tokens', 'used'])
-    const total = numberFromRecord(candidate, ['totalTokens', 'total_tokens', 'limit', 'maxTokens', 'max_tokens'])
+    const tokenUsage = recordFromRecord(candidate, ['tokenUsage', 'token_usage'])
+    const usage = tokenUsage ?? candidate
+    const lastBreakdown = recordFromRecord(usage, ['last'])
+    const used = lastBreakdown
+      ? numberFromRecord(lastBreakdown, ['totalTokens', 'total_tokens'])
+      : numberFromRecord(usage, ['usedTokens', 'used_tokens', 'inputTokens', 'input_tokens', 'used', 'totalTokens', 'total_tokens'])
+    const total = numberFromRecord(usage, ['modelContextWindow', 'model_context_window', 'totalTokens', 'total_tokens', 'limit', 'maxTokens', 'max_tokens'])
     const percent = numberFromRecord(candidate, ['percent', 'ratio'])
     if (used != null && total != null && total > 0) {
-      const computedPercent = Math.min(Math.round((used / total) * 100), 100)
+      const clampedUsed = Math.min(used, total)
+      const computedPercent = Math.min(Math.round((clampedUsed / total) * 100), 100)
       return {
         label: `${computedPercent}%`,
-        detail: `${formatTokenCount(used)} / ${formatTokenCount(total)} tokens`,
+        detail: `${formatTokenCount(clampedUsed)} / ${formatTokenCount(total)} tokens`,
         percent: computedPercent,
         estimated: false,
       }
@@ -386,6 +673,16 @@ function explicitContextWindow(state: CodexConversationState | null) {
         percent: Math.min(Math.round(normalized), 100),
         estimated: false,
       }
+    }
+  }
+  return null
+}
+
+function recordFromRecord(record: JsonRecord, keys: string[]) {
+  for (const key of keys) {
+    const value = record[key]
+    if (isRecord(value)) {
+      return value
     }
   }
   return null
@@ -454,12 +751,16 @@ function goalProgressText(goal: CodexThreadGoal | null) {
 
 <template>
   <section
-    class="sticky bottom-0 z-10 mt-auto w-full border-t border-[color:var(--app-border)] bg-[rgba(255,253,247,0.94)] px-4 pb-[calc(1rem+env(safe-area-inset-bottom))] pt-3 max-sm:px-2.5"
+    class="sticky bottom-0 z-10 mt-auto w-full pb-[calc(1rem+env(safe-area-inset-bottom))] pt-4"
     data-codex-composer-shell
   >
-    <div class="mx-auto grid max-w-5xl gap-2">
+    <div class="pointer-events-none absolute inset-x-0 bottom-0 z-0 h-full bg-gradient-to-t from-[rgba(255,253,247,1)] via-[rgba(255,253,247,0.96)] to-transparent"></div>
+    <div
+      class="relative z-10 mx-auto flex w-full max-w-[var(--thread-content-max-width,64rem)] flex-col px-4 max-sm:px-2.5"
+      data-pip-obstacle="thread-footer"
+    >
       <div
-        class="grid min-w-0 gap-2 rounded-2xl border border-[color:var(--app-border)] bg-white/95 p-2 shadow-[0_14px_34px_rgba(24,44,48,0.08)] transition max-sm:rounded-xl"
+        class="grid min-w-0 gap-2 rounded-xl border border-[color:var(--app-border)] bg-white/95 p-2 shadow-[0_8px_22px_rgba(24,44,48,0.08)] transition"
         data-codex-composer
       >
         <div
@@ -597,15 +898,33 @@ function goalProgressText(goal: CodexThreadGoal | null) {
           </article>
         </div>
 
-        <input
-          ref="imageInput"
-          class="sr-only"
-          type="file"
-          accept="image/*"
-          multiple
-          data-codex-image-input
-          @change="onImageInputChange"
-        />
+        <div
+          v-if="fileAttachments.length"
+          class="grid min-w-0 gap-1 px-1 pb-1"
+          data-codex-file-attachments
+        >
+          <article
+            v-for="(attachment, index) in fileAttachments"
+            :key="`${fileAttachmentPath(attachment)}-${index}`"
+            class="group grid min-w-0 grid-cols-[1.25rem_minmax(0,1fr)_1.5rem] items-center gap-2 rounded-lg border border-[rgba(34,66,72,0.1)] bg-[rgba(255,253,247,0.82)] px-2 py-1.5 text-sm"
+            data-codex-file-attachment
+          >
+            <i class="pi pi-paperclip text-[0.72rem] text-[color:var(--app-text-soft)]"></i>
+            <span class="min-w-0">
+              <span class="block truncate font-semibold text-[color:var(--app-text)]">{{ fileAttachmentName(attachment, index) }}</span>
+              <span class="block truncate text-[0.68rem] text-[color:var(--app-text-soft)]">{{ fileAttachmentPath(attachment) }}</span>
+            </span>
+            <button
+              type="button"
+              class="inline-flex h-6 w-6 items-center justify-center rounded-md text-[0.6rem] text-[color:var(--app-text-soft)] opacity-80 transition hover:bg-red-50 hover:text-red-700 group-hover:opacity-100"
+              :aria-label="`Remove ${fileAttachmentName(attachment, index)}`"
+              data-codex-file-remove
+              @click="removeFileAttachment(index)"
+            >
+              <i class="pi pi-times"></i>
+            </button>
+          </article>
+        </div>
 
         <div
           v-if="imageAttachments.length"
@@ -638,20 +957,85 @@ function goalProgressText(goal: CodexThreadGoal | null) {
 
         <textarea
           v-model="draft"
-          class="min-h-24 w-full min-w-0 resize-y rounded-xl border-0 bg-transparent px-2 py-2 text-sm leading-6 text-[color:var(--app-text)] outline-none placeholder:text-[color:var(--app-text-soft)] max-sm:min-h-20"
+          class="max-h-52 min-h-16 w-full min-w-0 resize-none rounded-lg border-0 bg-transparent px-2 py-2 text-sm leading-6 text-[color:var(--app-text)] outline-none placeholder:text-[color:var(--app-text-soft)] max-sm:min-h-14"
           :disabled="disabled"
           :placeholder="composerPlaceholder"
           @keydown="onKeydown"
+          @paste="onPaste"
         ></textarea>
 
         <div
-          class="composer-footer grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-end gap-2 max-sm:items-start"
+          class="composer-footer flex min-w-0 items-center justify-between gap-2"
           data-codex-composer-footer
         >
           <div
-            class="hide-scrollbar flex min-w-0 flex-wrap items-center gap-1.5 max-sm:flex-nowrap max-sm:overflow-x-auto max-sm:overscroll-x-contain max-sm:pb-0.5"
+            class="hide-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-visible"
             data-codex-composer-controls
           >
+            <div class="relative shrink-0">
+              <button
+                ref="addMenuTrigger"
+                type="button"
+                class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-xl font-light leading-none text-[color:var(--app-text-soft)] transition hover:bg-[rgba(21,94,99,0.06)] hover:text-[color:var(--app-text)] disabled:cursor-not-allowed disabled:opacity-45"
+                :disabled="busy || disabled"
+                :aria-expanded="addMenuOpen"
+                aria-label="Open composer actions"
+                title="Open composer actions"
+                data-codex-add-menu-trigger
+                @click="toggleAddMenu"
+              >
+                +
+              </button>
+              <div
+                v-if="addMenuOpen"
+                class="fixed z-[100] grid w-80 max-w-[calc(100vw-1.5rem)] gap-1 rounded-xl border border-[color:var(--app-border)] bg-white p-1.5 text-sm shadow-xl"
+                :style="addMenuStyle"
+                data-codex-add-menu
+              >
+                <p class="m-0 px-2 py-1 text-xs font-semibold text-[color:var(--app-text-soft)]">Add</p>
+                <button
+                  type="button"
+                  class="grid grid-cols-[1rem_minmax(0,1fr)] items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[color:var(--app-text)] transition hover:bg-[rgba(21,94,99,0.06)] disabled:cursor-not-allowed disabled:opacity-45"
+                  :disabled="busy || disabled || isWorking"
+                  data-codex-files-attach
+                  @click="openFileAttachmentPicker"
+                >
+                  <i class="pi pi-paperclip text-[0.72rem] text-[color:var(--app-text-soft)]"></i>
+                  <span>Files and folders</span>
+                </button>
+                <button
+                  type="button"
+                  class="grid grid-cols-[1rem_minmax(0,1fr)] items-start gap-2 rounded-lg px-2 py-1.5 text-left text-[color:var(--app-text)] transition hover:bg-[rgba(21,94,99,0.06)] disabled:cursor-not-allowed disabled:opacity-45"
+                  :disabled="busy || disabled || isWorking || hasThreadGoal"
+                  data-codex-menu-goal
+                  @click="startGoalMode"
+                >
+                  <i class="pi pi-flag mt-1 text-[0.72rem] text-[color:var(--app-text-soft)]"></i>
+                  <span>
+                    <span class="block">Goal</span>
+                    <span class="block text-[0.68rem] leading-4 text-[color:var(--app-text-soft)]">
+                      Set a goal that Codex will keep working towards
+                    </span>
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  class="grid grid-cols-[1rem_minmax(0,1fr)] items-start gap-2 rounded-lg px-2 py-1.5 text-left text-[color:var(--app-text)] transition hover:bg-[rgba(21,94,99,0.06)] disabled:cursor-not-allowed disabled:opacity-45"
+                  :disabled="busy || disabled"
+                  data-codex-menu-plan
+                  @click="startPlanMode"
+                >
+                  <i class="pi pi-list-check mt-1 text-[0.72rem] text-[color:var(--app-text-soft)]"></i>
+                  <span>
+                    <span class="block">Plan mode</span>
+                    <span class="block text-[0.68rem] leading-4 text-[color:var(--app-text-soft)]">
+                      Turn plan mode on
+                    </span>
+                  </span>
+                </button>
+              </div>
+            </div>
+
             <div
               v-if="showRunLocationPicker"
               class="relative shrink-0"
@@ -659,7 +1043,7 @@ function goalProgressText(goal: CodexThreadGoal | null) {
             >
               <button
                 type="button"
-                class="inline-flex h-8 max-w-48 items-center gap-1.5 rounded-lg border border-[color:var(--app-border)] bg-white px-2 text-sm font-semibold text-[color:var(--app-text)] transition hover:bg-[rgba(21,94,99,0.05)] disabled:cursor-not-allowed disabled:opacity-45 max-sm:max-w-36"
+                class="inline-flex h-8 max-w-40 items-center gap-1.5 rounded-lg px-2 text-sm font-semibold text-[color:var(--app-text)] transition hover:bg-[rgba(21,94,99,0.06)] disabled:cursor-not-allowed disabled:opacity-45 max-sm:max-w-28"
                 :disabled="busy || disabled || remoteSwitchingId !== null"
                 aria-label="Select where to run the task"
                 :aria-expanded="remoteMenuOpen"
@@ -672,7 +1056,7 @@ function goalProgressText(goal: CodexThreadGoal | null) {
               </button>
               <div
                 v-if="remoteMenuOpen"
-                class="absolute bottom-full left-0 z-30 mb-1 grid w-72 max-w-[calc(100vw-2rem)] gap-1 rounded-lg border border-[color:var(--app-border)] bg-white p-1.5 shadow-xl"
+                class="absolute bottom-full left-0 z-50 mb-1 grid w-72 max-w-[calc(100vw-2rem)] gap-1 rounded-lg border border-[color:var(--app-border)] bg-white p-1.5 shadow-xl"
                 data-codex-run-location-menu
               >
                 <button
@@ -717,59 +1101,65 @@ function goalProgressText(goal: CodexThreadGoal | null) {
             </div>
 
             <div
-              class="grid w-[7.25rem] shrink-0 grid-cols-2 rounded-lg border border-[color:var(--app-border)] bg-[rgba(255,253,247,0.86)] p-0.5"
-              data-codex-mode-switch
+              v-else
+              class="relative shrink-0"
+              data-codex-permission-pill
             >
               <button
+                ref="permissionMenuTrigger"
                 type="button"
-                class="h-8 min-w-0 rounded-md px-2 text-sm font-semibold transition-colors"
-                :class="mode === 'build' ? 'bg-[color:var(--app-accent)] text-white' : 'text-[color:var(--app-text-soft)] hover:text-[color:var(--app-text)]'"
+                class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-2 text-sm font-semibold text-[color:var(--app-accent)] transition hover:bg-[rgba(21,94,99,0.06)] disabled:cursor-not-allowed disabled:opacity-45"
                 :disabled="busy || disabled"
-                @click="emit('setMode', 'build')"
+                :aria-expanded="permissionMenuOpen"
+                aria-label="Change permissions"
+                data-codex-permission-trigger
+                @click="togglePermissionMenu"
               >
-                Build
+                <i class="pi pi-shield text-[0.72rem]"></i>
+                <span>{{ activePermissionOption.label }}</span>
+                <i class="pi pi-chevron-down text-[0.55rem]"></i>
               </button>
-              <button
-                type="button"
-                class="h-8 min-w-0 rounded-md px-2 text-sm font-semibold transition-colors"
-                :class="mode === 'plan' ? 'bg-[color:var(--app-accent)] text-white' : 'text-[color:var(--app-text-soft)] hover:text-[color:var(--app-text)]'"
-                :disabled="busy || disabled"
-                @click="emit('setMode', 'plan')"
+              <div
+                v-if="permissionMenuOpen"
+                class="fixed z-[100] grid w-[22rem] max-w-[calc(100vw-1.5rem)] gap-1 rounded-xl border border-[color:var(--app-border)] bg-white p-2 text-sm shadow-xl"
+                :style="permissionMenuStyle"
+                data-codex-permission-menu
               >
-                Plan
-              </button>
+                <div class="px-2 pb-1">
+                  <p class="m-0 font-semibold text-[color:var(--app-text)]">How should Codex actions be approved?</p>
+                  <button
+                    type="button"
+                    class="mt-0.5 p-0 text-left text-xs font-semibold text-[color:var(--app-accent)] hover:underline"
+                    data-codex-permission-learn-more
+                  >
+                    Learn more
+                  </button>
+                </div>
+                <button
+                  v-for="option in permissionOptions"
+                  :key="option.value"
+                  type="button"
+                  class="grid grid-cols-[1rem_minmax(0,1fr)_1rem] items-start gap-2 rounded-lg px-2 py-1.5 text-left transition hover:bg-[rgba(21,94,99,0.06)]"
+                  :class="selectedPermissionMode === option.value ? 'font-semibold text-[color:var(--app-text)]' : 'text-[color:var(--app-text-soft)]'"
+                  data-codex-permission-option
+                  @click="choosePermissionMode(option.value)"
+                >
+                  <i class="pi pi-shield mt-1 text-[0.72rem]" :class="selectedPermissionMode === option.value ? 'text-[color:var(--app-accent)]' : 'text-[color:var(--app-text-soft)]'"></i>
+                  <span>
+                    <span class="block">{{ option.label }}</span>
+                    <span class="block text-[0.68rem] font-normal text-[color:var(--app-text-soft)]">
+                      {{ option.description }}
+                    </span>
+                  </span>
+                  <i v-if="selectedPermissionMode === option.value" class="pi pi-check mt-1 text-[0.68rem] text-[color:var(--app-accent)]"></i>
+                </button>
+              </div>
             </div>
-
-            <button
-              type="button"
-              class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-[color:var(--app-border)] bg-white px-2 text-sm font-semibold transition hover:bg-[rgba(21,94,99,0.05)] disabled:cursor-not-allowed disabled:opacity-45"
-              :class="isGoalComposeMode || hasThreadGoal ? 'text-[color:var(--app-accent)]' : 'text-[color:var(--app-text-soft)]'"
-              :disabled="busy || disabled || isWorking || hasThreadGoal"
-              :aria-pressed="isGoalComposeMode"
-              aria-label="Use prompt as thread goal"
-              data-codex-goal-toggle
-              @click="toggleGoalComposeMode"
-            >
-              <i class="pi pi-flag text-[0.68rem]"></i>
-              <span>Goal</span>
-            </button>
-
-            <button
-              type="button"
-              class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[color:var(--app-border)] bg-white text-sm text-[color:var(--app-text-soft)] transition hover:bg-[rgba(21,94,99,0.05)] hover:text-[color:var(--app-text)] disabled:cursor-not-allowed disabled:opacity-45"
-              :disabled="busy || disabled || isWorking"
-              aria-label="Attach images"
-              title="Attach images"
-              data-codex-image-attach
-              @click="chooseImages"
-            >
-              <i class="pi pi-image text-[0.72rem]"></i>
-            </button>
 
             <input
               v-if="isGoalComposeMode && !hasThreadGoal"
               v-model="goalTokenBudgetDraft"
-              class="h-8 w-24 shrink-0 rounded-lg border border-[color:var(--app-border)] bg-white px-2 text-sm text-[color:var(--app-text)] outline-none placeholder:text-[color:var(--app-text-soft)]"
+              class="h-8 w-20 shrink-0 rounded-lg bg-[rgba(34,66,72,0.06)] px-2 text-sm text-[color:var(--app-text)] outline-none placeholder:text-[color:var(--app-text-soft)]"
               :disabled="busy || disabled"
               inputmode="numeric"
               placeholder="Tokens"
@@ -778,69 +1168,94 @@ function goalProgressText(goal: CodexThreadGoal | null) {
               @keydown.enter.prevent="submitGoal"
             />
 
-            <label
-              class="inline-flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-lg border border-[color:var(--app-border)] bg-white px-2 text-sm text-[color:var(--app-text-soft)] max-sm:w-max max-sm:max-w-none max-sm:shrink-0"
-            >
-              <i class="pi pi-microchip-ai text-[0.72rem]"></i>
-              <!-- <span class="composer-footer__label--sm">Model</span> -->
-              <Select
-                v-model="selectedModel"
-                :options="modelOptions"
-                option-label="label"
-                option-value="value"
-                :placeholder="latestModel"
-                size="small"
-                append-to="body"
-                checkmark
-                class="composer-inline-select codex-composer-select max-w-36 max-sm:max-w-24"
-                :disabled="busy || disabled"
-                aria-label="Choose model"
-                data-codex-model-select
-              />
-            </label>
-
-            <label
-              class="inline-flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-lg border border-[color:var(--app-border)] bg-white px-2 text-sm text-[color:var(--app-text-soft)] max-sm:w-max max-sm:max-w-none max-sm:shrink-0"
-            >
-              <i class="pi pi-sparkles text-[0.72rem]"></i>
-              <!-- <span class="composer-footer__label--sm">Reasoning</span> -->
-              <Select
-                v-model="selectedReasoningEffort"
-                :options="reasoningOptions"
-                option-label="label"
-                option-value="value"
-                :placeholder="latestReasoningEffort"
-                size="small"
-                append-to="body"
-                checkmark
-                class="composer-inline-select codex-composer-select max-w-28 capitalize max-sm:max-w-20"
-                :disabled="busy || disabled"
-                aria-label="Choose reasoning effort"
-                data-codex-reasoning-select
-              />
-            </label>
-
-            <div
-              class="inline-flex h-8 w-fit max-w-full items-center gap-1.5 rounded-lg border border-[color:var(--app-border)] bg-white px-2 text-xs text-[color:var(--app-text-soft)] max-sm:shrink-0"
-              :title="`${context.detail}${context.estimated ? ' estimated' : ''}`"
-              data-codex-context-window
-            >
-              <span class="h-1.5 w-10 overflow-hidden rounded-full bg-[rgba(34,66,72,0.12)]">
-                <span
-                  class="block h-full rounded-full bg-[color:var(--app-accent)]"
-                  :style="{ width: `${context.percent}%` }"
-                ></span>
-              </span>
-              <span class="composer-footer__label--xs whitespace-nowrap">
-                {{ context.label }}
-              </span>
-            </div>
           </div>
 
-          <div class="flex shrink-0 items-center justify-end gap-1.5">
+          <div class="flex shrink-0 items-center justify-end gap-1">
+            <div
+              class="group/context relative inline-flex h-8 w-8 max-w-full items-center justify-center rounded-lg px-2 text-xs text-[color:var(--app-text-soft)] outline-none transition hover:bg-[rgba(21,94,99,0.06)] focus-visible:bg-[rgba(21,94,99,0.06)] focus-visible:ring-2 focus-visible:ring-[rgba(21,94,99,0.18)]"
+              :aria-label="contextHoverTitle"
+              tabindex="0"
+              data-codex-context-window
+            >
+              <span
+                class="relative h-3.5 w-3.5 shrink-0 rounded-full"
+                :style="contextRingStyle"
+                aria-hidden="true"
+                data-codex-context-ring
+              >
+                <span class="absolute inset-[3px] rounded-full bg-white"></span>
+              </span>
+              <span
+                class="pointer-events-none absolute bottom-full right-0 z-50 mb-2 w-max max-w-[16rem] rounded-lg border border-[color:var(--app-border)] bg-white px-2.5 py-1.5 text-xs font-semibold text-[color:var(--app-text)] opacity-0 shadow-xl transition-opacity group-hover/context:opacity-100 group-focus-within/context:opacity-100"
+                data-codex-context-tooltip
+              >
+                {{ contextHoverTitle }}
+              </span>
+            </div>
+            <div class="relative shrink-0">
+              <button
+                type="button"
+                class="inline-flex h-8 max-w-40 items-center gap-1.5 rounded-lg px-2 text-sm font-semibold text-[color:var(--app-text)] transition hover:bg-[rgba(21,94,99,0.06)] disabled:cursor-not-allowed disabled:opacity-45 max-sm:max-w-28"
+                :disabled="busy || disabled"
+                :aria-expanded="composerSettingsOpen"
+                aria-label="Select model and reasoning effort"
+                :title="`${activeModel} · ${activeReasoningEffort}`"
+                data-codex-intelligence-trigger
+                data-codex-composer-settings-trigger
+                @click="toggleComposerSettings"
+              >
+                <i class="pi pi-microchip-ai text-[0.72rem] text-[color:var(--app-text-soft)]"></i>
+                <span class="min-w-0 truncate">{{ activeModel }}</span>
+                <i class="pi pi-chevron-down text-[0.55rem] text-[color:var(--app-text-soft)]"></i>
+              </button>
+              <div
+                v-if="composerSettingsOpen"
+                class="absolute bottom-full right-0 z-50 mb-2 grid w-72 max-w-[calc(100vw-2rem)] gap-3 rounded-xl border border-[color:var(--app-border)] bg-white p-3 text-sm shadow-xl"
+                data-codex-composer-settings-menu
+              >
+                <div class="grid gap-1.5" data-codex-model-select>
+                  <div class="flex items-center gap-1.5 px-1 text-xs font-semibold uppercase tracking-wide text-[color:var(--app-text-soft)]">
+                    <i class="pi pi-microchip-ai text-[0.68rem]"></i>
+                    <span>Model</span>
+                  </div>
+                  <button
+                    v-for="option in modelOptions"
+                    :key="option.value"
+                    type="button"
+                    class="grid grid-cols-[minmax(0,1fr)_1rem] items-center gap-2 rounded-lg px-2 py-1.5 text-left transition hover:bg-[rgba(21,94,99,0.06)] disabled:cursor-not-allowed disabled:opacity-45"
+                    :class="activeModel === option.value ? 'font-semibold text-[color:var(--app-text)]' : 'text-[color:var(--app-text-soft)]'"
+                    :disabled="busy || disabled"
+                    data-codex-model-option
+                    @click="chooseModel(option.value)"
+                  >
+                    <span class="truncate">{{ option.label }}</span>
+                    <i v-if="activeModel === option.value" class="pi pi-check text-[0.68rem] text-[color:var(--app-accent)]"></i>
+                  </button>
+                </div>
+                <div class="grid gap-1.5" data-codex-reasoning-select>
+                  <div class="flex items-center gap-1.5 px-1 text-xs font-semibold uppercase tracking-wide text-[color:var(--app-text-soft)]">
+                    <i class="pi pi-sparkles text-[0.68rem]"></i>
+                    <span>Reasoning</span>
+                  </div>
+                  <button
+                    v-for="option in reasoningOptions"
+                    :key="option.value"
+                    type="button"
+                    class="grid grid-cols-[minmax(0,1fr)_1rem] items-center gap-2 rounded-lg px-2 py-1.5 text-left capitalize transition hover:bg-[rgba(21,94,99,0.06)] disabled:cursor-not-allowed disabled:opacity-45"
+                    :class="activeReasoningEffort === option.value ? 'font-semibold text-[color:var(--app-text)]' : 'text-[color:var(--app-text-soft)]'"
+                    :disabled="busy || disabled"
+                    data-codex-reasoning-option
+                    @click="chooseReasoningEffort(option.value)"
+                  >
+                    <span class="truncate">{{ option.label }}</span>
+                    <i v-if="activeReasoningEffort === option.value" class="pi pi-check text-[0.68rem] text-[color:var(--app-accent)]"></i>
+                  </button>
+                </div>
+              </div>
+            </div>
             <button
               type="button"
-              class="inline-flex h-9 min-w-9 items-center justify-center rounded-lg px-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-45"
+              class="inline-flex h-10 min-w-10 items-center justify-center rounded-full px-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-45"
               :class="primaryAction === 'stop'
                 ? 'border border-red-200 bg-white text-red-700 hover:bg-red-50'
                 : 'bg-[color:var(--app-accent)] text-white hover:brightness-95'
@@ -862,5 +1277,15 @@ function goalProgressText(goal: CodexThreadGoal | null) {
 
       </div>
     </div>
+    <CodexHostPathPicker
+      v-model:visible="filePickerOpen"
+      title="Add files and folders"
+      confirm-label="Use this folder"
+      :selected-path="typeof state?.cwd === 'string' ? state.cwd : ''"
+      :disabled="busy || disabled"
+      allow-files
+      :allow-current-folder="true"
+      @select="addFileAttachment"
+    />
   </section>
 </template>

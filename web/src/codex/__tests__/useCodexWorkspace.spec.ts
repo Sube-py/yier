@@ -328,14 +328,7 @@ describe('useCodexWorkspace', () => {
     expect(workspace.activeThreadState.value?.threadGoal?.objective).toBe(
       'Ship the web goal mode',
     )
-    expect(workspace.activeThreadState.value?.turns?.[0]).toMatchObject({
-      turnId: null,
-      status: 'completed',
-      params: {
-        input: [{ type: 'text', text: 'Ship the web goal mode', text_elements: [] }],
-      },
-      items: [],
-    })
+    expect(workspace.activeThreadState.value?.turns).toEqual([])
 
     await workspace.updateThreadGoalStatus('complete')
     await flushPromises()
@@ -349,9 +342,7 @@ describe('useCodexWorkspace', () => {
     })
     expect(workspace.activeThreadState.value?.threadGoal?.status).toBe('complete')
     expect(workspace.activeThreadState.value?.completedThreadGoal?.status).toBe('complete')
-    expect(
-      workspace.activeThreadState.value?.turns?.filter((turn) => turn.turnId == null),
-    ).toHaveLength(1)
+    expect(workspace.activeThreadState.value?.turns).toEqual([])
 
     await workspace.clearThreadGoal()
     await flushPromises()
@@ -363,7 +354,7 @@ describe('useCodexWorkspace', () => {
     expect(workspace.activeThreadState.value?.threadGoal).toBeNull()
   })
 
-  it('hydrates a directly returned thread goal into a synthetic goal turn', async () => {
+  it('hydrates a directly returned thread goal without synthesizing a turn', async () => {
     const socket = new FakeCodexSocket()
     socket.getThreadGoalResponse = {
       thread_id: 'thread-a',
@@ -381,14 +372,7 @@ describe('useCodexWorkspace', () => {
       'Keep going until green',
     )
     expect(workspace.activeThreadState.value?.threadGoal?.tokenBudget).toBe(9000)
-    expect(workspace.activeThreadState.value?.turns?.[0]).toMatchObject({
-      turnId: null,
-      status: 'completed',
-      params: {
-        input: [{ type: 'text', text: 'Keep going until green', text_elements: [] }],
-      },
-      items: [],
-    })
+    expect(workspace.activeThreadState.value?.turns).toEqual([])
   })
 
   it('accepts directly returned goals when setting a thread goal', async () => {
@@ -403,12 +387,7 @@ describe('useCodexWorkspace', () => {
     expect(workspace.activeThreadState.value?.threadGoal?.objective).toBe(
       'Direct response goal',
     )
-    expect(workspace.activeThreadState.value?.turns?.[0]).toMatchObject({
-      turnId: null,
-      params: {
-        input: [{ type: 'text', text: 'Direct response goal', text_elements: [] }],
-      },
-    })
+    expect(workspace.activeThreadState.value?.turns).toEqual([])
   })
 
   it('implements plan requests by returning to build mode and sending the plan prompt', async () => {

@@ -678,7 +678,7 @@ describe('CodexConversation', () => {
     expect(wrapper.find('[data-codex-work-item]').exists()).toBe(false)
   })
 
-  it('renders image user messages and goal hover metadata', () => {
+  it('renders slash-command goal user messages and goal hover metadata', () => {
     const wrapper = mount(CodexConversation, {
       props: {
         state: {
@@ -700,7 +700,7 @@ describe('CodexConversation', () => {
                   id: 'user-1',
                   type: 'userMessage',
                   content: [
-                    { type: 'text', text: 'Ship it' },
+                    { type: 'text', text: '/goal Ship it' },
                     { type: 'image', url: 'data:image/png;base64,abc' },
                   ],
                 },
@@ -716,21 +716,18 @@ describe('CodexConversation', () => {
     expect(wrapper.get('[data-codex-message-image]').attributes('src')).toBe(
       'data:image/png;base64,abc',
     )
+    expect(wrapper.get('.markdown-prose').text()).toContain('Ship it')
+    expect(wrapper.get('.markdown-prose').text()).not.toContain('/goal')
     expect(wrapper.get('[data-codex-sent-as-goal]').text()).toContain('sent as goal')
     expect(wrapper.get('[data-codex-goal-achieved]').text()).toContain('Goal achieved in 8m 42s')
     expect(wrapper.find('[data-codex-fork-message]').exists()).toBe(true)
   })
 
-  it('renders synthetic goal turn input as a goal user message', () => {
+  it('renders turn input with slash-command goal as a goal user message', () => {
     const wrapper = mount(CodexConversation, {
       props: {
         state: {
           id: 'thread-1',
-          threadGoal: {
-            threadId: 'thread-1',
-            objective: 'Keep working until tests pass',
-            status: 'active',
-          },
           turns: [
             {
               turnId: null,
@@ -740,7 +737,7 @@ describe('CodexConversation', () => {
                 input: [
                   {
                     type: 'text',
-                    text: 'Keep working until tests pass',
+                    text: '/goal Keep working until tests pass',
                     text_elements: [],
                   },
                 ],
@@ -753,9 +750,7 @@ describe('CodexConversation', () => {
       attachTo: document.body,
     })
 
-    expect(wrapper.get('[data-codex-user-message]').text()).toContain(
-      'Keep working until tests pass',
-    )
+    expect(wrapper.get('.markdown-prose').text()).toBe('Keep working until tests pass')
     expect(wrapper.get('[data-codex-sent-as-goal]').text()).toContain('sent as goal')
   })
 

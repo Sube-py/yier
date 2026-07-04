@@ -220,10 +220,7 @@ function turnInputUserMessage(turn: CodexTurnState, index: number): Conversation
   if (!text) {
     return null
   }
-  const goal = props.state?.threadGoal ?? props.state?.completedThreadGoal ?? null
-  const isGoal =
-    turn.turnId == null &&
-    Boolean(goal?.objective && goal.objective.trim() === text.trim())
+  const isGoal = isGoalCommandText(text)
   return {
     id: `${turnKey(turn, index)}-params-input-user-message`,
     item: {
@@ -454,7 +451,7 @@ function isContextCompactionItem(item: JsonRecord) {
 function itemText(item: JsonRecord) {
   const type = itemType(item)
   if (type === 'userMessage') {
-    return outputText(item.content || item.input)
+    return goalDisplayText(rawUserMessageText(item))
   }
   if (type === 'steeringUserMessage') {
     return outputText(item.input || item.content)
@@ -506,6 +503,18 @@ function itemText(item: JsonRecord) {
   return firstString(item.text, outputText(item.content), outputText(item.input))
 }
 
+function rawUserMessageText(item: JsonRecord) {
+  return outputText(item.content || item.input)
+}
+
+function isGoalCommandText(text: string) {
+  return /^\/goal(?:\s|$)/.test(text)
+}
+
+function goalDisplayText(text: string) {
+  return isGoalCommandText(text) ? text.replace(/^\/goal(?:\s+|$)/, '').trim() : text
+}
+
 function itemImages(item: JsonRecord) {
   const candidates = [
     item.content,
@@ -544,13 +553,12 @@ function absoluteTime(value: number | null | undefined) {
 }
 
 function isGoalUserMessage(item: JsonRecord) {
-  const text = itemText(item).trim()
-  const goal = props.state?.threadGoal ?? props.state?.completedThreadGoal ?? null
   return Boolean(
-    item.sentAsGoal === true ||
+    item.goal === true ||
+      item.sentAsGoal === true ||
       item.isGoal === true ||
       item.asGoal === true ||
-      (goal?.objective && text && goal.objective.trim() === text),
+      isGoalCommandText(rawUserMessageText(item)),
   )
 }
 

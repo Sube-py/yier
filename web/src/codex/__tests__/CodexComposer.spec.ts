@@ -197,6 +197,60 @@ describe('CodexComposer', () => {
     )
   })
 
+  it('shows the latest todo list as a floating panel above the composer', async () => {
+    const wrapper = mountCodexComposer({
+      modelValue: '',
+      disabled: false,
+      busy: false,
+      isWorking: true,
+      mode: buildMode,
+      queuedFollowups: [],
+      state: {
+        id: 'thread-1',
+        turns: [
+          {
+            turnId: 'turn-1',
+            status: 'inProgress',
+            items: [
+              {
+                id: 'todo-1',
+                type: 'todo-list',
+                plan: [
+                  { step: 'Read the official renderer', status: 'completed' },
+                  { step: 'Align the local UI', status: 'in_progress' },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    })
+
+    const panel = wrapper.get('[data-codex-floating-todo-list]')
+
+    expect(panel.classes()).toEqual(
+      expect.arrayContaining([
+        'relative',
+        'z-10',
+        'w-fit',
+        'max-w-(--thread-content-max-width)',
+        'min-w-0',
+        'overflow-hidden',
+        'rounded-3xl',
+      ]),
+    )
+    expect(panel.text()).toContain('1 out of 2 tasks completed')
+    expect(panel.text()).toContain('1/2')
+    expect(wrapper.find('[data-codex-floating-todo-items]').exists()).toBe(false)
+
+    await wrapper.get('[data-codex-floating-todo-toggle]').trigger('click')
+
+    const todos = wrapper.findAll('[data-codex-floating-todo-item]')
+    expect(todos).toHaveLength(2)
+    expect(todos[0]?.text()).toContain('Read the official renderer')
+    expect(todos[1]?.text()).toContain('Align the local UI')
+  })
+
   it('does not estimate context progress from local message JSON', () => {
     const wrapper = mountCodexComposer({
       modelValue: '',

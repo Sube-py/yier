@@ -629,7 +629,7 @@ describe('CodexConversation', () => {
     expect(wrapper.find('[data-codex-unknown-item]').exists()).toBe(false)
   })
 
-  it('renders todo-list items as a compact task summary instead of raw json', async () => {
+  it('omits todo-list items from the conversation work stream', async () => {
     const wrapper = mountConversation([
       {
         id: 'todo-1',
@@ -649,16 +649,8 @@ describe('CodexConversation', () => {
 
     await wrapper.get('[data-codex-work-toggle]').trigger('click')
 
-    expect(wrapper.get('[data-codex-todo-list]').text()).toContain('1 out of 2 tasks completed')
+    expect(wrapper.find('[data-codex-todo-list]').exists()).toBe(false)
     expect(wrapper.find('[data-codex-raw]').exists()).toBe(false)
-
-    await wrapper.get('[data-codex-todo-toggle]').trigger('click')
-
-    const todos = wrapper.findAll('[data-codex-todo-item]')
-    expect(todos).toHaveLength(2)
-    expect(todos[0]?.text()).toContain('1.')
-    expect(todos[0]?.text()).toContain('Read the official renderer')
-    expect(todos[1]?.text()).toContain('Align the local UI')
   })
 
   it('renders context compaction as a divider', async () => {

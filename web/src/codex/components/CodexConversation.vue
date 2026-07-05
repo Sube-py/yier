@@ -438,8 +438,6 @@ function workRenderUnits(items: ConversationItemView[]): WorkRenderUnit[] {
       continue
     }
     if (isTodoListItem(item.item)) {
-      flushActivity()
-      units.push({ id: item.id, kind: 'todo', items: [item] })
       continue
     }
     if (isContextCompactionItem(item.item)) {

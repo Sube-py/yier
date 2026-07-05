@@ -62,6 +62,7 @@ const permissionMenuStyle = ref<Record<string, string>>({})
 const selectedPermissionMode = ref<'ask' | 'guardian' | 'full'>('full')
 const remoteSwitchingId = ref<string | null>(null)
 const remoteSwitchError = ref('')
+const todoExpanded = ref(false)
 
 const permissionOptions = [
   {
@@ -186,6 +187,12 @@ const activeRunLocationLabel = computed(() =>
   activeRemoteConnection.value ? remoteTitle(activeRemoteConnection.value) : 'Local',
 )
 const showRunLocationPicker = computed(() => remoteConnections.value.length > 0)
+const latestTodoList = computed(() => latestTodoListItem(props.state))
+const latestTodoItems = computed(() => todoItems(latestTodoList.value))
+const latestTodoSummary = computed(() => todoSummary(latestTodoList.value))
+const latestTodoCompletedCount = computed(() =>
+  latestTodoItems.value.filter((todo) => isTodoComplete(todo.status)).length,
+)
 const composerPlaceholder = computed(() => {
   if (isGoalComposeMode.value) {
     return 'Describe a goal for this thread...'
@@ -204,6 +211,7 @@ watch(
     composerSettingsOpen.value = false
     addMenuOpen.value = false
     permissionMenuOpen.value = false
+    todoExpanded.value = false
   },
 )
 
@@ -619,6 +627,72 @@ function optionItems(values: string[]) {
   }))
 }
 
+function latestTodoListItem(state: CodexConversationState | null) {
+  const turns = state?.turns
+  if (!Array.isArray(turns)) {
+    return null
+  }
+  for (let turnIndex = turns.length - 1; turnIndex >= 0; turnIndex -= 1) {
+    const items = turns[turnIndex]?.items
+    if (!Array.isArray(items)) {
+      continue
+    }
+    for (let itemIndex = items.length - 1; itemIndex >= 0; itemIndex -= 1) {
+      const item = items[itemIndex]
+      if (isRecord(item) && isTodoListItem(item)) {
+        return item
+      }
+    }
+  }
+  return null
+}
+
+function isTodoListItem(item: JsonRecord) {
+  return ['todo-list', 'todoList', 'todo_list'].includes(String(item.type ?? ''))
+}
+
+function todoItems(item: JsonRecord | null) {
+  const plan = Array.isArray(item?.plan)
+    ? item.plan
+    : Array.isArray(item?.items)
+      ? item.items
+      : Array.isArray(item?.todos)
+        ? item.todos
+        : []
+  return plan
+    .filter(isRecord)
+    .map((todo, index) => ({
+      id: firstString(todo.id) || `${index}`,
+      step: firstString(todo.step, todo.text, todo.content, todo.title) || `Task ${index + 1}`,
+      status: firstString(todo.status, todo.state).toLowerCase() || 'pending',
+    }))
+}
+
+function todoSummary(item: JsonRecord | null) {
+  const todos = todoItems(item)
+  const completed = todos.filter((todo) => isTodoComplete(todo.status)).length
+  if (!todos.length) {
+    return 'To do list'
+  }
+  if (completed === 0) {
+    return `To do list created with ${todos.length} ${todos.length === 1 ? 'task' : 'tasks'}`
+  }
+  return `${completed} out of ${todos.length} ${todos.length === 1 ? 'task' : 'tasks'} completed`
+}
+
+function isTodoComplete(status: string) {
+  return status === 'completed' || status === 'complete'
+}
+
+function firstString(...values: unknown[]) {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim()
+    }
+  }
+  return ''
+}
+
 function contextWindowState(state: CodexConversationState | null) {
   const explicit = explicitContextWindow(state)
   if (explicit) {
@@ -759,6 +833,59 @@ function goalProgressText(goal: CodexThreadGoal | null) {
       class="relative z-10 mx-auto flex w-full max-w-[var(--thread-content-max-width,64rem)] flex-col px-4 max-sm:px-2.5"
       data-pip-obstacle="thread-footer"
     >
+      <div
+        v-if="latestTodoList"
+        class="relative z-10 mb-2 w-fit max-w-(--thread-content-max-width) min-w-0 overflow-hidden rounded-3xl border border-[color:var(--app-border)] bg-white/95 px-3 py-2 text-sm shadow-[0_10px_26px_rgba(24,44,48,0.1)] backdrop-blur-sm"
+        data-codex-floating-todo-list
+      >
+        <button
+          type="button"
+          class="group flex max-w-full min-w-0 cursor-default items-center justify-between gap-3 text-left"
+          :aria-expanded="todoExpanded"
+          data-codex-floating-todo-toggle
+          @click="todoExpanded = !todoExpanded"
+        >
+          <span class="min-w-0 truncate text-[color:var(--app-text-soft)]">
+            {{ latestTodoSummary }}
+          </span>
+          <span
+            v-if="latestTodoItems.length"
+            class="shrink-0 text-xs font-semibold text-[color:var(--app-text-soft)]/70"
+          >
+            {{ latestTodoCompletedCount }}/{{ latestTodoItems.length }}
+          </span>
+          <i
+            class="pi pi-chevron-down shrink-0 text-[0.62rem] text-[color:var(--app-text-soft)] opacity-0 transition-all duration-300 group-hover:opacity-100"
+            :class="todoExpanded ? 'rotate-180 opacity-100' : ''"
+          ></i>
+        </button>
+        <div
+          v-if="todoExpanded"
+          class="vertical-scroll-fade-mask mt-2 max-h-40 space-y-1 overflow-y-auto [--edge-fade-distance:2rem]"
+          data-codex-floating-todo-items
+        >
+          <div
+            v-for="(todo, todoIndex) in latestTodoItems"
+            :key="todo.id"
+            class="flex min-w-0 items-center gap-2"
+            data-codex-floating-todo-item
+          >
+            <i
+              class="pi shrink-0 text-[0.64rem]"
+              :class="isTodoComplete(todo.status) ? 'pi-check text-emerald-700' : 'pi-circle text-[color:var(--app-text-soft)]'"
+            ></i>
+            <span class="shrink-0 text-[color:var(--app-text-soft)]/80">
+              {{ todoIndex + 1 }}.
+            </span>
+            <span
+              class="min-w-0 text-[color:var(--app-text-soft)]/80 [overflow-wrap:anywhere]"
+              :class="isTodoComplete(todo.status) ? 'line-through' : ''"
+            >
+              {{ todo.step }}
+            </span>
+          </div>
+        </div>
+      </div>
       <div
         class="grid min-w-0 gap-2 rounded-xl border border-[color:var(--app-border)] bg-white/95 p-2 shadow-[0_8px_22px_rgba(24,44,48,0.08)] transition"
         data-codex-composer

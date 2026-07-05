@@ -119,20 +119,15 @@ wheels = [
 
 [[package]]
 name = "codex-ipc"
-version = "0.1.0"
-source = { editable = "../codex-ipc" }
+version = "0.1.1"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "pillow", marker = "extra == 'tui'", specifier = ">=12.2.0" },
-    { name = "pydantic", specifier = ">=2.12" },
-    { name = "rich", marker = "extra == 'tui'", specifier = ">=15.0.0" },
-    { name = "textual", marker = "extra == 'tui'", specifier = ">=8.2.5" },
+sdist = { url = "https://files.pythonhosted.org/packages/65/cd/ac3152ce769570ea43ec030960dd60ee604ac4fcba5cec7b4f8cf618a766/codex_ipc-0.1.1.tar.gz", hash = "sha256:c626edd93c3d648bd63359ed5d15a487dfac8a13e53c0834ac4e502a909f17f7", size = 137447, upload-time = "2026-07-05T04:55:46.738Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8b/0f/35b72c15e13139866701b5ae2f1fcda84248d468ec3782b499d736724f1f/codex_ipc-0.1.1-py3-none-any.whl", hash = "sha256:d52cc3adbcca0ef1e2e6c9d1b96c627a7de1db0c8f5288640a34a3dcc970fb89", size = 110376, upload-time = "2026-07-05T04:55:45.345Z" },
 ]
-provides-extras = ["tui"]
 
 [[package]]
 name = "colorama"
@@ -1245,7 +1240,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "codex-ipc", editable = "../codex-ipc" },
+    { name = "codex-ipc", specifier = ">=0.1.1" },
     { name = "granian", extras = ["reload"], specifier = ">=2.7.2" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "litestar", specifier = ">=2.21.1" },

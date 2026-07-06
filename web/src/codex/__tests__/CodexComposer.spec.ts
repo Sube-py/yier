@@ -1,6 +1,7 @@
 import { mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import PrimeVue from 'primevue/config'
+import Popover from 'primevue/popover'
 
 import CodexComposer from '../components/CodexComposer.vue'
 import CodexHostPathPicker from '../components/CodexHostPathPicker.vue'
@@ -29,10 +30,38 @@ function mountCodexComposer(props: ComposerProps) {
   return wrapper
 }
 
+async function selectComposerValue(
+  wrapper: ReturnType<typeof mount>,
+  selector: string,
+  value: string,
+) {
+  const select = wrapper.findComponent(selector)
+  expect(select.exists()).toBe(true)
+  const selectVm = select as unknown as { vm: { $emit: (event: string, value: string) => void } }
+  selectVm.vm.$emit('update:modelValue', value)
+  await wrapper.vm.$nextTick()
+}
+
+async function chooseIntelligenceValue(
+  wrapper: ReturnType<typeof mount>,
+  selector: string,
+  value: string,
+) {
+  await wrapper.get('[data-codex-intelligence-trigger]').trigger('click')
+  await wrapper.vm.$nextTick()
+  const button = Array.from(document.body.querySelectorAll<HTMLElement>(selector)).find((option) =>
+    option.textContent?.includes(value),
+  )
+  expect(button).toBeTruthy()
+  button?.click()
+  await wrapper.vm.$nextTick()
+}
+
 describe('CodexComposer', () => {
   const buildMode: CodexWorkMode = 'build'
 
   beforeEach(() => {
+    document.body.innerHTML = ''
     apiPostMock.mockReset()
     vi.stubGlobal('matchMedia', () => ({
       addEventListener: vi.fn(),
@@ -62,15 +91,8 @@ describe('CodexComposer', () => {
       },
     })
 
-    await wrapper.get('[data-codex-composer-settings-trigger]').trigger('click')
-    await wrapper
-      .findAll('[data-codex-model-option]')
-      .find((option) => option.text().includes('gpt-5.4-mini'))
-      ?.trigger('click')
-    await wrapper
-      .findAll('[data-codex-reasoning-option]')
-      .find((option) => option.text().includes('high'))
-      ?.trigger('click')
+    await chooseIntelligenceValue(wrapper, '[data-codex-model-option]', 'GPT-5.4-Mini')
+    await chooseIntelligenceValue(wrapper, '[data-codex-reasoning-option]', 'High')
     await wrapper.get('[data-codex-primary-submit]').trigger('click')
 
     expect(wrapper.emitted('sendPrompt')?.[0]).toEqual([
@@ -298,27 +320,46 @@ describe('CodexComposer', () => {
       expect.arrayContaining(['grid', 'min-w-0', 'rounded-xl']),
     )
     expect(wrapper.get('[data-codex-composer-footer]').classes()).toEqual(
-      expect.arrayContaining(['flex', 'items-center', 'justify-between']),
+      expect.arrayContaining(['flex', 'items-center', 'justify-between', 'max-sm:gap-1']),
     )
     expect(wrapper.get('[data-codex-composer-controls]').classes()).toEqual(
       expect.arrayContaining([
         'min-w-0',
         'flex-1',
         'overflow-visible',
+        'max-sm:gap-0.5',
       ]),
     )
     expect(wrapper.find('[data-codex-add-menu]').exists()).toBe(false)
     expect(wrapper.find('[data-codex-menu-plan]').exists()).toBe(false)
     expect(wrapper.find('[data-codex-image-attach]').exists()).toBe(false)
     expect(wrapper.get('[data-codex-permission-pill]').text()).toContain('Full access')
-    expect(wrapper.find('[data-codex-permission-menu]').exists()).toBe(false)
-    await wrapper.get('[data-codex-permission-trigger]').trigger('click')
-    expect(wrapper.get('[data-codex-permission-menu]').text()).toContain('Full access')
     expect(wrapper.get('[data-codex-context-window]').classes()).toContain('h-8')
-    expect(wrapper.get('[data-codex-intelligence-trigger]').text()).toContain('gpt-5.4')
+    expect(wrapper.get('[data-codex-context-window]').classes()).toContain('max-sm:w-7')
+    expect(wrapper.get('[data-codex-permission-trigger]').classes()).toEqual(
+      expect.arrayContaining([
+        'codex-permission-trigger',
+        'codex-permission-tone-full',
+        'max-sm:max-w-28',
+      ]),
+    )
+    expect(wrapper.get('[data-codex-primary-submit]').classes()).toContain('max-sm:h-9')
+    expect(wrapper.get('[data-codex-intelligence-trigger]').text()).toContain('5.4 Med')
+    expect(wrapper.get('[data-codex-intelligence-trigger]').classes()).toEqual(
+      expect.arrayContaining(['codex-intelligence-trigger', 'max-sm:max-w-28']),
+    )
     expect(wrapper.find('[data-codex-model-select]').exists()).toBe(false)
     expect(wrapper.find('[data-codex-reasoning-select]').exists()).toBe(false)
-    expect(wrapper.find('[data-codex-composer-settings-trigger]').exists()).toBe(true)
+    expect(wrapper.findComponent(Popover).exists()).toBe(true)
+    await wrapper.get('[data-codex-intelligence-trigger]').trigger('click')
+    await wrapper.vm.$nextTick()
+    expect(document.body.querySelector('[data-codex-reasoning-section]')).toBeTruthy()
+    expect(document.body.querySelector('[data-codex-model-section]')).toBeTruthy()
+    expect(document.body.querySelector('[data-codex-reasoning-section]')?.textContent).toContain('Light')
+    expect(document.body.querySelector('[data-codex-reasoning-section]')?.textContent).toContain('Extra High')
+    expect(document.body.querySelector('[data-codex-reasoning-section]')?.textContent).not.toContain('min')
+    expect(document.body.querySelector('[data-codex-reasoning-section]')?.textContent).not.toContain('xhigh')
+    expect(wrapper.find('[data-codex-composer-settings-trigger]').exists()).toBe(false)
   })
 
   it('keeps plan and goal inside the add menu instead of the main toolbar', async () => {
@@ -341,7 +382,7 @@ describe('CodexComposer', () => {
     expect(wrapper.emitted('setMode')?.[0]).toEqual(['plan'])
   })
 
-  it('closes composer popovers when clicking outside or opening another popover', async () => {
+  it('closes the add popover when clicking outside or pressing escape', async () => {
     const wrapper = mountCodexComposer({
       modelValue: '',
       disabled: false,
@@ -359,16 +400,12 @@ describe('CodexComposer', () => {
     await wrapper.vm.$nextTick()
     expect(wrapper.find('[data-codex-add-menu]').exists()).toBe(false)
 
-    await wrapper.get('[data-codex-permission-trigger]').trigger('click')
-    expect(wrapper.find('[data-codex-permission-menu]').exists()).toBe(true)
-
-    await wrapper.get('[data-codex-composer-settings-trigger]').trigger('click')
-    expect(wrapper.find('[data-codex-permission-menu]').exists()).toBe(false)
-    expect(wrapper.find('[data-codex-composer-settings-menu]').exists()).toBe(true)
+    await wrapper.get('[data-codex-add-menu-trigger]').trigger('click')
+    expect(wrapper.find('[data-codex-add-menu]').exists()).toBe(true)
 
     document.body.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Escape' }))
     await wrapper.vm.$nextTick()
-    expect(wrapper.find('[data-codex-composer-settings-menu]').exists()).toBe(false)
+    expect(wrapper.find('[data-codex-add-menu]').exists()).toBe(false)
   })
 
   it('does not add transient loading text while busy', () => {
@@ -586,8 +623,7 @@ describe('CodexComposer', () => {
     })
 
     expect(wrapper.get('[data-codex-run-location-trigger]').text()).toContain('Local')
-    await wrapper.get('[data-codex-run-location-trigger]').trigger('click')
-    await wrapper.get('[data-codex-run-location-remote]').trigger('click')
+    await selectComposerValue(wrapper, '[data-codex-run-location-trigger]', 'remote-1')
 
     expect(apiPostMock).toHaveBeenCalledWith(
       '/api/codex/remote-connections/remote-1/activate',

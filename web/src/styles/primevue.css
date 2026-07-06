@@ -116,32 +116,263 @@
   }
 
   .codex-composer-select.p-select {
-    min-height: 1.65rem;
+    min-height: 2rem;
+    max-width: 10rem;
+    border: 0 !important;
+    border-radius: 0.5rem;
+    background: transparent !important;
+    box-shadow: none !important;
+    transition: background-color 0.15s ease;
   }
 
   .codex-composer-select.p-select .p-select-label {
     min-width: 0;
-    max-width: 8.5rem;
+    max-width: 8rem;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    padding: 0.32rem 0 0.32rem 0.5rem;
     color: var(--app-text);
     font-size: 0.82rem;
     font-weight: 650;
   }
 
   .codex-composer-select.p-select .p-select-dropdown {
-    margin-left: 0.25rem;
+    width: 1.25rem;
+    margin-left: 0.1rem;
+    padding-right: 0.35rem;
+    background: transparent;
+    color: var(--app-text-soft);
+  }
+
+  .codex-composer-select.p-select .p-select-dropdown-icon {
+    font-size: 0.55rem;
+  }
+
+  .codex-composer-select.p-select.p-focus,
+  .codex-composer-select.p-select:not(.p-disabled):hover {
+    border: 0 !important;
+    background: rgba(21, 94, 99, 0.06) !important;
+    box-shadow: none !important;
+  }
+
+  .codex-permission-tone-ask,
+  .codex-permission-popover [data-permission-tone='ask'] {
+    color: var(--app-accent);
+  }
+
+  .codex-permission-tone-guardian,
+  .codex-permission-popover [data-permission-tone='guardian'] {
+    color: rgb(67, 89, 157);
+  }
+
+  .codex-permission-tone-full,
+  .codex-permission-popover [data-permission-tone='full'] {
+    color: rgb(180, 83, 9);
+  }
+
+  .codex-permission-popover.p-popover {
+    width: min(22rem, calc(100vw - 1.5rem));
+    border-color: var(--app-border);
+    border-radius: 0.85rem;
+    background: white;
+    box-shadow: 0 18px 45px rgba(34, 66, 72, 0.16);
+  }
+
+  .codex-permission-popover.p-popover::before,
+  .codex-permission-popover.p-popover::after {
+    display: none;
+  }
+
+  .codex-permission-popover.p-popover .p-popover-content {
+    padding: 0.55rem;
+  }
+
+  .codex-permission-choice {
+    display: grid;
+    min-width: 0;
+    grid-template-columns: 1rem minmax(0, 1fr) 0.85rem;
+    align-items: start;
+    gap: 0.55rem;
+    border-radius: 0.6rem;
+    padding: 0.48rem 0.55rem;
+    text-align: left;
+    transition: background-color 0.15s ease;
+  }
+
+  .codex-permission-choice:hover {
+    background: rgba(21, 94, 99, 0.06);
+  }
+
+  .codex-permission-choice-active {
+    background: rgba(21, 94, 99, 0.09);
+  }
+
+  .codex-permission-trigger .pi {
+    width: 0.75rem;
+    height: 0.75rem;
+    font-size: 0.75rem !important;
+    line-height: 1;
+  }
+
+  .codex-permission-trigger .pi-chevron-down {
+    width: 0.48rem;
+    height: 0.48rem;
+    color: currentColor !important;
+    font-size: 0.48rem !important;
+    transform: translateY(0.06rem);
+  }
+
+  .codex-intelligence-trigger .pi-chevron-down {
+    width: 0.48rem;
+    height: 0.48rem;
+    font-size: 0.48rem !important;
+    line-height: 1;
+    transform: translateY(0.06rem);
+  }
+
+  .codex-composer-select-reasoning.p-select .p-select-label {
+    max-width: 6.5rem;
+    text-transform: capitalize;
+  }
+
+  .codex-composer-select-overlay.p-select-overlay {
+    max-width: min(22rem, calc(100vw - 1.5rem));
+    border-color: var(--app-border);
+    border-radius: 0.75rem;
+    box-shadow: 0 18px 45px rgba(34, 66, 72, 0.16);
+  }
+
+  .codex-composer-select-overlay .p-select-list {
+    gap: 0.125rem;
+    padding: 0.35rem;
+  }
+
+  .codex-composer-select-overlay .p-select-option {
+    border-radius: 0.5rem;
+    padding: 0.4rem 0.5rem;
+  }
+
+  .codex-composer-permission-overlay.p-select-overlay {
+    width: min(22rem, calc(100vw - 1.5rem));
+  }
+
+  .codex-intelligence-popover.p-popover {
+    width: min(20rem, calc(100vw - 1.5rem));
+    border-color: var(--app-border);
+    border-radius: 0.85rem;
+    background: white;
+    box-shadow: 0 18px 45px rgba(34, 66, 72, 0.16);
+  }
+
+  .codex-intelligence-popover.p-popover::before,
+  .codex-intelligence-popover.p-popover::after {
+    display: none;
+  }
+
+  .codex-intelligence-popover.p-popover .p-popover-content {
+    padding: 0.55rem;
+  }
+
+  .codex-intelligence-section-title {
+    margin: 0;
+    padding: 0 0.15rem;
+    color: var(--app-text-soft);
+    font-size: 0.7rem;
+    font-weight: 750;
+    letter-spacing: 0;
+  }
+
+  .codex-intelligence-choice {
+    display: grid;
+    min-width: 0;
+    grid-template-columns: minmax(0, 1fr) 0.85rem;
+    align-items: center;
+    gap: 0.35rem;
+    min-height: 2rem;
+    border-radius: 0.55rem;
+    padding: 0 0.55rem;
+    color: var(--app-text);
+    font-size: 0.82rem;
+    font-weight: 650;
+    text-align: left;
+    transition: background-color 0.15s ease, color 0.15s ease;
+  }
+
+  .codex-intelligence-choice:hover {
+    background: rgba(21, 94, 99, 0.06);
+  }
+
+  .codex-intelligence-choice-active {
+    background: rgba(21, 94, 99, 0.09);
+    color: var(--app-text);
+  }
+
+  .codex-intelligence-choice .pi-check {
+    font-size: 0.68rem;
+    color: var(--app-text-soft);
+  }
+
+  .codex-intelligence-trigger {
+    min-width: 0;
   }
 
   @media (max-width: 640px) {
+    .codex-composer-select.p-select {
+      min-height: 1.75rem;
+      max-width: 6.8rem;
+    }
+
     .codex-composer-select.p-select .p-select-label {
-      max-width: 5.6rem;
+      max-width: 5.2rem;
+      padding-left: 0.38rem;
       font-size: 0.78rem;
     }
 
     .codex-composer-select.p-select .p-select-dropdown {
-      margin-left: 0.12rem;
+      width: 0.8rem;
+      margin-left: 0;
+      padding-right: 0.18rem;
+    }
+
+    .codex-composer-select.p-select .p-select-dropdown-icon {
+      font-size: 0.42rem;
+    }
+
+    .codex-composer-select-reasoning.p-select {
+      display: none;
+    }
+
+    .codex-intelligence-popover.p-popover {
+      width: min(18rem, calc(100vw - 1rem));
+    }
+
+    .codex-permission-popover.p-popover {
+      width: min(19rem, calc(100vw - 1rem));
+    }
+
+    .codex-permission-trigger .pi {
+      width: 0.75rem;
+      height: 0.75rem;
+      font-size: 0.75rem !important;
+    }
+
+    .codex-permission-trigger .pi-chevron-down {
+      width: 0.54rem;
+      height: 0.54rem;
+      font-size: 0.54rem !important;
+    }
+
+    .codex-intelligence-trigger .pi-chevron-down {
+      width: 0.54rem;
+      height: 0.54rem;
+      font-size: 0.54rem !important;
+    }
+
+    .codex-intelligence-choice {
+      min-height: 1.85rem;
+      padding-inline: 0.45rem;
+      font-size: 0.78rem;
     }
   }
 

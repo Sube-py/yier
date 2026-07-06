@@ -134,6 +134,18 @@ describe('Codex route separation', () => {
     expect(linksAndButtons).not.toContain('hover:border-[color:var(--app-accent)]')
   })
 
+  it('hides the connection status label on mobile', async () => {
+    workspaceMock.status = 'open'
+    const router = createTestRouter()
+    await router.push('/codex')
+    await router.isReady()
+
+    const wrapper = mountCodexView(router)
+
+    expect(wrapper.get('[data-codex-connection-status]').text()).toBe('Codex open')
+    expect(wrapper.get('[data-codex-connection-status]').classes()).toContain('max-sm:hidden')
+  })
+
   it('opens the mobile thread drawer and closes it after selecting a thread', async () => {
     const router = createTestRouter()
     await router.push('/codex')

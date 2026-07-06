@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import Popover from 'primevue/popover'
+import Select from 'primevue/select'
 
 import type {
   CodexConversationState,
@@ -18,6 +20,29 @@ import { apiPost } from '../../lib/api'
 import CodexHostPathPicker from './CodexHostPathPicker.vue'
 
 const draft = defineModel<string>({ required: true })
+
+type PermissionMode = 'ask' | 'guardian' | 'full'
+type PermissionOption = {
+  value: PermissionMode
+  label: string
+  mobileLabel: string
+  description: string
+  icon: string
+  tone: PermissionMode
+  approvalPolicy: 'on-request' | 'never'
+  approvalsReviewer: 'user' | 'guardian_subagent'
+  sandbox: 'workspace-write' | 'danger-full-access'
+}
+type RunLocationOption = {
+  value: string
+  label: string
+  subtitle: string
+  icon: string
+}
+type PopoverRef = {
+  toggle: (event: Event) => void
+  hide: () => void
+}
 
 const props = defineProps<{
   disabled?: boolean
@@ -43,7 +68,8 @@ const emit = defineEmits<{
 }>()
 
 const baseModelOptions = ['gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.2']
-const baseReasoningOptions = ['minimal', 'low', 'medium', 'high', 'xhigh']
+const baseReasoningOptions = ['low', 'medium', 'high', 'xhigh']
+const supportedReasoningOptions = new Set(baseReasoningOptions)
 const selectedModel = ref('')
 const selectedReasoningEffort = ref('')
 const goalTokenBudgetDraft = ref('')
@@ -52,23 +78,23 @@ const imageAttachments = ref<JsonRecord[]>([])
 const fileAttachments = ref<JsonRecord[]>([])
 const filePickerOpen = ref(false)
 const addMenuTrigger = ref<HTMLElement | null>(null)
-const permissionMenuTrigger = ref<HTMLElement | null>(null)
-const remoteMenuOpen = ref(false)
-const composerSettingsOpen = ref(false)
+const intelligencePopover = ref<PopoverRef | null>(null)
+const permissionPopover = ref<PopoverRef | null>(null)
 const addMenuOpen = ref(false)
-const permissionMenuOpen = ref(false)
 const addMenuStyle = ref<Record<string, string>>({})
-const permissionMenuStyle = ref<Record<string, string>>({})
-const selectedPermissionMode = ref<'ask' | 'guardian' | 'full'>('full')
+const selectedPermissionMode = ref<PermissionMode>('full')
 const remoteSwitchingId = ref<string | null>(null)
 const remoteSwitchError = ref('')
 const todoExpanded = ref(false)
 
-const permissionOptions = [
+const permissionOptions: PermissionOption[] = [
   {
     value: 'ask',
     label: 'Ask for approval',
+    mobileLabel: 'Ask',
     description: 'Always ask to edit external files and use the internet',
+    icon: 'pi pi-question-circle',
+    tone: 'ask',
     approvalPolicy: 'on-request',
     approvalsReviewer: 'user',
     sandbox: 'workspace-write',
@@ -76,7 +102,10 @@ const permissionOptions = [
   {
     value: 'guardian',
     label: 'Approve for me',
+    mobileLabel: 'Approve',
     description: 'Only ask for actions detected as potentially unsafe',
+    icon: 'pi pi-shield',
+    tone: 'guardian',
     approvalPolicy: 'on-request',
     approvalsReviewer: 'guardian_subagent',
     sandbox: 'workspace-write',
@@ -84,25 +113,42 @@ const permissionOptions = [
   {
     value: 'full',
     label: 'Full access',
+    mobileLabel: 'Full',
     description: 'Unrestricted access to the internet and any file on your computer',
+    icon: 'pi pi-exclamation-triangle',
+    tone: 'full',
     approvalPolicy: 'never',
     approvalsReviewer: 'user',
     sandbox: 'danger-full-access',
   },
-] as const
+]
+const fallbackPermissionOption = permissionOptions[2] as PermissionOption
 
 const latestModel = computed(() => props.state?.latestModel?.trim() || 'gpt-5.4')
-const latestReasoningEffort = computed(() => props.state?.latestReasoningEffort?.trim() || 'medium')
-const modelOptions = computed(() => optionItems([latestModel.value, ...baseModelOptions]))
+const latestReasoningEffort = computed(() =>
+  normalizeReasoningEffort(props.state?.latestReasoningEffort?.trim()),
+)
+const modelOptions = computed(() =>
+  optionItems([latestModel.value, ...baseModelOptions]).map((option) => ({
+    ...option,
+    label: compactModelLabel(option.value),
+  })),
+)
 const reasoningOptions = computed(() =>
-  optionItems([latestReasoningEffort.value, ...baseReasoningOptions]),
+  optionItems([latestReasoningEffort.value, ...baseReasoningOptions]).map((option) => ({
+    ...option,
+    label: reasoningLabel(option.value),
+  })),
 )
 const activeModel = computed(() => selectedModel.value || latestModel.value)
 const activeReasoningEffort = computed(() => selectedReasoningEffort.value || latestReasoningEffort.value)
-const activePermissionOption = computed(
+const intelligenceTriggerLabel = computed(
+  () => `${buttonModelLabel(activeModel.value)} ${compactReasoningLabel(activeReasoningEffort.value)}`,
+)
+const activePermissionOption = computed<PermissionOption>(
   () =>
     permissionOptions.find((option) => option.value === selectedPermissionMode.value) ??
-    permissionOptions[2],
+    fallbackPermissionOption,
 )
 const hasDraft = computed(() => draft.value.trim().length > 0)
 const hasPromptInput = computed(
@@ -187,6 +233,20 @@ const activeRunLocationLabel = computed(() =>
   activeRemoteConnection.value ? remoteTitle(activeRemoteConnection.value) : 'Local',
 )
 const showRunLocationPicker = computed(() => remoteConnections.value.length > 0)
+const runLocationOptions = computed<RunLocationOption[]>(() => [
+  {
+    value: '',
+    label: 'Local',
+    subtitle: 'Work locally',
+    icon: 'pi pi-desktop',
+  },
+  ...remoteConnections.value.map((connection) => ({
+    value: connection.id,
+    label: remoteTitle(connection),
+    subtitle: remoteSubtitle(connection),
+    icon: 'pi pi-server',
+  })),
+])
 const latestTodoList = computed(() => latestTodoListItem(props.state))
 const latestTodoItems = computed(() => todoItems(latestTodoList.value))
 const latestTodoSummary = computed(() => todoSummary(latestTodoList.value))
@@ -208,9 +268,7 @@ watch(
   () => {
     selectedModel.value = ''
     selectedReasoningEffort.value = ''
-    composerSettingsOpen.value = false
     addMenuOpen.value = false
-    permissionMenuOpen.value = false
     todoExpanded.value = false
   },
 )
@@ -222,9 +280,7 @@ watch(
     isGoalComposeMode.value = false
     imageAttachments.value = []
     fileAttachments.value = []
-    remoteMenuOpen.value = false
     addMenuOpen.value = false
-    permissionMenuOpen.value = false
   },
 )
 
@@ -327,40 +383,14 @@ async function toggleAddMenu() {
     return
   }
   addMenuOpen.value = !addMenuOpen.value
-  permissionMenuOpen.value = false
-  composerSettingsOpen.value = false
   if (addMenuOpen.value) {
     await nextTick()
     updateFloatingMenuPosition(addMenuTrigger.value, addMenuStyle, 320)
   }
 }
 
-async function togglePermissionMenu() {
-  if (props.busy || props.disabled) {
-    return
-  }
-  permissionMenuOpen.value = !permissionMenuOpen.value
-  addMenuOpen.value = false
-  composerSettingsOpen.value = false
-  if (permissionMenuOpen.value) {
-    await nextTick()
-    updateFloatingMenuPosition(permissionMenuTrigger.value, permissionMenuStyle, 360)
-  }
-}
-
-function toggleComposerSettings() {
-  if (props.busy || props.disabled) {
-    return
-  }
-  composerSettingsOpen.value = !composerSettingsOpen.value
-  addMenuOpen.value = false
-  permissionMenuOpen.value = false
-}
-
 function closeFloatingMenus() {
   addMenuOpen.value = false
-  permissionMenuOpen.value = false
-  composerSettingsOpen.value = false
 }
 
 function onDocumentClick(event: MouseEvent) {
@@ -371,11 +401,7 @@ function onDocumentClick(event: MouseEvent) {
   }
   if (
     target.closest('[data-codex-add-menu]') ||
-    target.closest('[data-codex-add-menu-trigger]') ||
-    target.closest('[data-codex-permission-menu]') ||
-    target.closest('[data-codex-permission-trigger]') ||
-    target.closest('[data-codex-composer-settings-menu]') ||
-    target.closest('[data-codex-composer-settings-trigger]')
+    target.closest('[data-codex-add-menu-trigger]')
   ) {
     return
   }
@@ -388,17 +414,9 @@ function onDocumentKeydown(event: KeyboardEvent) {
   }
 }
 
-function choosePermissionMode(mode: 'ask' | 'guardian' | 'full') {
-  selectedPermissionMode.value = mode
-  permissionMenuOpen.value = false
-}
-
 function repositionOpenMenus() {
   if (addMenuOpen.value) {
     updateFloatingMenuPosition(addMenuTrigger.value, addMenuStyle, 320)
-  }
-  if (permissionMenuOpen.value) {
-    updateFloatingMenuPosition(permissionMenuTrigger.value, permissionMenuStyle, 360)
   }
 }
 
@@ -428,6 +446,7 @@ function chooseModel(model: string) {
     return
   }
   selectedModel.value = model === latestModel.value ? '' : model
+  intelligencePopover.value?.hide()
 }
 
 function chooseReasoningEffort(reasoningEffort: string) {
@@ -435,6 +454,38 @@ function chooseReasoningEffort(reasoningEffort: string) {
     return
   }
   selectedReasoningEffort.value = reasoningEffort === latestReasoningEffort.value ? '' : reasoningEffort
+  intelligencePopover.value?.hide()
+}
+
+function choosePermissionMode(mode: PermissionMode) {
+  if (props.busy || props.disabled) {
+    return
+  }
+  selectedPermissionMode.value = mode
+  permissionPopover.value?.hide()
+}
+
+function chooseRunLocation(connectionId: string) {
+  if (connectionId === activeRemoteConnectionId.value) {
+    return
+  }
+  void activateRunLocation(connectionId)
+}
+
+function toggleIntelligenceMenu(event: Event) {
+  if (props.busy || props.disabled) {
+    return
+  }
+  addMenuOpen.value = false
+  intelligencePopover.value?.toggle(event)
+}
+
+function togglePermissionMenu(event: Event) {
+  if (props.busy || props.disabled) {
+    return
+  }
+  addMenuOpen.value = false
+  permissionPopover.value?.toggle(event)
 }
 
 async function activateRunLocation(connectionId: string) {
@@ -448,7 +499,6 @@ async function activateRunLocation(connectionId: string) {
       ? `/api/codex/remote-connections/${encodeURIComponent(connectionId)}/activate`
       : '/api/codex/remote-connections/activate-local'
     await apiPost<CodexRemoteConnectionsResponse>(path, {})
-    remoteMenuOpen.value = false
     emit('remoteConnectionChanged')
   } catch (error) {
     remoteSwitchError.value = error instanceof Error ? error.message : String(error)
@@ -625,6 +675,56 @@ function optionItems(values: string[]) {
     label: value,
     value,
   }))
+}
+
+function compactModelLabel(model: string) {
+  return model
+    .split('-')
+    .filter(Boolean)
+    .map((part, index) => {
+      if (index === 0 && part.toLowerCase() === 'gpt') {
+        return 'GPT'
+      }
+      return `${part.charAt(0).toUpperCase()}${part.slice(1).toLowerCase()}`
+    })
+    .join('-')
+}
+
+function buttonModelLabel(model: string) {
+  return model.split('-').filter(Boolean).slice(1).join('-') || compactModelLabel(model)
+}
+
+function reasoningLabel(reasoningEffort: string) {
+  const labels: Record<string, string> = {
+    low: 'Light',
+    medium: 'Medium',
+    high: 'High',
+    xhigh: 'Extra High',
+  }
+  return labels[reasoningEffort] ?? titleCase(reasoningEffort)
+}
+
+function compactReasoningLabel(reasoningEffort: string) {
+  const labels: Record<string, string> = {
+    low: 'Light',
+    medium: 'Med',
+    high: 'High',
+    xhigh: 'Extra',
+  }
+  return labels[reasoningEffort] ?? reasoningEffort
+}
+
+function normalizeReasoningEffort(reasoningEffort?: string) {
+  const normalized = reasoningEffort?.trim().toLowerCase() ?? ''
+  return supportedReasoningOptions.has(normalized) ? normalized : 'medium'
+}
+
+function titleCase(value: string) {
+  return value
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join(' ')
 }
 
 function latestTodoListItem(state: CodexConversationState | null) {
@@ -1092,18 +1192,18 @@ function goalProgressText(goal: CodexThreadGoal | null) {
         ></textarea>
 
         <div
-          class="composer-footer flex min-w-0 items-center justify-between gap-2"
+          class="composer-footer flex min-w-0 items-center justify-between gap-2 max-sm:gap-1"
           data-codex-composer-footer
         >
           <div
-            class="hide-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-visible"
+            class="hide-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-visible max-sm:gap-0.5"
             data-codex-composer-controls
           >
             <div class="relative shrink-0">
               <button
                 ref="addMenuTrigger"
                 type="button"
-                class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-xl font-light leading-none text-[color:var(--app-text-soft)] transition hover:bg-[rgba(21,94,99,0.06)] hover:text-[color:var(--app-text)] disabled:cursor-not-allowed disabled:opacity-45"
+                class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-xl font-light leading-none text-[color:var(--app-text-soft)] transition hover:bg-[rgba(21,94,99,0.06)] hover:text-[color:var(--app-text)] disabled:cursor-not-allowed disabled:opacity-45 max-sm:h-7 max-sm:w-7 max-sm:text-lg"
                 :disabled="busy || disabled"
                 :aria-expanded="addMenuOpen"
                 aria-label="Open composer actions"
@@ -1165,66 +1265,49 @@ function goalProgressText(goal: CodexThreadGoal | null) {
 
             <div
               v-if="showRunLocationPicker"
-              class="relative shrink-0"
+              class="shrink-0"
               data-codex-run-location-picker
             >
-              <button
-                type="button"
-                class="inline-flex h-8 max-w-40 items-center gap-1.5 rounded-lg px-2 text-sm font-semibold text-[color:var(--app-text)] transition hover:bg-[rgba(21,94,99,0.06)] disabled:cursor-not-allowed disabled:opacity-45 max-sm:max-w-28"
+              <Select
+                :model-value="activeRemoteConnectionId"
+                :options="runLocationOptions"
+                option-label="label"
+                option-value="value"
+                data-key="value"
+                append-to="body"
+                size="small"
+                checkmark
+                highlight-on-select
+                class="codex-composer-select codex-composer-select-compact"
                 :disabled="busy || disabled || remoteSwitchingId !== null"
                 aria-label="Select where to run the task"
-                :aria-expanded="remoteMenuOpen"
+                overlay-class="codex-composer-select-overlay"
                 data-codex-run-location-trigger
-                @click="remoteMenuOpen = !remoteMenuOpen"
+                @update:model-value="chooseRunLocation"
               >
-                <i :class="activeRemoteConnection ? 'pi pi-server' : 'pi pi-desktop'" class="text-[0.7rem]"></i>
-                <span class="min-w-0 truncate">{{ activeRunLocationLabel }}</span>
-                <i class="pi pi-chevron-down text-[0.55rem] text-[color:var(--app-text-soft)]"></i>
-              </button>
-              <div
-                v-if="remoteMenuOpen"
-                class="absolute bottom-full left-0 z-50 mb-1 grid w-72 max-w-[calc(100vw-2rem)] gap-1 rounded-lg border border-[color:var(--app-border)] bg-white p-1.5 shadow-xl"
-                data-codex-run-location-menu
-              >
-                <button
-                  type="button"
-                  class="grid grid-cols-[1rem_minmax(0,1fr)_1rem] items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition hover:bg-[rgba(21,94,99,0.06)] disabled:cursor-wait disabled:opacity-60"
-                  :class="!activeRemoteConnectionId ? 'font-semibold text-[color:var(--app-text)]' : 'text-[color:var(--app-text-soft)]'"
-                  :disabled="remoteSwitchingId !== null"
-                  data-codex-run-location-local
-                  @click="activateRunLocation('')"
-                >
-                  <i class="pi pi-desktop text-[0.68rem]"></i>
-                  <span class="truncate">Work locally</span>
-                  <i v-if="!activeRemoteConnectionId" class="pi pi-check text-[0.68rem] text-[color:var(--app-accent)]"></i>
-                </button>
-                <button
-                  v-for="connection in remoteConnections"
-                  :key="connection.id"
-                  type="button"
-                  class="grid grid-cols-[1rem_minmax(0,1fr)_1rem] items-center gap-2 rounded-md px-2 py-1.5 text-left transition hover:bg-[rgba(21,94,99,0.06)] disabled:cursor-wait disabled:opacity-60"
-                  :class="connection.id === activeRemoteConnectionId ? 'font-semibold text-[color:var(--app-text)]' : 'text-[color:var(--app-text-soft)]'"
-                  :disabled="remoteSwitchingId !== null"
-                  data-codex-run-location-remote
-                  @click="activateRunLocation(connection.id)"
-                >
-                  <i class="pi pi-server text-[0.68rem]"></i>
-                  <span class="min-w-0">
-                    <span class="block truncate text-sm">{{ remoteTitle(connection) }}</span>
-                    <span class="block truncate text-[0.68rem] font-normal text-[color:var(--app-text-soft)]">
-                      {{ remoteSubtitle(connection) }}
+                <template #value="{ value }">
+                  <span class="inline-flex min-w-0 items-center gap-1.5">
+                    <i :class="value ? 'pi pi-server' : 'pi pi-desktop'" class="text-[0.7rem] text-[color:var(--app-text-soft)] max-sm:text-[0.62rem]"></i>
+                    <span class="min-w-0 truncate">{{ activeRunLocationLabel }}</span>
+                  </span>
+                </template>
+                <template #option="{ option }">
+                  <span class="grid min-w-0 grid-cols-[1rem_minmax(0,1fr)] items-center gap-2" :data-codex-run-location-remote="option.value || undefined" :data-codex-run-location-local="option.value ? undefined : ''">
+                    <i :class="option.icon" class="text-[0.68rem] text-[color:var(--app-text-soft)]"></i>
+                    <span class="min-w-0">
+                      <span class="block truncate text-sm font-semibold text-[color:var(--app-text)]">{{ option.label }}</span>
+                      <span class="block truncate text-[0.68rem] font-normal text-[color:var(--app-text-soft)]">{{ option.subtitle }}</span>
                     </span>
                   </span>
-                  <i v-if="connection.id === activeRemoteConnectionId" class="pi pi-check text-[0.68rem] text-[color:var(--app-accent)]"></i>
-                </button>
-                <p
-                  v-if="remoteSwitchError"
-                  class="m-0 line-clamp-2 px-2 py-1 text-[0.68rem] text-red-700"
-                  data-codex-run-location-error
-                >
-                  {{ remoteSwitchError }}
-                </p>
-              </div>
+                </template>
+              </Select>
+              <p
+                v-if="remoteSwitchError"
+                class="m-0 line-clamp-1 px-1 pt-1 text-[0.68rem] text-red-700"
+                data-codex-run-location-error
+              >
+                {{ remoteSwitchError }}
+              </p>
             </div>
 
             <div
@@ -1233,54 +1316,49 @@ function goalProgressText(goal: CodexThreadGoal | null) {
               data-codex-permission-pill
             >
               <button
-                ref="permissionMenuTrigger"
                 type="button"
-                class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-2 text-sm font-semibold text-[color:var(--app-accent)] transition hover:bg-[rgba(21,94,99,0.06)] disabled:cursor-not-allowed disabled:opacity-45"
+                :class="[
+                  'codex-permission-trigger inline-flex h-8 max-w-44 items-center gap-1.5 rounded-lg px-2 text-sm font-semibold transition hover:bg-[rgba(21,94,99,0.06)] disabled:cursor-not-allowed disabled:opacity-45 max-sm:h-7 max-sm:max-w-28 max-sm:gap-1 max-sm:px-1.5 max-sm:text-xs',
+                  `codex-permission-tone-${selectedPermissionMode}`,
+                ]"
                 :disabled="busy || disabled"
-                :aria-expanded="permissionMenuOpen"
                 aria-label="Change permissions"
                 data-codex-permission-trigger
+                data-codex-permission-select
                 @click="togglePermissionMenu"
               >
-                <i class="pi pi-shield text-[0.72rem]"></i>
-                <span>{{ activePermissionOption.label }}</span>
-                <i class="pi pi-chevron-down text-[0.55rem]"></i>
+                <i :class="activePermissionOption.icon" class="text-[0.58rem] max-sm:text-[0.5rem]"></i>
+                <span class="min-w-0 truncate max-sm:hidden">{{ activePermissionOption.label }}</span>
+                <span class="hidden min-w-0 truncate max-sm:inline">{{ activePermissionOption.mobileLabel }}</span>
+                <i class="pi pi-chevron-down text-[0.4rem] text-[color:var(--app-text-soft)] max-sm:text-[0.36rem]"></i>
               </button>
-              <div
-                v-if="permissionMenuOpen"
-                class="fixed z-[100] grid w-[22rem] max-w-[calc(100vw-1.5rem)] gap-1 rounded-xl border border-[color:var(--app-border)] bg-white p-2 text-sm shadow-xl"
-                :style="permissionMenuStyle"
+              <Popover
+                ref="permissionPopover"
+                append-to="body"
+                class="codex-permission-popover"
                 data-codex-permission-menu
               >
-                <div class="px-2 pb-1">
-                  <p class="m-0 font-semibold text-[color:var(--app-text)]">How should Codex actions be approved?</p>
+                <div class="grid gap-1" aria-label="Permission settings">
                   <button
+                    v-for="option in permissionOptions"
+                    :key="option.value"
                     type="button"
-                    class="mt-0.5 p-0 text-left text-xs font-semibold text-[color:var(--app-accent)] hover:underline"
-                    data-codex-permission-learn-more
+                    class="codex-permission-choice"
+                    :class="selectedPermissionMode === option.value ? 'codex-permission-choice-active' : ''"
+                    data-codex-permission-option
+                    @click="choosePermissionMode(option.value)"
                   >
-                    Learn more
+                    <i :class="option.icon" class="mt-1 text-[0.72rem]" :data-permission-tone="option.tone"></i>
+                    <span class="min-w-0">
+                      <span class="block truncate text-sm font-semibold text-[color:var(--app-text)]">{{ option.label }}</span>
+                      <span class="block text-[0.68rem] font-normal leading-4 text-[color:var(--app-text-soft)]">
+                        {{ option.description }}
+                      </span>
+                    </span>
+                    <i v-if="selectedPermissionMode === option.value" class="pi pi-check text-[0.68rem] text-[color:var(--app-text-soft)]"></i>
                   </button>
                 </div>
-                <button
-                  v-for="option in permissionOptions"
-                  :key="option.value"
-                  type="button"
-                  class="grid grid-cols-[1rem_minmax(0,1fr)_1rem] items-start gap-2 rounded-lg px-2 py-1.5 text-left transition hover:bg-[rgba(21,94,99,0.06)]"
-                  :class="selectedPermissionMode === option.value ? 'font-semibold text-[color:var(--app-text)]' : 'text-[color:var(--app-text-soft)]'"
-                  data-codex-permission-option
-                  @click="choosePermissionMode(option.value)"
-                >
-                  <i class="pi pi-shield mt-1 text-[0.72rem]" :class="selectedPermissionMode === option.value ? 'text-[color:var(--app-accent)]' : 'text-[color:var(--app-text-soft)]'"></i>
-                  <span>
-                    <span class="block">{{ option.label }}</span>
-                    <span class="block text-[0.68rem] font-normal text-[color:var(--app-text-soft)]">
-                      {{ option.description }}
-                    </span>
-                  </span>
-                  <i v-if="selectedPermissionMode === option.value" class="pi pi-check mt-1 text-[0.68rem] text-[color:var(--app-accent)]"></i>
-                </button>
-              </div>
+              </Popover>
             </div>
 
             <input
@@ -1297,9 +1375,9 @@ function goalProgressText(goal: CodexThreadGoal | null) {
 
           </div>
 
-          <div class="flex shrink-0 items-center justify-end gap-1">
+          <div class="flex shrink-0 items-center justify-end gap-1 max-sm:gap-0.5">
             <div
-              class="group/context relative inline-flex h-8 w-8 max-w-full items-center justify-center rounded-lg px-2 text-xs text-[color:var(--app-text-soft)] outline-none transition hover:bg-[rgba(21,94,99,0.06)] focus-visible:bg-[rgba(21,94,99,0.06)] focus-visible:ring-2 focus-visible:ring-[rgba(21,94,99,0.18)]"
+              class="group/context relative inline-flex h-8 w-8 max-w-full shrink-0 items-center justify-center rounded-lg px-2 text-xs text-[color:var(--app-text-soft)] outline-none transition hover:bg-[rgba(21,94,99,0.06)] focus-visible:bg-[rgba(21,94,99,0.06)] focus-visible:ring-2 focus-visible:ring-[rgba(21,94,99,0.18)] max-sm:h-7 max-sm:w-7 max-sm:px-1"
               :aria-label="contextHoverTitle"
               tabindex="0"
               data-codex-context-window
@@ -1319,70 +1397,67 @@ function goalProgressText(goal: CodexThreadGoal | null) {
                 {{ contextHoverTitle }}
               </span>
             </div>
-            <div class="relative shrink-0">
+            <div class="relative min-w-0 shrink-0">
               <button
                 type="button"
-                class="inline-flex h-8 max-w-40 items-center gap-1.5 rounded-lg px-2 text-sm font-semibold text-[color:var(--app-text)] transition hover:bg-[rgba(21,94,99,0.06)] disabled:cursor-not-allowed disabled:opacity-45 max-sm:max-w-28"
+                class="codex-intelligence-trigger inline-flex h-8 max-w-44 items-center gap-1.5 rounded-lg px-2 text-sm font-semibold text-[color:var(--app-text)] transition hover:bg-[rgba(21,94,99,0.06)] disabled:cursor-not-allowed disabled:opacity-45 max-sm:h-7 max-sm:max-w-28 max-sm:gap-1 max-sm:px-1.5 max-sm:text-xs"
                 :disabled="busy || disabled"
-                :aria-expanded="composerSettingsOpen"
                 aria-label="Select model and reasoning effort"
                 :title="`${activeModel} · ${activeReasoningEffort}`"
                 data-codex-intelligence-trigger
-                data-codex-composer-settings-trigger
-                @click="toggleComposerSettings"
+                @click="toggleIntelligenceMenu"
               >
-                <i class="pi pi-microchip-ai text-[0.72rem] text-[color:var(--app-text-soft)]"></i>
-                <span class="min-w-0 truncate">{{ activeModel }}</span>
-                <i class="pi pi-chevron-down text-[0.55rem] text-[color:var(--app-text-soft)]"></i>
+                <span class="min-w-0 truncate">{{ intelligenceTriggerLabel }}</span>
+                <i class="pi pi-chevron-down text-[0.48rem] text-[color:var(--app-text-soft)] max-sm:text-[0.42rem]"></i>
               </button>
-              <div
-                v-if="composerSettingsOpen"
-                class="absolute bottom-full right-0 z-50 mb-2 grid w-72 max-w-[calc(100vw-2rem)] gap-3 rounded-xl border border-[color:var(--app-border)] bg-white p-3 text-sm shadow-xl"
-                data-codex-composer-settings-menu
+              <Popover
+                ref="intelligencePopover"
+                append-to="body"
+                class="codex-intelligence-popover"
+                data-codex-intelligence-popover
               >
-                <div class="grid gap-1.5" data-codex-model-select>
-                  <div class="flex items-center gap-1.5 px-1 text-xs font-semibold uppercase tracking-wide text-[color:var(--app-text-soft)]">
-                    <i class="pi pi-microchip-ai text-[0.68rem]"></i>
-                    <span>Model</span>
-                  </div>
-                  <button
-                    v-for="option in modelOptions"
-                    :key="option.value"
-                    type="button"
-                    class="grid grid-cols-[minmax(0,1fr)_1rem] items-center gap-2 rounded-lg px-2 py-1.5 text-left transition hover:bg-[rgba(21,94,99,0.06)] disabled:cursor-not-allowed disabled:opacity-45"
-                    :class="activeModel === option.value ? 'font-semibold text-[color:var(--app-text)]' : 'text-[color:var(--app-text-soft)]'"
-                    :disabled="busy || disabled"
-                    data-codex-model-option
-                    @click="chooseModel(option.value)"
-                  >
-                    <span class="truncate">{{ option.label }}</span>
-                    <i v-if="activeModel === option.value" class="pi pi-check text-[0.68rem] text-[color:var(--app-accent)]"></i>
-                  </button>
+                <div class="grid gap-3" aria-label="Model and reasoning settings" data-codex-intelligence-menu>
+                  <section class="grid gap-1.5" data-codex-reasoning-section>
+                    <p class="codex-intelligence-section-title">Reasoning</p>
+                    <div class="grid gap-1">
+                      <button
+                        v-for="option in reasoningOptions"
+                        :key="option.value"
+                        type="button"
+                        class="codex-intelligence-choice"
+                        :class="activeReasoningEffort === option.value ? 'codex-intelligence-choice-active' : ''"
+                        data-codex-reasoning-option
+                        @click="chooseReasoningEffort(option.value)"
+                      >
+                        <span class="min-w-0 truncate">{{ option.label }}</span>
+                        <i v-if="activeReasoningEffort === option.value" class="pi pi-check"></i>
+                      </button>
+                    </div>
+                  </section>
+
+                  <section class="grid gap-1.5" data-codex-model-section>
+                    <p class="codex-intelligence-section-title">Model</p>
+                    <div class="grid gap-1">
+                      <button
+                        v-for="option in modelOptions"
+                        :key="option.value"
+                        type="button"
+                        class="codex-intelligence-choice"
+                        :class="activeModel === option.value ? 'codex-intelligence-choice-active' : ''"
+                        data-codex-model-option
+                        @click="chooseModel(option.value)"
+                      >
+                        <span class="min-w-0 truncate">{{ option.label }}</span>
+                        <i v-if="activeModel === option.value" class="pi pi-check"></i>
+                      </button>
+                    </div>
+                  </section>
                 </div>
-                <div class="grid gap-1.5" data-codex-reasoning-select>
-                  <div class="flex items-center gap-1.5 px-1 text-xs font-semibold uppercase tracking-wide text-[color:var(--app-text-soft)]">
-                    <i class="pi pi-sparkles text-[0.68rem]"></i>
-                    <span>Reasoning</span>
-                  </div>
-                  <button
-                    v-for="option in reasoningOptions"
-                    :key="option.value"
-                    type="button"
-                    class="grid grid-cols-[minmax(0,1fr)_1rem] items-center gap-2 rounded-lg px-2 py-1.5 text-left capitalize transition hover:bg-[rgba(21,94,99,0.06)] disabled:cursor-not-allowed disabled:opacity-45"
-                    :class="activeReasoningEffort === option.value ? 'font-semibold text-[color:var(--app-text)]' : 'text-[color:var(--app-text-soft)]'"
-                    :disabled="busy || disabled"
-                    data-codex-reasoning-option
-                    @click="chooseReasoningEffort(option.value)"
-                  >
-                    <span class="truncate">{{ option.label }}</span>
-                    <i v-if="activeReasoningEffort === option.value" class="pi pi-check text-[0.68rem] text-[color:var(--app-accent)]"></i>
-                  </button>
-                </div>
-              </div>
+              </Popover>
             </div>
             <button
               type="button"
-              class="inline-flex h-10 min-w-10 items-center justify-center rounded-full px-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-45"
+              class="inline-flex h-10 min-w-10 items-center justify-center rounded-full px-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-45 max-sm:h-9 max-sm:min-w-9 max-sm:px-2.5"
               :class="primaryAction === 'stop'
                 ? 'border border-red-200 bg-white text-red-700 hover:bg-red-50'
                 : 'bg-[color:var(--app-accent)] text-white hover:brightness-95'

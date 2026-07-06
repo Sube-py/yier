@@ -75,10 +75,10 @@ function startMobileThread(projectPath: string) {
             <!-- <span class="max-[380px]:sr-only">Threads</span> -->
           </button>
           <span
-            class="h-2.5 w-2.5 shrink-0 rounded-full"
+            class="h-2.5 w-2.5 shrink-0 rounded-full max-sm:hidden"
             :class="codex.status === 'open' ? 'bg-emerald-500' : codex.status === 'connecting' ? 'bg-amber-500' : 'bg-red-500'"
           ></span>
-          <span class="truncate text-sm font-semibold text-[color:var(--app-text)]">
+          <span class="truncate text-sm font-semibold text-[color:var(--app-text)] max-sm:hidden" data-codex-connection-status>
             Codex {{ codex.status }}
           </span>
         </div>

@@ -581,11 +581,26 @@ function itemImages(item: JsonRecord) {
   ].flatMap((value) => (Array.isArray(value) ? value : []))
   return candidates
     .filter(isRecord)
-    .map((value) => ({
-      src: firstString(value.url, value.imageUrl, value.image_url, value.src, value.path),
-      alt: firstString(value.name, value.filename, value.alt) || 'Image',
-    }))
+    .map((value) => {
+      const directSrc = firstString(value.url, value.imageUrl, value.image_url, value.src)
+      const path = firstString(value.path, value.filePath, value.file_path)
+      return {
+        src: directSrc || codexImagePathUrl(path),
+        alt: firstString(value.name, value.filename, value.alt) || 'Image',
+      }
+    })
     .filter((image) => image.src)
+}
+
+function codexImagePathUrl(path: string, download = false) {
+  if (!path) {
+    return ''
+  }
+  const query = new URLSearchParams({ path })
+  if (download) {
+    query.set('download', 'true')
+  }
+  return `/api/codex/image?${query.toString()}`
 }
 
 function imageViewPath(item: JsonRecord) {
@@ -600,14 +615,7 @@ function imageViewName(item: JsonRecord) {
 
 function codexImageUrl(item: JsonRecord, download = false) {
   const path = imageViewPath(item)
-  if (!path) {
-    return ''
-  }
-  const query = new URLSearchParams({ path })
-  if (download) {
-    query.set('download', 'true')
-  }
-  return `/api/codex/image?${query.toString()}`
+  return codexImagePathUrl(path, download)
 }
 
 function imageGalleryItems(item: JsonRecord) {

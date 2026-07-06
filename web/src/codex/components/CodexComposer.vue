@@ -620,7 +620,18 @@ function imageAttachmentName(attachment: JsonRecord, index: number) {
 
 function imageAttachmentSrc(attachment: JsonRecord) {
   const src = attachment.imageUrl ?? attachment.image_url ?? attachment.url ?? attachment.src
-  return typeof src === 'string' ? src : ''
+  if (typeof src === 'string' && src) {
+    return src
+  }
+  return codexImagePathUrl(fileAttachmentPath(attachment))
+}
+
+function codexImagePathUrl(path: string) {
+  if (!path) {
+    return ''
+  }
+  const query = new URLSearchParams({ path })
+  return `/api/codex/image?${query.toString()}`
 }
 
 function fileAttachmentName(attachment: JsonRecord, index: number) {

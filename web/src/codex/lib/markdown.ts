@@ -14,6 +14,7 @@ const markdownCopyButtonLabel = 'Copy code block'
 const markdownCopiedButtonLabel = 'Copied'
 const markdownCopyButtonIcon = '<i class="pi pi-copy" aria-hidden="true"></i>'
 const markdownCopiedButtonIcon = '<i class="pi pi-check" aria-hidden="true"></i>'
+const imageFileExtensionPattern = /\.(?:png|jpe?g|gif|webp|bmp)(?:[?#].*)?$/i
 
 function highlightMarkdownCode(content: string, language = '') {
   const { requestedLanguage, highlightLanguage } = resolveHighlightLanguage(language)
@@ -71,6 +72,42 @@ markdown.renderer.rules.fence = (tokens, idx) => {
 markdown.renderer.rules.code_block = (tokens, idx) => {
   const token = tokens[idx]
   return renderMarkdownCodeBlock(highlightMarkdownCode(token?.content ?? '').content, ' class="hljs"')
+}
+
+function isExternalOrDataUrl(value: string) {
+  return /^(?:[a-z][a-z\d+.-]*:|\/\/)/i.test(value)
+}
+
+function isHostImagePath(value: string) {
+  if (!imageFileExtensionPattern.test(value) || isExternalOrDataUrl(value)) {
+    return false
+  }
+  return (
+    value.startsWith('/Users/') ||
+    value.startsWith('/private/') ||
+    value.startsWith('/tmp/') ||
+    value.startsWith('/var/') ||
+    /^\/(?:home|mnt|Volumes)\//.test(value) ||
+    /^[a-z]:[\\/]/i.test(value) ||
+    value.startsWith('~/')
+  )
+}
+
+function codexMarkdownImageUrl(path: string) {
+  const query = new URLSearchParams({ path })
+  return `/api/codex/image?${query.toString()}`
+}
+
+markdown.renderer.rules.image = (tokens, idx, options, env, self) => {
+  const token = tokens[idx]
+  const src = token?.attrGet('src') ?? ''
+  if (src && isHostImagePath(src)) {
+    token?.attrSet('src', codexMarkdownImageUrl(src))
+  }
+  if (token) {
+    token.attrSet('alt', self.renderInlineAsText(token.children ?? [], options, env))
+  }
+  return self.renderToken(tokens, idx, options)
 }
 
 export function useCodexMarkdown() {

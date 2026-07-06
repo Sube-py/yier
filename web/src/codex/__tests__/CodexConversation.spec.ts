@@ -99,6 +99,23 @@ describe('CodexConversation', () => {
     expect(wrapper.get('[data-copy-markdown-code]').attributes('aria-label')).toBe('Copied')
   })
 
+  it('renders markdown image paths through the backend image endpoint', () => {
+    const imagePath = '/Users/sube/me/yier/output/playwright/codex-imageview-ui-preview.png'
+    const wrapper = mountConversation([
+      {
+        id: 'agent-1',
+        type: 'agentMessage',
+        text: `截好了，当前 imageView 展开后的 UI 是这样：\n\n![imageView UI](${imagePath})`,
+      },
+    ])
+
+    const image = wrapper.get('.markdown-prose img')
+    expect(image.attributes('src')).toBe(
+      `/api/codex/image?path=${encodeURIComponent(imagePath)}`,
+    )
+    expect(image.attributes('alt')).toBe('imageView UI')
+  })
+
   it('keeps long user messages constrained to the right-aligned shell', () => {
     const wrapper = mountConversation([
       {
@@ -794,6 +811,24 @@ describe('CodexConversation', () => {
     expect(wrapper.get('[data-codex-sent-as-goal]').text()).toContain('sent as goal')
     expect(wrapper.get('[data-codex-goal-achieved]').text()).toContain('Goal achieved in 8m 42s')
     expect(wrapper.find('[data-codex-fork-message]').exists()).toBe(true)
+  })
+
+  it('renders user image attachment paths through the backend image endpoint', () => {
+    const imagePath = '/Users/sube/me/yier/output/playwright/local-preview.png'
+    const wrapper = mountConversation([
+      {
+        id: 'user-1',
+        type: 'userMessage',
+        content: [
+          { type: 'text', text: 'See attached image' },
+          { type: 'image', path: imagePath, name: 'local-preview.png' },
+        ],
+      },
+    ])
+
+    expect(wrapper.get('[data-codex-message-image]').attributes('src')).toBe(
+      `/api/codex/image?path=${encodeURIComponent(imagePath)}`,
+    )
   })
 
   it('renders turn input with slash-command goal as a goal user message', () => {

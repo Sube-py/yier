@@ -129,6 +129,7 @@ export interface CodexTurnState extends JsonRecord {
   status?: string
   items?: JsonRecord[]
   turnStartedAtMs?: number | null
+  firstTurnWorkItemStartedAtMs?: number | null
   finalAssistantStartedAtMs?: number | null
   durationMs?: number | null
   error?: unknown

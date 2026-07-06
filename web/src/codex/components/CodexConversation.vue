@@ -352,22 +352,27 @@ function formatPreciseDuration(ms: number | null | undefined) {
 }
 
 function turnElapsedMs(turn: CodexTurnState) {
+  const firstTurnWorkItemStartedAtMs = coerceMs(turn.firstTurnWorkItemStartedAtMs)
+  const startedAtMs = coerceMs(turn.turnStartedAtMs)
+  const finalAssistantStartedAtMs = coerceMs(turn.finalAssistantStartedAtMs)
+  if (firstTurnWorkItemStartedAtMs && finalAssistantStartedAtMs) {
+    return Math.max(finalAssistantStartedAtMs - firstTurnWorkItemStartedAtMs, 0)
+  }
+
+  if (firstTurnWorkItemStartedAtMs && isTurnInProgress(turn)) {
+    return Math.max(nowMs.value - firstTurnWorkItemStartedAtMs, 0)
+  }
+
   const durationMs = firstNumber(turn.durationMs)
   if (durationMs != null) {
     return Math.max(durationMs, 0)
   }
 
-  const startedAtMs = coerceMs(turn.turnStartedAtMs)
-  if (!startedAtMs) {
-    return null
-  }
-
-  const finalAssistantStartedAtMs = coerceMs(turn.finalAssistantStartedAtMs)
-  if (finalAssistantStartedAtMs) {
+  if (startedAtMs && finalAssistantStartedAtMs) {
     return Math.max(finalAssistantStartedAtMs - startedAtMs, 0)
   }
 
-  if (isTurnInProgress(turn)) {
+  if (startedAtMs && isTurnInProgress(turn)) {
     return Math.max(nowMs.value - startedAtMs, 0)
   }
 

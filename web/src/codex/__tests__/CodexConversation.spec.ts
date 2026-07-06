@@ -233,6 +233,34 @@ describe('CodexConversation', () => {
     expect(wrapper.get('[data-codex-assistant-message]').text()).toContain('Ready')
   })
 
+  it('uses the first work item start time for completed work duration before falling back to turn duration', () => {
+    const wrapper = mountConversation(
+      [
+        {
+          id: 'command-1',
+          type: 'commandExecution',
+          command: 'pnpm test',
+          aggregatedOutput: 'ok',
+        },
+        {
+          id: 'agent-1',
+          type: 'agentMessage',
+          text: 'Ready',
+        },
+      ],
+      {
+        turnStartedAtMs: 1_756_800_000_000,
+        firstTurnWorkItemStartedAtMs: 1_756_800_016_000,
+        finalAssistantStartedAtMs: 1_756_800_069_000,
+        durationMs: 90_000,
+      },
+    )
+
+    expect(wrapper.text()).toContain('Worked for 53s')
+    expect(wrapper.text()).not.toContain('Worked for 1m 9s')
+    expect(wrapper.text()).not.toContain('Worked for 1m 30s')
+  })
+
   it('preserves turn item order and folds non-final agent messages into work', async () => {
     const wrapper = mountConversation(
       [

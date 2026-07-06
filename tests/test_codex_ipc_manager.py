@@ -1702,6 +1702,50 @@ def test_codex_controller_rejects_invalid_filesystem_paths(tmp_path: Path) -> No
         assert "Path not found" in missing_response.json()["detail"]
 
 
+def test_codex_controller_serves_host_images(tmp_path: Path) -> None:
+    factory = FakeSessionFactory()
+    _, client = build_app(tmp_path, factory)
+    image_path = tmp_path / "preview.png"
+    image_bytes = b"\x89PNG\r\n\x1a\n"
+    image_path.write_bytes(image_bytes)
+
+    with client:
+        preview_response = client.get(
+            "/api/codex/image",
+            params={"path": str(image_path)},
+        )
+        download_response = client.get(
+            "/api/codex/image",
+            params={"path": str(image_path), "download": "true"},
+        )
+
+        assert preview_response.status_code == 200
+        assert preview_response.content == image_bytes
+        assert preview_response.headers["content-type"].startswith("image/png")
+        assert "inline" in preview_response.headers["content-disposition"]
+
+        assert download_response.status_code == 200
+        assert download_response.content == image_bytes
+        assert "attachment" in download_response.headers["content-disposition"]
+        assert "preview.png" in download_response.headers["content-disposition"]
+
+
+def test_codex_controller_rejects_non_image_file_preview(tmp_path: Path) -> None:
+    factory = FakeSessionFactory()
+    _, client = build_app(tmp_path, factory)
+    text_path = tmp_path / "notes.txt"
+    text_path.write_text("not an image\n", encoding="utf-8")
+
+    with client:
+        response = client.get(
+            "/api/codex/image",
+            params={"path": str(text_path)},
+        )
+
+        assert response.status_code == 400
+        assert "not a supported image" in response.json()["detail"]
+
+
 def test_codex_websocket_embed_token_allows_unauthenticated_access(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

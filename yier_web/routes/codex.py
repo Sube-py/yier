@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import mimetypes
 import os
 import string
 from pathlib import Path
@@ -11,6 +12,7 @@ from litestar import Controller, get, post, put, websocket
 from litestar.connection import WebSocket
 from litestar.datastructures import State
 from litestar.exceptions import HTTPException, WebSocketDisconnect
+from litestar.response import File
 from litestar.status_codes import (
     HTTP_400_BAD_REQUEST,
     HTTP_403_FORBIDDEN,
@@ -160,6 +162,44 @@ def _list_host_filesystem(path: str | None) -> CodexFilesystemResponse:
     )
 
 
+def _host_image_response(path: str, *, download: bool = False) -> File:
+    requested_path = Path(path).expanduser()
+    try:
+        image_path = requested_path.resolve(strict=True)
+    except OSError as exc:
+        raise HTTPException(
+            status_code=HTTP_404_NOT_FOUND,
+            detail=f"Image not found: {requested_path}",
+        ) from exc
+
+    if not image_path.is_file():
+        raise HTTPException(
+            status_code=HTTP_400_BAD_REQUEST,
+            detail=f"Path is not a file: {image_path}",
+        )
+
+    media_type, _ = mimetypes.guess_type(image_path.name)
+    allowed_image_types = {
+        "image/png",
+        "image/jpeg",
+        "image/gif",
+        "image/webp",
+        "image/bmp",
+    }
+    if media_type not in allowed_image_types:
+        raise HTTPException(
+            status_code=HTTP_400_BAD_REQUEST,
+            detail=f"Path is not a supported image: {image_path}",
+        )
+
+    return File(
+        path=image_path,
+        filename=image_path.name,
+        media_type=media_type,
+        content_disposition_type="attachment" if download else "inline",
+    )
+
+
 class CodexController(Controller):
     path = "/codex"
     ws_command_factory = CodexWsCommandStrategyFactory()
@@ -302,6 +342,10 @@ class CodexController(Controller):
     @get("/filesystem")
     async def get_filesystem(self, path: str | None = None) -> CodexFilesystemResponse:
         return _list_host_filesystem(path)
+
+    @get("/image")
+    async def get_image(self, path: str, download: bool = False) -> File:
+        return _host_image_response(path, download=download)
 
     @get("/threads/{thread_id:str}/state")
     async def get_thread_state(

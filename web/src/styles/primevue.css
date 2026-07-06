@@ -317,6 +317,52 @@
     min-width: 0;
   }
 
+  .codex-image-gallery-toolbar {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.75rem 0.75rem 0.75rem 1rem;
+    color: white;
+    background: rgba(12, 25, 28, 0.62);
+    backdrop-filter: blur(14px);
+  }
+
+  .codex-image-gallery-dialog.p-dialog {
+    overflow: hidden;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 0.9rem;
+    background: rgba(10, 16, 18, 0.92);
+  }
+
+  .codex-image-gallery-dialog .p-dialog-header-actions {
+    margin-left: 0.25rem;
+  }
+
+  .codex-image-gallery-dialog .p-dialog-close-button {
+    color: white;
+  }
+
+  .codex-image-gallery-dialog .p-dialog-close-button:hover {
+    background: rgba(255, 255, 255, 0.12);
+    color: white;
+  }
+
+  .codex-image-gallery-content {
+    background: rgba(10, 16, 18, 0.92);
+  }
+
+  .codex-image-gallery-root.p-galleria {
+    background: transparent;
+  }
+
+  .codex-image-gallery-item {
+    display: grid;
+    place-items: center;
+    min-height: min(76vh, 42rem);
+    padding: 1rem;
+  }
+
   @media (max-width: 640px) {
     .codex-composer-select.p-select {
       min-height: 1.75rem;
@@ -373,6 +419,12 @@
       min-height: 1.85rem;
       padding-inline: 0.45rem;
       font-size: 0.78rem;
+    }
+
+    .codex-image-gallery-toolbar {
+      gap: 0.5rem;
+      padding: 0.65rem 0.65rem 0.65rem 0.75rem;
+      font-size: 0.82rem;
     }
   }
 

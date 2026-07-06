@@ -1,4 +1,5 @@
 import { mount, type VueWrapper } from '@vue/test-utils'
+import PrimeVue from 'primevue/config'
 import { nextTick } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -30,6 +31,9 @@ function mountConversation(
   return mount(CodexConversation, {
     props: {
       state: createState(items, turnOverrides),
+    },
+    global: {
+      plugins: [PrimeVue],
     },
     attachTo: document.body,
   })
@@ -267,6 +271,71 @@ describe('CodexConversation', () => {
     expect(wrapper.find('[data-codex-command-output]').exists()).toBe(false)
   })
 
+  it('folds image view items into work with preview and download actions', async () => {
+    const imagePath = '/Users/sube/me/yier/output/playwright/codex-mobile.png'
+    const wrapper = mountConversation(
+      [
+        {
+          id: 'user-1',
+          type: 'userMessage',
+          content: 'Show the screenshot',
+        },
+        {
+          id: 'call-image-1',
+          type: 'imageView',
+          path: imagePath,
+        },
+        {
+          id: 'agent-final-1',
+          type: 'agentMessage',
+          phase: 'final_answer',
+          text: 'Looks good.',
+        },
+      ],
+      {
+        durationMs: 1_000,
+      },
+    )
+
+    const visibleBlocks = wrapper.findAll(
+      '[data-codex-user-message], [data-codex-work-section], [data-codex-assistant-message], [data-codex-unknown-item]',
+    )
+    expect(visibleBlocks.map((block) => block.attributes())).toMatchObject([
+      { 'data-codex-user-message': '' },
+      { 'data-codex-work-section': '' },
+      { 'data-codex-assistant-message': '' },
+    ])
+    expect(wrapper.find('[data-codex-unknown-item]').exists()).toBe(false)
+    expect(wrapper.find('[data-codex-image-view]').exists()).toBe(false)
+
+    await wrapper.get('[data-codex-work-toggle]').trigger('click')
+
+    const preview = wrapper.get('[data-codex-image-preview]')
+    expect(wrapper.get('[data-codex-image-view]').text()).toBe('')
+    expect(preview.attributes('src')).toBe(
+      `/api/codex/image?path=${encodeURIComponent(imagePath)}`,
+    )
+    expect(wrapper.find('[data-codex-image-download]').exists()).toBe(false)
+    expect(wrapper.find('[data-codex-image-open]').exists()).toBe(false)
+    expect(wrapper.find('[data-codex-raw]').exists()).toBe(false)
+
+    await wrapper.get('[data-codex-image-preview-link]').trigger('click')
+    await nextTick()
+
+    const gallery = document.body.querySelector('[data-codex-image-gallery]')
+    const galleryDownload = document.body.querySelector('[data-codex-image-gallery-download]')
+    const galleryImage = document.body.querySelector('[data-codex-image-gallery-image]')
+
+    expect(gallery).not.toBeNull()
+    expect(galleryImage?.getAttribute('src')).toBe(
+      `/api/codex/image?path=${encodeURIComponent(imagePath)}`,
+    )
+    expect(galleryDownload?.getAttribute('href')).toBe(
+      `/api/codex/image?path=${encodeURIComponent(imagePath)}&download=true`,
+    )
+    expect(galleryDownload?.getAttribute('download')).toBe('codex-mobile.png')
+  })
+
   it('does not render explicit commentary as the final assistant response', async () => {
     const wrapper = mountConversation([
       {
@@ -318,6 +387,9 @@ describe('CodexConversation', () => {
             },
           ],
         },
+      },
+      global: {
+        plugins: [PrimeVue],
       },
       attachTo: document.body,
     })
@@ -708,6 +780,9 @@ describe('CodexConversation', () => {
           ],
         },
       },
+      global: {
+        plugins: [PrimeVue],
+      },
       attachTo: document.body,
     })
 
@@ -744,6 +819,9 @@ describe('CodexConversation', () => {
             },
           ],
         },
+      },
+      global: {
+        plugins: [PrimeVue],
       },
       attachTo: document.body,
     })
@@ -791,6 +869,48 @@ describe('CodexConversation', () => {
     expect(wrapper.get('[data-codex-assistant-message]').text()).toContain(
       'No actionable issues found.',
     )
+  })
+
+  it('treats official non-message item types as known work instead of raw unknown json', async () => {
+    const wrapper = mountConversation([
+      {
+        id: 'hook-1',
+        type: 'hookPrompt',
+        prompt: 'Run the hook',
+      },
+      {
+        id: 'subagent-1',
+        type: 'subAgentActivity',
+        agentName: 'Explorer',
+        summary: 'Inspected app sources',
+      },
+      {
+        id: 'sleep-1',
+        type: 'sleep',
+        durationMs: 100,
+      },
+      {
+        id: 'image-generation-1',
+        type: 'imageGeneration',
+        prompt: 'A mobile screenshot',
+      },
+      {
+        id: 'agent-1',
+        type: 'agentMessage',
+        phase: 'final_answer',
+        text: 'Done.',
+      },
+    ])
+
+    expect(wrapper.find('[data-codex-unknown-item]').exists()).toBe(false)
+
+    await wrapper.get('[data-codex-work-toggle]').trigger('click')
+    await wrapper.get('[data-codex-activity-toggle]').trigger('click')
+
+    expect(wrapper.get('[data-codex-work-detail]').text()).toContain('Received hook prompt')
+    expect(wrapper.get('[data-codex-work-detail]').text()).toContain('Used subagent')
+    expect(wrapper.get('[data-codex-work-detail]').text()).toContain('Slept')
+    expect(wrapper.get('[data-codex-work-detail]').text()).toContain('Generated image')
   })
 
   it('renders unknown items as contained raw json', () => {

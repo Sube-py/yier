@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import Dialog from 'primevue/dialog'
+import Galleria from 'primevue/galleria'
 
 import type { CodexConversationState, CodexTurnState, JsonRecord } from '../types'
 import { compactJson, formatTimestamp, isRecord, statusLabel, textFromInput } from '../lib/format'
@@ -16,7 +18,7 @@ const emit = defineEmits<{
 
 type ConversationItemKind = 'user' | 'assistant' | 'work' | 'system' | 'unknown'
 type TurnBlockKind = 'user' | 'work' | 'assistant' | 'system' | 'unknown'
-type WorkRenderUnitKind = 'message' | 'activity' | 'todo' | 'context'
+type WorkRenderUnitKind = 'message' | 'activity' | 'todo' | 'context' | 'image'
 
 interface ConversationItemView {
   id: string
@@ -63,6 +65,7 @@ interface FileChangeView {
 }
 
 const workItemTypes = new Set([
+  'hookPrompt',
   'reasoning',
   'commandExecution',
   'fileChange',
@@ -72,7 +75,11 @@ const workItemTypes = new Set([
   'dynamicToolCall',
   'mcpToolCall',
   'collabAgentToolCall',
+  'subAgentActivity',
   'userInputResponse',
+  'sleep',
+  'imageGeneration',
+  'imageView',
   'contextCompaction',
   'context-compaction',
   'todo-list',
@@ -94,6 +101,7 @@ const conversationBody = ref<HTMLElement | null>(null)
 const shouldStickToBottom = ref(true)
 const expandedWorkByTurnKey = ref<Record<string, boolean>>({})
 const expandedItemById = ref<Record<string, boolean>>({})
+const imagePreviewByItemId = ref<Record<string, boolean>>({})
 const nowMs = ref(Date.now())
 const bottomThreshold = 72
 let nowTimer: number | null = null
@@ -409,6 +417,17 @@ function toggleItem(itemId: string) {
   }
 }
 
+function isImagePreviewVisible(itemId: string) {
+  return imagePreviewByItemId.value[itemId] ?? false
+}
+
+function setImagePreviewVisible(itemId: string, visible: boolean) {
+  imagePreviewByItemId.value = {
+    ...imagePreviewByItemId.value,
+    [itemId]: visible,
+  }
+}
+
 function workRenderUnits(items: ConversationItemView[]): WorkRenderUnit[] {
   const units: WorkRenderUnit[] = []
   let activityItems: ConversationItemView[] = []
@@ -435,6 +454,11 @@ function workRenderUnits(items: ConversationItemView[]): WorkRenderUnit[] {
     if (type === 'agentMessage' || type === 'plan') {
       flushActivity()
       units.push({ id: item.id, kind: 'message', items: [item] })
+      continue
+    }
+    if (type === 'imageView') {
+      flushActivity()
+      units.push({ id: item.id, kind: 'image', items: [item] })
       continue
     }
     if (isTodoListItem(item.item)) {
@@ -500,6 +524,12 @@ function itemText(item: JsonRecord) {
   if (type === 'collabAgentToolCall') {
     return firstString(item.prompt, item.aggregatedOutput, outputText(item.result))
   }
+  if (type === 'subAgentActivity') {
+    return firstString(item.summary, item.text, outputText(item.content), outputText(item.items))
+  }
+  if (type === 'hookPrompt') {
+    return firstString(item.prompt, item.text, outputText(item.content), outputText(item.input))
+  }
   if (type === 'fileChange') {
     return fileChangePaths(item).join('\n')
   }
@@ -517,6 +547,15 @@ function itemText(item: JsonRecord) {
   }
   if (type === 'git') {
     return gitDetail(item)
+  }
+  if (type === 'imageView') {
+    return imageViewPath(item)
+  }
+  if (type === 'imageGeneration') {
+    return firstString(item.prompt, item.text, item.path, outputText(item.content), outputText(item.result))
+  }
+  if (type === 'sleep') {
+    return 'Sleeping'
   }
   return firstString(item.text, outputText(item.content), outputText(item.input))
 }
@@ -547,6 +586,45 @@ function itemImages(item: JsonRecord) {
       alt: firstString(value.name, value.filename, value.alt) || 'Image',
     }))
     .filter((image) => image.src)
+}
+
+function imageViewPath(item: JsonRecord) {
+  return firstString(item.path, item.filePath, item.file_path)
+}
+
+function imageViewName(item: JsonRecord) {
+  const path = imageViewPath(item)
+  const parts = path.split(/[\\/]/).filter(Boolean)
+  return parts[parts.length - 1] || path || 'Image'
+}
+
+function codexImageUrl(item: JsonRecord, download = false) {
+  const path = imageViewPath(item)
+  if (!path) {
+    return ''
+  }
+  const query = new URLSearchParams({ path })
+  if (download) {
+    query.set('download', 'true')
+  }
+  return `/api/codex/image?${query.toString()}`
+}
+
+function imageGalleryItems(item: JsonRecord) {
+  const imageUrl = codexImageUrl(item)
+  if (!imageUrl) {
+    return []
+  }
+  return [
+    {
+      itemImageSrc: imageUrl,
+      thumbnailImageSrc: imageUrl,
+      alt: imageViewName(item),
+      title: imageViewName(item),
+      path: imageViewPath(item),
+      downloadUrl: codexImageUrl(item, true),
+    },
+  ]
 }
 
 async function copyMessageText(text: string) {
@@ -786,8 +864,23 @@ function workItemTitle(item: JsonRecord) {
   if (type === 'collabAgentToolCall') {
     return `${isItemInProgress(item) ? 'Starting' : 'Used'} ${humanizeName(toolName(item))}`
   }
+  if (type === 'subAgentActivity') {
+    return firstString(item.title, item.name) || 'Used subagent'
+  }
   if (type === 'userInputResponse') {
     return 'Answered request'
+  }
+  if (type === 'hookPrompt') {
+    return 'Received hook prompt'
+  }
+  if (type === 'sleep') {
+    return isItemInProgress(item) ? 'Sleeping' : 'Slept'
+  }
+  if (type === 'imageGeneration') {
+    return isItemInProgress(item) ? 'Generating image' : 'Generated image'
+  }
+  if (type === 'imageView') {
+    return 'Viewed image'
   }
   return humanizeName(type)
 }
@@ -817,6 +910,15 @@ function workItemSubject(item: JsonRecord) {
   }
   if (type === 'dynamicToolCall' || type === 'mcpToolCall' || type === 'collabAgentToolCall') {
     return toolName(item)
+  }
+  if (type === 'subAgentActivity') {
+    return firstString(item.name, item.agentName, item.agent_name)
+  }
+  if (type === 'imageView') {
+    return imageViewName(item)
+  }
+  if (type === 'imageGeneration') {
+    return firstString(item.prompt, item.path)
   }
   return ''
 }
@@ -941,6 +1043,8 @@ function activitySummary(items: ConversationItemView[]) {
     toolCalls: 0,
     runningToolCalls: 0,
     agentCalls: 0,
+    viewedImages: 0,
+    generatedImages: 0,
   }
 
   for (const view of items) {
@@ -978,6 +1082,12 @@ function activitySummary(items: ConversationItemView[]) {
       }
     } else if (type === 'collabAgentToolCall') {
       counts.agentCalls += 1
+    } else if (type === 'subAgentActivity') {
+      counts.agentCalls += 1
+    } else if (type === 'imageView') {
+      counts.viewedImages += 1
+    } else if (type === 'imageGeneration') {
+      counts.generatedImages += 1
     }
   }
 
@@ -993,6 +1103,8 @@ function activitySummary(items: ConversationItemView[]) {
     countSegment(counts.runningToolCalls, 'Calling a tool', 'calling # tools'),
     countSegment(counts.toolCalls, 'Called a tool', 'called # tools'),
     countSegment(counts.agentCalls, 'Used an agent', 'used # agents'),
+    countSegment(counts.viewedImages, 'Viewed an image', 'viewed # images'),
+    countSegment(counts.generatedImages, 'Generated an image', 'generated # images'),
   ].filter((segment): segment is string => Boolean(segment))
 
   if (!segments.length) {
@@ -1506,6 +1618,90 @@ const justDebug = false
                 </div>
 
                 <div
+                  v-else-if="unit.kind === 'image'"
+                  class="min-w-0 py-1"
+                  data-codex-image-view
+                >
+                  <button
+                    v-if="codexImageUrl(unit.items[0]?.item ?? {})"
+                    type="button"
+                    class="group block max-w-[min(18rem,100%)] min-w-0 overflow-hidden rounded-md text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(21,94,99,0.18)]"
+                    aria-label="Preview image"
+                    data-codex-image-preview-link
+                    @click="setImagePreviewVisible(unit.items[0]?.id ?? unit.id, true)"
+                  >
+                    <span class="relative block min-w-0">
+                      <img
+                        class="max-h-44 w-full object-contain"
+                        :src="codexImageUrl(unit.items[0]?.item ?? {})"
+                        :alt="imageViewName(unit.items[0]?.item ?? {})"
+                        loading="lazy"
+                        data-codex-image-preview
+                      />
+                      <span
+                        class="absolute inset-0 bg-black/0 transition group-hover:bg-black/10 group-focus-visible:bg-black/10"
+                      >
+                      </span>
+                    </span>
+                  </button>
+                  <Dialog
+                    v-if="codexImageUrl(unit.items[0]?.item ?? {})"
+                    :visible="isImagePreviewVisible(unit.items[0]?.id ?? unit.id)"
+                    :modal="true"
+                    :dismissable-mask="true"
+                    :style="{ width: 'min(92vw, 72rem)' }"
+                    :content-style="{ padding: '0' }"
+                    :pt="{
+                      root: { class: 'codex-image-gallery-dialog', 'data-codex-image-gallery': '' },
+                      header: { class: 'codex-image-gallery-toolbar' },
+                      content: { class: 'codex-image-gallery-content' },
+                    }"
+                    data-codex-image-gallery
+                    @update:visible="setImagePreviewVisible(unit.items[0]?.id ?? unit.id, $event)"
+                  >
+                    <template #header>
+                      <div class="flex min-w-0 flex-1 items-center gap-2">
+                        <i class="pi pi-image shrink-0 text-[0.82rem]"></i>
+                        <span class="min-w-0 truncate font-medium">
+                          {{ imageViewName(unit.items[0]?.item ?? {}) }}
+                        </span>
+                      </div>
+                      <a
+                        class="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md px-3 text-sm font-medium text-white transition hover:bg-white/12 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
+                        :href="codexImageUrl(unit.items[0]?.item ?? {}, true)"
+                        :download="imageViewName(unit.items[0]?.item ?? {})"
+                        data-codex-image-gallery-download
+                        @click.stop
+                      >
+                        <i class="pi pi-download text-[0.78rem]"></i>
+                        <span>Download</span>
+                      </a>
+                    </template>
+                    <Galleria
+                      :value="imageGalleryItems(unit.items[0]?.item ?? {})"
+                      :active-index="0"
+                      :show-thumbnails="false"
+                      :show-item-navigators="false"
+                      :circular="false"
+                      :container-style="{ width: '100%' }"
+                      :pt="{
+                        root: { class: 'codex-image-gallery-root' },
+                        item: { class: 'codex-image-gallery-item' },
+                      }"
+                    >
+                      <template #item="{ item: galleryItem }">
+                        <img
+                          class="max-h-[78vh] max-w-[90vw] object-contain"
+                          :src="galleryItem.itemImageSrc"
+                          :alt="galleryItem.alt"
+                          data-codex-image-gallery-image
+                        />
+                      </template>
+                    </Galleria>
+                  </Dialog>
+                </div>
+
+                <div
                   v-else-if="unit.kind === 'todo'"
                   class="min-w-0 rounded-lg bg-[rgba(255,255,255,0.58)] px-2.5 py-2 text-sm text-[color:var(--app-text-soft)]"
                   data-codex-todo-list
@@ -1658,7 +1854,7 @@ const justDebug = false
               </span>
               <span class="font-mono font-semibold text-[color:var(--app-text)]">
                 <span v-if="file.linesAdded" class="text-emerald-700">+{{ file.linesAdded }}</span>
-                <span v-if="file.linesAdded && file.linesRemoved"> </span>
+                <span v-if="file.linesAdded && file.linesRemoved"> / </span>
                 <span v-if="file.linesRemoved" class="text-red-700">-{{ file.linesRemoved }}</span>
               </span>
             </div>

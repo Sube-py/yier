@@ -1007,6 +1007,41 @@ describe('CodexConversation', () => {
     expect(wrapper.get('[data-codex-work-detail]').text()).toContain('Generated image')
   })
 
+  it('renders steer items as work instead of raw json', async () => {
+    const wrapper = mountConversation([
+      {
+        id: 'user-1',
+        type: 'userMessage',
+        content: 'Start the task',
+      },
+      {
+        id: 'steer-1',
+        type: 'steer',
+        input: [{ type: 'text', text: 'Focus on the failing test' }],
+      },
+      {
+        id: 'steered-1',
+        type: 'steered',
+      },
+      {
+        id: 'agent-1',
+        type: 'agentMessage',
+        phase: 'final_answer',
+        text: 'Done.',
+      },
+    ])
+
+    expect(wrapper.find('[data-codex-unknown-item]').exists()).toBe(false)
+
+    await wrapper.get('[data-codex-work-toggle]').trigger('click')
+    expect(wrapper.get('[data-codex-work-activity]').text()).toContain('Steered conversation')
+
+    await wrapper.get('[data-codex-activity-toggle]').trigger('click')
+
+    expect(wrapper.get('[data-codex-work-detail]').text()).toContain('Focus on the failing test')
+    expect(wrapper.find('[data-codex-raw]').exists()).toBe(false)
+  })
+
   it('renders unknown items as contained raw json', () => {
     const wrapper = mountConversation([
       {

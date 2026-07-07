@@ -88,6 +88,9 @@ const workItemTypes = new Set([
   'sleep',
   'imageGeneration',
   'imageView',
+  'steer',
+  'steered',
+  'steeringUserMessage',
   'contextCompaction',
   'context-compaction',
   'todo-list',
@@ -96,7 +99,7 @@ const workItemTypes = new Set([
 ])
 
 const responseItemTypes = new Set(['agentMessage', 'plan'])
-const userItemTypes = new Set(['userMessage', 'steeringUserMessage'])
+const userItemTypes = new Set(['userMessage'])
 
 const turns = computed<CodexTurnState[]>(() =>
   Array.isArray(props.state?.turns) ? props.state.turns : [],
@@ -289,6 +292,10 @@ function itemType(item: JsonRecord) {
   return typeof item.type === 'string' && item.type ? item.type : 'unknown'
 }
 
+function isSteeringMessageType(type: string) {
+  return type === 'steer' || type === 'steeringUserMessage'
+}
+
 function itemId(item: JsonRecord, index: number) {
   return typeof item.id === 'string' && item.id ? item.id : `${itemType(item)}-${index}`
 }
@@ -468,8 +475,14 @@ function itemText(item: JsonRecord) {
   if (type === 'userMessage') {
     return goalDisplayText(rawUserMessageText(item))
   }
-  if (type === 'steeringUserMessage') {
-    return outputText(item.input || item.content)
+  if (isSteeringMessageType(type)) {
+    return firstString(
+      outputText(item.input),
+      outputText(item.content),
+      item.message,
+      item.prompt,
+      item.text,
+    )
   }
   if (type === 'agentMessage') {
     return firstString(item.text, outputText(item.content))
@@ -866,6 +879,9 @@ function workItemTitle(item: JsonRecord) {
   if (type === 'imageView') {
     return 'Viewed image'
   }
+  if (isSteeringMessageType(type) || type === 'steered') {
+    return 'Steered conversation'
+  }
   return humanizeName(type)
 }
 
@@ -904,6 +920,9 @@ function workItemSubject(item: JsonRecord) {
   if (type === 'imageGeneration') {
     return firstString(item.prompt, item.path)
   }
+  if (isSteeringMessageType(type)) {
+    return firstString(itemText(item))
+  }
   return ''
 }
 
@@ -931,6 +950,9 @@ function workItemDetail(item: JsonRecord) {
   }
   if (type === 'git') {
     return gitDetail(item)
+  }
+  if (type === 'steered') {
+    return ''
   }
   return itemText(item)
 }
@@ -983,6 +1005,7 @@ function activitySummary(items: ConversationItemView[]) {
     agentCalls: 0,
     viewedImages: 0,
     generatedImages: 0,
+    steers: 0,
   }
 
   for (const view of items) {
@@ -1026,6 +1049,8 @@ function activitySummary(items: ConversationItemView[]) {
       counts.viewedImages += 1
     } else if (type === 'imageGeneration') {
       counts.generatedImages += 1
+    } else if (isSteeringMessageType(type) || type === 'steered') {
+      counts.steers += 1
     }
   }
 
@@ -1043,6 +1068,7 @@ function activitySummary(items: ConversationItemView[]) {
     countSegment(counts.agentCalls, 'Used an agent', 'used # agents'),
     countSegment(counts.viewedImages, 'Viewed an image', 'viewed # images'),
     countSegment(counts.generatedImages, 'Generated an image', 'generated # images'),
+    countSegment(counts.steers, 'Steered conversation', 'steered conversation # times'),
   ].filter((segment): segment is string => Boolean(segment))
 
   if (!segments.length) {
@@ -1203,7 +1229,7 @@ function reportLinesLabel(report: TurnReport) {
 }
 
 function shouldRenderMarkdown(item: JsonRecord) {
-  return ['userMessage', 'steeringUserMessage', 'agentMessage', 'plan'].includes(itemType(item))
+  return ['userMessage', 'agentMessage', 'plan'].includes(itemType(item))
 }
 
 function shouldShowUnknownJson(item: JsonRecord) {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import Dialog from 'primevue/dialog'
 import Galleria from 'primevue/galleria'
 
@@ -65,6 +65,11 @@ interface TurnReport {
   changedFiles: FileChangeView[]
 }
 
+interface VirtualTurnView {
+  turnView: TurnView
+  originalIndex: number
+}
+
 interface FileChangeView {
   path: string
   action: 'created' | 'edited' | 'deleted' | 'renamed' | 'changed'
@@ -100,6 +105,10 @@ const workItemTypes = new Set([
 
 const responseItemTypes = new Set(['agentMessage', 'plan'])
 const userItemTypes = new Set(['userMessage'])
+const turnVirtualizationThreshold = 30
+const estimatedTurnHeightPx = 720
+const virtualTurnGapPx = 24
+const virtualOverscanPx = 2400
 
 const turns = computed<CodexTurnState[]>(() =>
   Array.isArray(props.state?.turns) ? props.state.turns : [],
@@ -107,37 +116,185 @@ const turns = computed<CodexTurnState[]>(() =>
 const turnViews = computed<TurnView[]>(() =>
   turns.value.map((turn, index) => turnView(turn, index)),
 )
+const isTurnVirtualized = computed(() => turnViews.value.length > turnVirtualizationThreshold)
 const { renderMarkdown, onMarkdownClick } = useCodexMarkdown()
 const conversationBody = ref<HTMLElement | null>(null)
 const shouldStickToBottom = ref(true)
 const expandedWorkByTurnKey = ref<Record<string, boolean>>({})
 const expandedItemById = ref<Record<string, boolean>>({})
 const imagePreviewByItemId = ref<Record<string, boolean>>({})
+const measuredTurnHeights = ref<Record<string, number>>({})
+const virtualScrollTop = ref(0)
+const virtualViewportHeight = ref(900)
 const bottomThreshold = 72
+let measureFrame: number | null = null
+let resizeObserver: ResizeObserver | null = null
+
+function turnMeasuredHeight(turnView: TurnView) {
+  return measuredTurnHeights.value[turnView.key] ?? estimatedTurnHeightPx
+}
+
+const virtualTurnMetrics = computed(() => {
+  let offset = 0
+  const metrics = turnViews.value.map((turnView, index) => {
+    const height = turnMeasuredHeight(turnView)
+    const start = offset
+    const end = start + height
+    offset = end + (index === turnViews.value.length - 1 ? 0 : virtualTurnGapPx)
+    return {
+      start,
+      end,
+      height,
+    }
+  })
+  return {
+    metrics,
+    totalHeight: offset,
+  }
+})
+
+const virtualTurnWindow = computed(() => {
+  if (!isTurnVirtualized.value) {
+    return {
+      startIndex: 0,
+      endIndex: Math.max(turnViews.value.length - 1, 0),
+      topSpacerHeight: 0,
+      bottomSpacerHeight: 0,
+    }
+  }
+
+  const { metrics, totalHeight } = virtualTurnMetrics.value
+  if (!metrics.length) {
+    return {
+      startIndex: 0,
+      endIndex: -1,
+      topSpacerHeight: 0,
+      bottomSpacerHeight: 0,
+    }
+  }
+
+  const viewportStart = Math.max(virtualScrollTop.value - virtualOverscanPx, 0)
+  const viewportEnd = virtualScrollTop.value + virtualViewportHeight.value + virtualOverscanPx
+  let startIndex = metrics.findIndex((metric) => metric.end >= viewportStart)
+  if (startIndex < 0) {
+    startIndex = metrics.length - 1
+  }
+  let endIndex = metrics.findIndex((metric) => metric.start > viewportEnd)
+  if (endIndex < 0) {
+    endIndex = metrics.length - 1
+  } else {
+    endIndex = Math.max(endIndex - 1, startIndex)
+  }
+
+  return {
+    startIndex,
+    endIndex,
+    topSpacerHeight: metrics[startIndex]?.start ?? 0,
+    bottomSpacerHeight: Math.max(totalHeight - (metrics[endIndex]?.end ?? totalHeight), 0),
+  }
+})
+
+const visibleTurnViews = computed<VirtualTurnView[]>(() => {
+  if (!isTurnVirtualized.value) {
+    return turnViews.value.map((turnView, originalIndex) => ({ turnView, originalIndex }))
+  }
+
+  const { startIndex, endIndex } = virtualTurnWindow.value
+  if (endIndex < startIndex) {
+    return []
+  }
+
+  return turnViews.value
+    .slice(startIndex, endIndex + 1)
+    .map((turnView, offset) => ({ turnView, originalIndex: startIndex + offset }))
+})
+
+const virtualTopSpacerHeight = computed(() => virtualTurnWindow.value.topSpacerHeight)
+const virtualBottomSpacerHeight = computed(() => virtualTurnWindow.value.bottomSpacerHeight)
 
 function isNearBottom(element: HTMLElement) {
   return element.scrollHeight - element.scrollTop - element.clientHeight <= bottomThreshold
+}
+
+function updateVirtualViewport() {
+  const element = conversationBody.value
+  if (!element) {
+    return
+  }
+  virtualScrollTop.value = element.scrollTop
+  virtualViewportHeight.value = element.clientHeight || virtualViewportHeight.value
+}
+
+function scheduleTurnMeasurement() {
+  if (measureFrame != null || typeof window === 'undefined') {
+    return
+  }
+  measureFrame = window.requestAnimationFrame(() => {
+    measureFrame = null
+    measureVisibleTurns()
+  })
+}
+
+function measureVisibleTurns() {
+  const element = conversationBody.value
+  if (!element) {
+    return
+  }
+
+  const nextHeights = { ...measuredTurnHeights.value }
+  let changed = false
+  element.querySelectorAll<HTMLElement>('[data-codex-turn-key]').forEach((turnElement) => {
+    const key = turnElement.dataset.codexTurnKey
+    if (!key) {
+      return
+    }
+    const height = Math.ceil(turnElement.getBoundingClientRect().height)
+    if (height <= 0) {
+      return
+    }
+    const previousHeight = nextHeights[key] ?? estimatedTurnHeightPx
+    if (previousHeight !== height) {
+      nextHeights[key] = height
+      changed = true
+    }
+  })
+
+  if (changed) {
+    measuredTurnHeights.value = nextHeights
+  }
+}
+
+function resetTurnMeasurements() {
+  measuredTurnHeights.value = {}
 }
 
 function onConversationScroll() {
   if (!conversationBody.value) {
     return
   }
+  updateVirtualViewport()
   shouldStickToBottom.value = isNearBottom(conversationBody.value)
+  scheduleTurnMeasurement()
 }
 
 async function scrollToBottomIfNeeded() {
   await nextTick()
+  updateVirtualViewport()
+  scheduleTurnMeasurement()
   if (!conversationBody.value || !shouldStickToBottom.value) {
     return
   }
   conversationBody.value.scrollTop = conversationBody.value.scrollHeight
+  updateVirtualViewport()
+  await nextTick()
+  scheduleTurnMeasurement()
 }
 
 async function resetBottomStickiness() {
   shouldStickToBottom.value = true
   expandedWorkByTurnKey.value = {}
   expandedItemById.value = {}
+  resetTurnMeasurements()
   await scrollToBottomIfNeeded()
 }
 
@@ -158,8 +315,12 @@ function itemKind(item: JsonRecord): ConversationItemKind {
   return 'unknown'
 }
 
+function turnItems(turn: CodexTurnState) {
+  return Array.isArray(turn.items) ? turn.items.filter(isRecord) : []
+}
+
 function turnView(turn: CodexTurnState, index: number): TurnView {
-  const rawItems = Array.isArray(turn.items) ? turn.items : []
+  const rawItems = turnItems(turn)
   const finalAssistantIndex = finalAssistantItemIndex(rawItems)
   const hasReviewMode = rawItems.some(isReviewModeItem)
   const blocks: TurnBlockView[] = []
@@ -242,7 +403,7 @@ function turnView(turn: CodexTurnState, index: number): TurnView {
 }
 
 function turnInputUserMessage(turn: CodexTurnState, index: number): ConversationItemView | null {
-  if (Array.isArray(turn.items) && turn.items.some((item) => itemKind(item) === 'user')) {
+  if (turnItems(turn).some((item) => itemKind(item) === 'user')) {
     return null
   }
   const params = isRecord(turn.params) ? turn.params : null
@@ -352,7 +513,7 @@ function formatDuration(ms: number | null | undefined) {
 }
 
 function firstTurnWorkItemStartedAtMsFromItems(turn: CodexTurnState) {
-  const items = Array.isArray(turn.items) ? turn.items : []
+  const items = turnItems(turn)
   for (const item of items) {
     if (!workItemTypes.has(itemType(item))) {
       continue
@@ -1247,7 +1408,26 @@ function turnKey(turn: CodexTurnState, index: number) {
 }
 
 onMounted(async () => {
+  updateVirtualViewport()
+  if (typeof ResizeObserver !== 'undefined') {
+    resizeObserver = new ResizeObserver(() => {
+      updateVirtualViewport()
+      scheduleTurnMeasurement()
+    })
+    if (conversationBody.value) {
+      resizeObserver.observe(conversationBody.value)
+    }
+  }
   await scrollToBottomIfNeeded()
+})
+
+onBeforeUnmount(() => {
+  if (measureFrame != null) {
+    window.cancelAnimationFrame(measureFrame)
+    measureFrame = null
+  }
+  resizeObserver?.disconnect()
+  resizeObserver = null
 })
 
 watch(
@@ -1261,6 +1441,13 @@ watch(
 watch(
   () => props.state?.turns,
   async () => {
+    const validKeys = new Set(turnViews.value.map((turnView) => turnView.key))
+    const nextHeights = Object.fromEntries(
+      Object.entries(measuredTurnHeights.value).filter(([key]) => validKeys.has(key)),
+    )
+    if (Object.keys(nextHeights).length !== Object.keys(measuredTurnHeights.value).length) {
+      measuredTurnHeights.value = nextHeights
+    }
     await scrollToBottomIfNeeded()
   },
   { deep: true, flush: 'post' },
@@ -1272,7 +1459,7 @@ const justDebug = false
 <template>
   <section
     ref="conversationBody"
-    class="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-clip bg-[rgba(255,253,247,0.38)] px-5 py-4 max-sm:px-2.5"
+    class="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-clip bg-[rgba(255,253,247,0.38)] px-5 py-4 [overflow-anchor:none] max-sm:px-2.5"
     data-codex-conversation-body
     @scroll="onConversationScroll"
   >
@@ -1296,17 +1483,29 @@ const justDebug = false
       </div>
     </div>
 
-    <div v-else class="mx-auto grid w-full max-w-5xl min-w-0 gap-6 overflow-x-clip max-sm:gap-5">
+    <div
+      v-else
+      class="mx-auto grid w-full max-w-5xl min-w-0 gap-6 overflow-x-clip max-sm:gap-5"
+      :data-codex-virtualized-turns="isTurnVirtualized ? 'true' : undefined"
+    >
+      <div
+        v-if="virtualTopSpacerHeight > 0"
+        :style="{ height: `${virtualTopSpacerHeight}px` }"
+        aria-hidden="true"
+        data-codex-turn-top-spacer
+      ></div>
       <section
-        v-for="(turnView, turnIndex) in turnViews"
+        v-for="{ turnView, originalIndex } in visibleTurnViews"
         :key="turnView.key"
-        class="grid min-w-0 gap-3 overflow-x-clip border-b border-[color:var(--app-border)] pb-6 last:border-b-0"
+        class="grid min-w-0 gap-3 overflow-x-clip border-b border-[color:var(--app-border)] pb-6 [contain-intrinsic-size:auto_720px] [content-visibility:auto] last:border-b-0"
         data-codex-turn
+        :data-codex-turn-key="turnView.key"
+        :data-codex-turn-index="originalIndex"
       >
         <div
           class="flex min-w-0 flex-wrap items-center gap-2 text-[0.74rem] text-[color:var(--app-text-soft)]"
         >
-          <span class="font-semibold text-[color:var(--app-text)]"> Turn {{ turnIndex + 1 }} </span>
+          <span class="font-semibold text-[color:var(--app-text)]"> Turn {{ originalIndex + 1 }} </span>
           <span v-if="justDebug">{{ statusLabel(turnView.turn.status) }}</span>
           <code v-if="justDebug && turnView.turn.turnId" class="truncate">{{
             turnView.turn.turnId
@@ -1858,8 +2057,13 @@ const justDebug = false
             </div>
           </div>
         </div>
-
       </section>
+      <div
+        v-if="virtualBottomSpacerHeight > 0"
+        :style="{ height: `${virtualBottomSpacerHeight}px` }"
+        aria-hidden="true"
+        data-codex-turn-bottom-spacer
+      ></div>
     </div>
   </section>
 </template>

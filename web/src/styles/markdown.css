@@ -101,7 +101,7 @@
     overflow-x: auto;
     overflow-y: auto;
     overscroll-behavior-x: contain;
-    overscroll-behavior-y: contain;
+    overscroll-behavior-y: auto;
     -webkit-overflow-scrolling: touch;
     color: #f4f7f8;
   }

@@ -1059,6 +1059,20 @@ describe('CodexConversation', () => {
     expect(raw.text()).toContain('"ok": true')
   })
 
+  it('ignores null turn items from persisted conversation state', () => {
+    const wrapper = mountConversation([
+      null as unknown as Record<string, unknown>,
+      {
+        id: 'agent-1',
+        type: 'agentMessage',
+        text: 'Still renders',
+      },
+    ])
+
+    expect(wrapper.find('[data-codex-unknown-item]').exists()).toBe(false)
+    expect(wrapper.get('[data-codex-assistant-message]').text()).toContain('Still renders')
+  })
+
   it('scrolls to the bottom when the conversation opens', async () => {
     const wrapper = mountConversation([
       {
@@ -1144,4 +1158,62 @@ describe('CodexConversation', () => {
 
     expect(element.scrollTop).toBe(1400)
   })
+
+  it('virtualizes long conversations at the turn level', async () => {
+    const turns = Array.from({ length: 80 }, (_, index): CodexTurnState => ({
+      turnId: `turn-${index + 1}`,
+      status: 'completed',
+      turnStartedAtMs: 1_700_000_000_000 + index,
+      items: [
+        {
+          id: `user-${index + 1}`,
+          type: 'userMessage',
+          content: `Prompt ${index + 1}`,
+        },
+        {
+          id: `agent-${index + 1}`,
+          type: 'agentMessage',
+          text: `Answer ${index + 1}`,
+        },
+      ],
+    }))
+    const wrapper = mount(CodexConversation, {
+      props: {
+        state: {
+          id: 'thread-long',
+          turns,
+        },
+      },
+      global: {
+        plugins: [PrimeVue],
+      },
+      attachTo: document.body,
+    })
+    const element = scrollContainer(wrapper)
+    setScrollMetrics(element, { scrollHeight: 80 * 744, clientHeight: 600 })
+
+    element.scrollTop = 0
+    await wrapper.get('[data-codex-conversation-body]').trigger('scroll')
+    await flushScrollWatchers()
+
+    const initialTurns = wrapper.findAll('[data-codex-turn]')
+    expect(wrapper.get('[data-codex-virtualized-turns]').attributes('data-codex-virtualized-turns')).toBe('true')
+    expect(initialTurns.length).toBeGreaterThan(0)
+    expect(initialTurns.length).toBeLessThan(80)
+    expect(wrapper.find('[data-codex-turn-bottom-spacer]').exists()).toBe(true)
+
+    element.scrollTop = 60 * 744
+    await wrapper.get('[data-codex-conversation-body]').trigger('scroll')
+    await nextTick()
+
+    const visibleIndexes = wrapper
+      .findAll('[data-codex-turn]')
+      .map((turn) => Number(turn.attributes('data-codex-turn-index')))
+
+    expect(visibleIndexes.some((index) => index >= 55)).toBe(true)
+    expect(visibleIndexes.every((index) => index < 80)).toBe(true)
+    expect(wrapper.findAll('[data-codex-turn]').length).toBeLessThan(80)
+    expect(wrapper.find('[data-codex-turn-top-spacer]').exists()).toBe(true)
+  })
+
 })

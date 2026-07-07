@@ -219,6 +219,11 @@ describe('useCodexWorkspace', () => {
 
     expect(workspace.activeStatus.value).toBe('inProgress')
     expect(workspace.isActiveTurnInProgress.value).toBe(true)
+    expect(
+      workspace.workspace.value.projects
+        .flatMap((project) => project.sessions)
+        .find((thread) => thread.thread_id === 'thread-b')?.status,
+    ).toBe('inProgress')
   })
 
   it('sends user input responses through the websocket command envelope', async () => {

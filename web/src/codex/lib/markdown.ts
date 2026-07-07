@@ -15,6 +15,8 @@ const markdownCopiedButtonLabel = 'Copied'
 const markdownCopyButtonIcon = '<i class="pi pi-copy" aria-hidden="true"></i>'
 const markdownCopiedButtonIcon = '<i class="pi pi-check" aria-hidden="true"></i>'
 const imageFileExtensionPattern = /\.(?:png|jpe?g|gif|webp|bmp)(?:[?#].*)?$/i
+const renderedMarkdownCache = new Map<string, string>()
+const renderedMarkdownCacheLimit = 300
 
 function highlightMarkdownCode(content: string, language = '') {
   const { requestedLanguage, highlightLanguage } = resolveHighlightLanguage(language)
@@ -112,7 +114,21 @@ markdown.renderer.rules.image = (tokens, idx, options, env, self) => {
 
 export function useCodexMarkdown() {
   function renderMarkdown(content: string) {
-    return markdown.render(content)
+    const cached = renderedMarkdownCache.get(content)
+    if (cached != null) {
+      renderedMarkdownCache.delete(content)
+      renderedMarkdownCache.set(content, cached)
+      return cached
+    }
+    const rendered = markdown.render(content)
+    renderedMarkdownCache.set(content, rendered)
+    if (renderedMarkdownCache.size > renderedMarkdownCacheLimit) {
+      const oldestKey = renderedMarkdownCache.keys().next().value
+      if (oldestKey != null) {
+        renderedMarkdownCache.delete(oldestKey)
+      }
+    }
+    return rendered
   }
 
   async function onMarkdownClick(event: MouseEvent) {

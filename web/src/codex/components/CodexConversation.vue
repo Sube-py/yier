@@ -1,11 +1,19 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import Dialog from 'primevue/dialog'
 import Galleria from 'primevue/galleria'
 
 import type { CodexConversationState, CodexTurnState, JsonRecord } from '../types'
-import { compactJson, formatTimestamp, isRecord, statusLabel, textFromInput } from '../lib/format'
+import {
+  compactJson,
+  formatTimestamp,
+  isRecord,
+  isWorkingStatus,
+  statusLabel,
+  textFromInput,
+} from '../lib/format'
 import { useCodexMarkdown } from '../lib/markdown'
+import CodexWorkedLabel from './CodexWorkedLabel.vue'
 
 const props = defineProps<{
   state: CodexConversationState | null
@@ -102,9 +110,7 @@ const shouldStickToBottom = ref(true)
 const expandedWorkByTurnKey = ref<Record<string, boolean>>({})
 const expandedItemById = ref<Record<string, boolean>>({})
 const imagePreviewByItemId = ref<Record<string, boolean>>({})
-const nowMs = ref(Date.now())
 const bottomThreshold = 72
-let nowTimer: number | null = null
 
 function isNearBottom(element: HTMLElement) {
   return element.scrollHeight - element.scrollTop - element.clientHeight <= bottomThreshold
@@ -338,57 +344,22 @@ function formatDuration(ms: number | null | undefined) {
   return remainingMinutes ? `${hours}h ${remainingMinutes}m` : `${hours}h`
 }
 
-function formatPreciseDuration(ms: number | null | undefined) {
-  if (!ms || ms <= 0) {
-    return ''
+function firstTurnWorkItemStartedAtMsFromItems(turn: CodexTurnState) {
+  const items = Array.isArray(turn.items) ? turn.items : []
+  for (const item of items) {
+    if (!workItemTypes.has(itemType(item))) {
+      continue
+    }
+    const startedAtMs = firstNumber(item.startedAtMs, item.started_at_ms)
+    if (startedAtMs != null) {
+      return startedAtMs
+    }
   }
-  if (ms < 1000) {
-    return `${Math.max(1, Math.round(ms))}ms`
-  }
-  if (ms < 10_000) {
-    return `${(ms / 1000).toFixed(ms < 2000 ? 2 : 1)}s`
-  }
-  return formatDuration(ms)
-}
-
-function turnElapsedMs(turn: CodexTurnState) {
-  const firstTurnWorkItemStartedAtMs = coerceMs(turn.firstTurnWorkItemStartedAtMs)
-  const startedAtMs = coerceMs(turn.turnStartedAtMs)
-  const finalAssistantStartedAtMs = coerceMs(turn.finalAssistantStartedAtMs)
-  if (firstTurnWorkItemStartedAtMs && finalAssistantStartedAtMs) {
-    return Math.max(finalAssistantStartedAtMs - firstTurnWorkItemStartedAtMs, 0)
-  }
-
-  if (firstTurnWorkItemStartedAtMs && isTurnInProgress(turn)) {
-    return Math.max(nowMs.value - firstTurnWorkItemStartedAtMs, 0)
-  }
-
-  const durationMs = firstNumber(turn.durationMs)
-  if (durationMs != null) {
-    return Math.max(durationMs, 0)
-  }
-
-  if (startedAtMs && finalAssistantStartedAtMs) {
-    return Math.max(finalAssistantStartedAtMs - startedAtMs, 0)
-  }
-
-  if (startedAtMs && isTurnInProgress(turn)) {
-    return Math.max(nowMs.value - startedAtMs, 0)
-  }
-
   return null
 }
 
-function workedLabel(turn: CodexTurnState) {
-  const duration = formatDuration(turnElapsedMs(turn))
-  if (isTurnInProgress(turn)) {
-    return duration ? `Working for ${duration}` : 'Working'
-  }
-  return duration ? `Worked for ${duration}` : 'Worked'
-}
-
 function isTurnInProgress(turn: CodexTurnState) {
-  return turn.status === 'inProgress' || turn.status === 'active' || turn.status === 'working'
+  return isWorkingStatus(turn.status)
 }
 
 function isItemInProgress(item: JsonRecord) {
@@ -936,52 +907,6 @@ function workItemSubject(item: JsonRecord) {
   return ''
 }
 
-function workItemMeta(item: JsonRecord) {
-  const parts: string[] = []
-  const duration = formatPreciseDuration(turnElapsedForItem(item))
-  if (duration) {
-    parts.push(duration)
-  }
-  if (itemType(item) === 'commandExecution' && !isItemInProgress(item)) {
-    const exitCode = commandExitCode(item)
-    parts.push(commandSucceeded(item) ? 'exit 0' : `exit ${exitCode ?? 'unknown'}`)
-  }
-  const status = firstString(item.status, item.executionStatus)
-  if (status && !['completed', 'success'].includes(status.toLowerCase())) {
-    parts.push(humanizeName(status))
-  }
-  return parts.join(' · ')
-}
-
-function workItemTone(item: JsonRecord) {
-  const type = itemType(item)
-  if (type === 'commandExecution' && !isItemInProgress(item) && !commandSucceeded(item)) {
-    return 'text-red-700'
-  }
-  if (type === 'fileChange') {
-    const primary = primaryFileChange(item)
-    if (primary?.action === 'created') {
-      return 'text-emerald-700'
-    }
-    if (primary?.action === 'deleted') {
-      return 'text-red-700'
-    }
-  }
-  return 'text-[color:var(--app-text-soft)]'
-}
-
-function turnElapsedForItem(item: JsonRecord) {
-  const startedAtMs = coerceMs(firstNumber(item.startedAtMs, item.started_at_ms))
-  const completedAtMs = coerceMs(firstNumber(item.completedAtMs, item.completed_at_ms))
-  if (startedAtMs && completedAtMs) {
-    return Math.max(completedAtMs - startedAtMs, 0)
-  }
-  if (startedAtMs && isItemInProgress(item)) {
-    return Math.max(nowMs.value - startedAtMs, 0)
-  }
-  return firstNumber(item.durationMs, item.duration_ms)
-}
-
 function workItemDetail(item: JsonRecord) {
   const type = itemType(item)
   if (type === 'commandExecution') {
@@ -1296,16 +1221,7 @@ function turnKey(turn: CodexTurnState, index: number) {
 }
 
 onMounted(async () => {
-  nowTimer = window.setInterval(() => {
-    nowMs.value = Date.now()
-  }, 1000)
   await scrollToBottomIfNeeded()
-})
-
-onUnmounted(() => {
-  if (nowTimer != null) {
-    window.clearInterval(nowTimer)
-  }
 })
 
 watch(
@@ -1469,7 +1385,17 @@ const justDebug = false
                 data-codex-work-toggle
                 @click="toggleWork(turnView)"
               >
-                <span class="truncate">{{ workedLabel(turnView.turn) }}</span>
+                <CodexWorkedLabel
+                  class="truncate"
+                  :status="turnView.turn.status"
+                  :work-started-at-ms="
+                    turnView.turn.firstTurnWorkItemStartedAtMs
+                    ?? firstTurnWorkItemStartedAtMsFromItems(turnView.turn)
+                  "
+                  :turn-started-at-ms="turnView.turn.turnStartedAtMs"
+                  :final-assistant-started-at-ms="turnView.turn.finalAssistantStartedAtMs"
+                  :duration-ms="turnView.turn.durationMs"
+                />
                 <i
                   class="pi pi-chevron-right text-[0.65rem] opacity-50 transition-transform"
                   :class="isWorkExpanded(turnView) ? 'rotate-90' : ''"

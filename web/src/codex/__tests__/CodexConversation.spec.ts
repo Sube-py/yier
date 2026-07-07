@@ -466,7 +466,7 @@ describe('CodexConversation', () => {
         },
       ],
       {
-        status: 'inProgress',
+        status: 'in_progress',
         turnStartedAtMs: new Date('2026-05-21T00:00:00.000Z').getTime(),
       },
     )
@@ -475,6 +475,37 @@ describe('CodexConversation', () => {
     expect(wrapper.get('[data-codex-work-toggle]').attributes('aria-expanded')).toBe('true')
     expect(wrapper.find('[data-codex-work-item]').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('Inspecting the code')
+
+    vi.useRealTimers()
+  })
+
+  it('updates in-progress worked time from the first work item start time', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-05-21T00:00:03.000Z'))
+    const workStartedAtMs = new Date('2026-05-21T00:00:01.000Z').getTime()
+
+    const wrapper = mountConversation(
+      [
+        {
+          id: 'reasoning-1',
+          type: 'reasoning',
+          status: 'inProgress',
+          startedAtMs: workStartedAtMs,
+          content: 'Inspecting the code',
+        },
+      ],
+      {
+        status: 'inProgress',
+        turnStartedAtMs: new Date('2026-05-21T00:00:00.000Z').getTime(),
+      },
+    )
+
+    expect(wrapper.text()).toContain('Working for 2s')
+
+    vi.advanceTimersByTime(2_000)
+    await nextTick()
+
+    expect(wrapper.text()).toContain('Working for 4s')
 
     vi.useRealTimers()
   })

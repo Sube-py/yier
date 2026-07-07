@@ -1,6 +1,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { CodexSocket } from '../lib/codexSocket'
+import { isWorkingStatus } from '../lib/format'
 import type {
   CodexCollaborationMode,
   CodexConversationState,
@@ -348,7 +349,7 @@ export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
       null,
   )
   const activeStatus = computed(() => threadStatus(activeThreadState.value))
-  const isActiveTurnInProgress = computed(() => activeStatus.value === 'inProgress')
+  const isActiveTurnInProgress = computed(() => isWorkingStatus(activeStatus.value))
   const activeMode = computed<CodexWorkMode>(() =>
     activeThreadState.value?.latestCollaborationMode?.mode === 'plan' ? 'plan' : 'build',
   )
@@ -386,6 +387,30 @@ export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
         ...payload,
         state,
       },
+    }
+    syncWorkspaceThreadStatus(payload.thread_id, state)
+  }
+
+  function syncWorkspaceThreadStatus(threadId: string, state: CodexConversationState | null) {
+    if (!state) {
+      return
+    }
+    const status = threadStatus(state)
+    let changed = false
+    const projects = workspace.value.projects.map((project) => {
+      let projectChanged = false
+      const sessions = project.sessions.map((thread) => {
+        if (thread.thread_id !== threadId || thread.status === status) {
+          return thread
+        }
+        projectChanged = true
+        changed = true
+        return { ...thread, status }
+      })
+      return projectChanged ? { ...project, sessions } : project
+    })
+    if (changed) {
+      workspace.value = { ...workspace.value, projects }
     }
   }
 

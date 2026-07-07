@@ -11,7 +11,7 @@ import type {
   CodexProjectGroup,
   CodexWorkspaceResponse,
 } from '../types'
-import { displayPath } from '../lib/format'
+import { displayPath, isWorkingStatus } from '../lib/format'
 import CodexHostPathPicker from './CodexHostPathPicker.vue'
 import CodexRemoteConnections from './CodexRemoteConnections.vue'
 
@@ -228,7 +228,7 @@ function compactTimestamp(value: number | null | undefined) {
 }
 
 function isThreadWorking(thread: CodexNativeSessionSummary) {
-  return thread.status === 'inProgress' || thread.status === 'active'
+  return isWorkingStatus(thread.status)
 }
 
 function isProjectExpanded(project: ProjectWithKey) {

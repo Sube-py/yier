@@ -483,7 +483,7 @@ describe('CodexSidebar', () => {
             session_count: 1,
             sessions: [
               thread('thread-working', 'alpha', '/tmp/alpha', 30, {
-                status: 'inProgress',
+                status: 'in_progress',
               }),
             ],
           },

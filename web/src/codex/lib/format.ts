@@ -47,12 +47,18 @@ export function formatTimestamp(value: number | null | undefined) {
   return new Date(milliseconds).toLocaleDateString()
 }
 
+export function isWorkingStatus(status: string | null | undefined) {
+  return ['active', 'inprogress', 'in_progress', 'pending', 'running', 'working'].includes(
+    (status ?? '').trim().toLowerCase(),
+  )
+}
+
 export function statusLabel(status: string | null | undefined) {
   const normalized = (status ?? '').trim()
   if (!normalized || normalized === 'idle') {
     return 'Ready'
   }
-  if (normalized === 'inProgress' || normalized === 'active') {
+  if (isWorkingStatus(normalized)) {
     return 'Working'
   }
   if (normalized === 'completed') {
@@ -73,7 +79,7 @@ export function statusLabel(status: string | null | undefined) {
 
 export function statusTone(status: string | null | undefined) {
   const normalized = (status ?? '').trim()
-  if (normalized === 'inProgress' || normalized === 'active') {
+  if (isWorkingStatus(normalized)) {
     return 'text-sky-700 bg-sky-50 border-sky-200'
   }
   if (normalized === 'interrupted') {
@@ -113,4 +119,3 @@ export function activeThreadTitle(state: CodexConversationState | null) {
   const title = state?.title
   return typeof title === 'string' && title.trim() ? title.trim() : shortId(state?.id)
 }
-

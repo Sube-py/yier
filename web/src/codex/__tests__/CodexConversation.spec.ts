@@ -472,11 +472,29 @@ describe('CodexConversation', () => {
     )
 
     expect(wrapper.text()).toContain('Working for 3s')
+    expect(wrapper.text()).toContain('Thinking')
+    expect(wrapper.find('[data-codex-thinking-shimmer]').exists()).toBe(true)
+    expect(wrapper.find('[data-codex-thinking-fallback]').exists()).toBe(true)
     expect(wrapper.get('[data-codex-work-toggle]').attributes('aria-expanded')).toBe('true')
     expect(wrapper.find('[data-codex-work-item]').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('Inspecting the code')
 
     vi.useRealTimers()
+  })
+
+  it('shows a thinking placeholder while a turn is running before work items arrive', () => {
+    const wrapper = mountConversation([], {
+      status: 'in_progress',
+      params: {
+        input: [{ type: 'text', text: 'Start working' }],
+      },
+      turnStartedAtMs: new Date('2026-05-21T00:00:00.000Z').getTime(),
+    })
+
+    expect(wrapper.text()).toContain('Start working')
+    expect(wrapper.text()).toContain('Thinking')
+    expect(wrapper.find('[data-codex-thinking-placeholder]').exists()).toBe(true)
+    expect(wrapper.find('[data-codex-work-section]').exists()).toBe(false)
   })
 
   it('updates in-progress worked time from the first work item start time', async () => {
@@ -537,6 +555,33 @@ describe('CodexConversation', () => {
     await wrapper.get('[data-codex-work-row]').trigger('click')
 
     expect(wrapper.get('[data-codex-raw]').text()).toContain('{"ok":true}')
+  })
+
+  it('shimmers running activity summaries while keeping details expandable', async () => {
+    const wrapper = mountConversation(
+      [
+        {
+          id: 'command-1',
+          type: 'commandExecution',
+          command: '/bin/zsh -lc "pnpm build"',
+          status: 'running',
+          completed: false,
+          aggregatedOutput: 'building...',
+        },
+      ],
+      {
+        status: 'in_progress',
+      },
+    )
+
+    const activityToggle = wrapper.get('[data-codex-activity-toggle]')
+    expect(activityToggle.text()).toContain('Running a command')
+    expect(activityToggle.find('[data-codex-thinking-shimmer]').exists()).toBe(true)
+
+    await activityToggle.trigger('click')
+    expect(wrapper.get('[data-codex-work-row]').text()).toContain('Running pnpm build')
+    await wrapper.get('[data-codex-work-row]').trigger('click')
+    expect(wrapper.get('[data-codex-command-output]').text()).toContain('building...')
   })
 
   it('summarizes adjacent tool activities behind one compact disclosure', async () => {

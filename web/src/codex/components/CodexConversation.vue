@@ -13,6 +13,7 @@ import {
   textFromInput,
 } from '../lib/format'
 import { useCodexMarkdown } from '../lib/markdown'
+import CodexThinkingShimmer from './CodexThinkingShimmer.vue'
 import CodexWorkedLabel from './CodexWorkedLabel.vue'
 
 const props = defineProps<{
@@ -38,6 +39,7 @@ interface TurnBlockView {
   id: string
   kind: TurnBlockKind
   items: ConversationItemView[]
+  workUnits?: WorkRenderUnit[]
 }
 
 interface WorkRenderUnit {
@@ -380,10 +382,12 @@ function turnView(turn: CodexTurnState, index: number): TurnView {
     if (!pendingWork.length) {
       return
     }
+    const items = pendingWork
     blocks.push({
       id: `${turnKey(turn, index)}-work-${workBlockIndex}`,
       kind: 'work',
-      items: pendingWork,
+      items,
+      workUnits: workRenderUnits(items),
     })
     pendingWork = []
     workBlockIndex += 1
@@ -664,6 +668,38 @@ function workRenderUnits(items: ConversationItemView[]): WorkRenderUnit[] {
   }
   flushActivity()
   return units
+}
+
+function workUnitsForBlock(block: TurnBlockView) {
+  return block.workUnits ?? workRenderUnits(block.items)
+}
+
+function hasWorkBlock(turnView: TurnView) {
+  return turnView.blocks.some((block) => block.kind === 'work')
+}
+
+function hasFinalAssistantResponse(turnView: TurnView) {
+  return turnView.finalResponseItems.some((item) => itemText(item.item))
+}
+
+function shouldShowStandaloneThinking(turnView: TurnView) {
+  return (
+    isTurnInProgress(turnView.turn) &&
+    !hasFinalAssistantResponse(turnView) &&
+    !hasWorkBlock(turnView)
+  )
+}
+
+function shouldShowThinkingInWork(turnView: TurnView, block: TurnBlockView) {
+  return (
+    isTurnInProgress(turnView.turn) &&
+    !hasFinalAssistantResponse(turnView) &&
+    workUnitsForBlock(block).length === 0
+  )
+}
+
+function activityHasInProgress(items: ConversationItemView[]) {
+  return items.some((item) => isItemInProgress(item.item))
 }
 
 function isTodoListItem(item: JsonRecord) {
@@ -1666,8 +1702,10 @@ const justDebug = false
                 data-codex-work-toggle
                 @click="toggleWork(turnView)"
               >
+                <CodexThinkingShimmer v-if="isTurnInProgress(turnView.turn)" />
                 <CodexWorkedLabel
                   class="truncate"
+                  :class="isTurnInProgress(turnView.turn) ? 'text-[0.72rem] font-normal opacity-75' : ''"
                   :status="turnView.turn.status"
                   :work-started-at-ms="
                     turnView.turn.firstTurnWorkItemStartedAtMs
@@ -1690,7 +1728,13 @@ const justDebug = false
               class="grid min-w-0 gap-1.5 border-l border-[rgba(34,66,72,0.12)] pl-3 max-sm:pl-2"
               data-codex-work-items
             >
-              <template v-for="unit in workRenderUnits(block.items)" :key="unit.id">
+              <CodexThinkingShimmer
+                v-if="shouldShowThinkingInWork(turnView, block)"
+                class="py-1 text-sm"
+                data-codex-thinking-fallback
+              />
+
+              <template v-for="unit in workUnitsForBlock(block)" :key="unit.id">
                 <div
                   v-if="unit.kind === 'message'"
                   class="markdown-prose markdown-prose-conversation min-w-0 py-1 [overflow-wrap:anywhere] [&>:first-child]:mt-0 [&>:last-child]:mb-0"
@@ -1711,7 +1755,12 @@ const justDebug = false
                     data-codex-activity-toggle
                     @click="toggleItem(unit.id)"
                   >
-                    <span class="min-w-0 truncate">{{ activitySummary(unit.items) }}</span>
+                    <CodexThinkingShimmer
+                      v-if="activityHasInProgress(unit.items)"
+                      class="min-w-0"
+                      :message="activitySummary(unit.items)"
+                    />
+                    <span v-else class="min-w-0 truncate">{{ activitySummary(unit.items) }}</span>
                     <i
                       class="pi pi-chevron-right shrink-0 text-[0.56rem] opacity-50 transition-transform"
                       :class="isItemExpanded(unit.id) ? 'rotate-90' : ''"
@@ -2045,6 +2094,14 @@ const justDebug = false
             >
           </article>
         </template>
+
+        <div
+          v-if="shouldShowStandaloneThinking(turnView)"
+          class="inline-flex max-w-[min(52rem,100%)] items-center gap-2 text-sm text-[color:var(--app-text-soft)]"
+          data-codex-thinking-placeholder
+        >
+          <CodexThinkingShimmer />
+        </div>
 
         <div
           v-if="hasTurnReport(turnView)"

@@ -114,7 +114,7 @@ class SendPromptCommandStrategy(ThreadCommandStrategy):
             attachments=attachments,
             approval_policy=_payload_text(context.payload, "approval_policy") or None,
             approvals_reviewer=_payload_text(context.payload, "approvals_reviewer") or None,
-            sandbox=_payload_text(context.payload, "sandbox") or None,
+            sandbox_policy=_payload_dict(context.payload, "sandbox_policy"),
         )
         return {"thread_id": thread_id}
 

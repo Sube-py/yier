@@ -374,6 +374,7 @@ onBeforeUnmount(() => {
       :is-command-busy="codex.isCommandBusy || isInitializing"
       :is-renaming="codex.isRenaming"
       :is-archiving="codex.isArchiving"
+      :is-thread-loading="codex.isActiveThreadLoading"
       :is-active-turn-in-progress="codex.isActiveTurnInProgress"
       empty-eyebrow="Codex embed"
       :empty-title="

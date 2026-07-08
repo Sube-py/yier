@@ -9,7 +9,7 @@ export interface CodexPromptSubmission {
   attachments?: JsonRecord[]
   approvalPolicy?: string | null
   approvalsReviewer?: string | null
-  sandbox?: string | null
+  sandboxPolicy?: JsonRecord | null
 }
 
 export interface CodexNativeSessionSummary {

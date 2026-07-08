@@ -226,8 +226,8 @@ function promptPermissionPayload(submission: Partial<CodexPromptSubmission>): Js
   if (submission.approvalsReviewer) {
     payload.approvals_reviewer = submission.approvalsReviewer
   }
-  if (submission.sandbox) {
-    payload.sandbox = submission.sandbox
+  if (submission.sandboxPolicy) {
+    payload.sandbox_policy = submission.sandboxPolicy
   }
   return payload
 }
@@ -349,6 +349,10 @@ export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
       null,
   )
   const activeStatus = computed(() => threadStatus(activeThreadState.value))
+  const isActiveThreadLoading = computed(() =>
+    Boolean(activeThreadId.value) &&
+    (openingThreadId.value === activeThreadId.value || !activeThreadState.value),
+  )
   const isActiveTurnInProgress = computed(() => isWorkingStatus(activeStatus.value))
   const activeMode = computed<CodexWorkMode>(() =>
     activeThreadState.value?.latestCollaborationMode?.mode === 'plan' ? 'plan' : 'build',
@@ -1080,6 +1084,7 @@ export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
     flatThreads,
     forkingThreadId,
     forkThread,
+    isActiveThreadLoading,
     isActiveTurnInProgress,
     isArchiving,
     isBooting,

@@ -109,6 +109,7 @@ function startMobileThread(projectPath: string) {
           :is-command-busy="codex.isCommandBusy"
           :is-renaming="codex.isRenaming"
           :is-archiving="codex.isArchiving"
+          :is-thread-loading="codex.isActiveThreadLoading"
           :is-active-turn-in-progress="codex.isActiveTurnInProgress"
           @rename-thread="codex.renameThread"
           @archive-thread="codex.archiveThread()"

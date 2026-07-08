@@ -172,7 +172,7 @@ class FakeCodexIpcSession:
         input_items: list[dict[str, Any]] | None = None,
         approval_policy: str | None = None,
         approvals_reviewer: str | None = None,
-        sandbox: str | None = None,
+        sandbox: dict[str, Any] | None = None,
     ) -> None:
         self.run_prompt_calls.append(
             (
@@ -1006,7 +1006,7 @@ def test_codex_controller_http_and_websocket_contract(tmp_path: Path) -> None:
                         "prompt": "use full access",
                         "approval_policy": "never",
                         "approvals_reviewer": "user",
-                        "sandbox": "danger-full-access",
+                        "sandbox_policy": {"type": "dangerFullAccess"},
                     },
                 }
             )
@@ -1023,7 +1023,7 @@ def test_codex_controller_http_and_websocket_contract(tmp_path: Path) -> None:
                 None,
                 "never",
                 "user",
-                "danger-full-access",
+                {"type": "dangerFullAccess"},
             )
 
             ws.send_json(

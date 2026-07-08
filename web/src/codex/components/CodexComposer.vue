@@ -31,7 +31,7 @@ type PermissionOption = {
   tone: PermissionMode
   approvalPolicy: 'on-request' | 'never'
   approvalsReviewer: 'user' | 'guardian_subagent'
-  sandbox: 'workspace-write' | 'danger-full-access'
+  sandboxPolicy: JsonRecord
 }
 type RunLocationOption = {
   value: string
@@ -97,7 +97,7 @@ const permissionOptions: PermissionOption[] = [
     tone: 'ask',
     approvalPolicy: 'on-request',
     approvalsReviewer: 'user',
-    sandbox: 'workspace-write',
+    sandboxPolicy: { type: 'workspaceWrite' },
   },
   {
     value: 'guardian',
@@ -108,7 +108,7 @@ const permissionOptions: PermissionOption[] = [
     tone: 'guardian',
     approvalPolicy: 'on-request',
     approvalsReviewer: 'guardian_subagent',
-    sandbox: 'workspace-write',
+    sandboxPolicy: { type: 'workspaceWrite' },
   },
   {
     value: 'full',
@@ -119,7 +119,7 @@ const permissionOptions: PermissionOption[] = [
     tone: 'full',
     approvalPolicy: 'never',
     approvalsReviewer: 'user',
-    sandbox: 'danger-full-access',
+    sandboxPolicy: { type: 'dangerFullAccess' },
   },
 ]
 const fallbackPermissionOption = permissionOptions[2] as PermissionOption
@@ -298,7 +298,7 @@ function sendSubmission() {
     reasoningEffort: activeReasoningEffort.value,
     approvalPolicy: activePermissionOption.value.approvalPolicy,
     approvalsReviewer: activePermissionOption.value.approvalsReviewer,
-    sandbox: activePermissionOption.value.sandbox,
+    sandboxPolicy: { ...activePermissionOption.value.sandboxPolicy },
     ...(attachments.length ? { attachments } : {}),
   })
   draft.value = ''

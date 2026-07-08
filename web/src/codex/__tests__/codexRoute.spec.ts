@@ -23,6 +23,7 @@ const workspaceMock: {
   forkingThreadId: '',
   forkThread: vi.fn(),
   isActiveTurnInProgress: false,
+  isActiveThreadLoading: false,
   isArchiving: false,
   isBooting: false,
   isCommandBusy: false,
@@ -74,6 +75,7 @@ describe('Codex route separation', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     workspaceMock.activeThreadState = null
+    workspaceMock.isActiveThreadLoading = false
   })
 
   it('resolves Codex as the default workspace route', () => {

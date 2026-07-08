@@ -35,6 +35,8 @@ class FakeCodexSocket implements CodexRealtimeClient {
   goalObjective = 'Existing goal'
   getThreadGoalResponse: unknown = { goal: null }
   returnDirectGoalResponse = false
+  readonly deferredSubscribeThreadIds = new Set<string>()
+  readonly subscribeResolvers = new Map<string, (value: unknown) => void>()
 
   async connect() {
     this.statusListeners.forEach((listener) => listener('open'))
@@ -91,12 +93,18 @@ class FakeCodexSocket implements CodexRealtimeClient {
     }
     if (type === 'subscribe_thread') {
       const threadId = String(payload.thread_id)
-      return {
+      const response = {
         thread_id: threadId,
         state: { id: threadId, turns: [], requests: [] },
         stream_role: null,
         queued_followups: [],
-      } as TPayload
+      }
+      if (this.deferredSubscribeThreadIds.has(threadId)) {
+        return new Promise<TPayload>((resolve) => {
+          this.subscribeResolvers.set(threadId, resolve as (value: unknown) => void)
+        })
+      }
+      return response as TPayload
     }
     if (type === 'get_thread_goal') {
       return this.getThreadGoalResponse as TPayload
@@ -154,6 +162,21 @@ class FakeCodexSocket implements CodexRealtimeClient {
 
   emit(event: CodexServerEvent) {
     this.eventListeners.forEach((listener) => listener(event))
+  }
+
+  resolveSubscribe(threadId: string) {
+    const resolve = this.subscribeResolvers.get(threadId)
+    if (!resolve) {
+      throw new Error(`No deferred subscribe for ${threadId}`)
+    }
+    this.subscribeResolvers.delete(threadId)
+    this.deferredSubscribeThreadIds.delete(threadId)
+    resolve({
+      thread_id: threadId,
+      state: { id: threadId, turns: [], requests: [] },
+      stream_role: null,
+      queued_followups: [],
+    })
   }
 }
 
@@ -224,6 +247,28 @@ describe('useCodexWorkspace', () => {
         .flatMap((project) => project.sessions)
         .find((thread) => thread.thread_id === 'thread-b')?.status,
     ).toBe('inProgress')
+  })
+
+  it('reports active thread loading while a thread subscription is pending', async () => {
+    const socket = new FakeCodexSocket()
+    const { workspace } = mountHarness(socket)
+    await flushPromises()
+
+    socket.deferredSubscribeThreadIds.add('thread-b')
+    const selection = workspace.selectThread('thread-b')
+    await flushPromises()
+
+    expect(workspace.activeThreadId.value).toBe('thread-b')
+    expect(workspace.openingThreadId.value).toBe('thread-b')
+    expect(workspace.isActiveThreadLoading.value).toBe(true)
+
+    socket.resolveSubscribe('thread-b')
+    await selection
+    await flushPromises()
+
+    expect(workspace.openingThreadId.value).toBe('')
+    expect(workspace.activeThreadState.value?.id).toBe('thread-b')
+    expect(workspace.isActiveThreadLoading.value).toBe(false)
   })
 
   it('sends user input responses through the websocket command envelope', async () => {
@@ -322,7 +367,7 @@ describe('useCodexWorkspace', () => {
       prompt: 'Use full access',
       approvalPolicy: 'never',
       approvalsReviewer: 'user',
-      sandbox: 'danger-full-access',
+      sandboxPolicy: { type: 'dangerFullAccess' },
     })
 
     expect(socket.commands[socket.commands.length - 1]).toEqual({
@@ -332,7 +377,7 @@ describe('useCodexWorkspace', () => {
         prompt: 'Use full access',
         approval_policy: 'never',
         approvals_reviewer: 'user',
-        sandbox: 'danger-full-access',
+        sandbox_policy: { type: 'dangerFullAccess' },
         collaboration_mode: {
           mode: 'default',
           settings: {

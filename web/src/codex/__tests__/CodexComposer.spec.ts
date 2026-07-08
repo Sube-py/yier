@@ -102,7 +102,7 @@ describe('CodexComposer', () => {
         reasoningEffort: 'high',
         approvalPolicy: 'never',
         approvalsReviewer: 'user',
-        sandbox: 'danger-full-access',
+        sandboxPolicy: { type: 'dangerFullAccess' },
       },
     ])
   })
@@ -545,7 +545,7 @@ describe('CodexComposer', () => {
       reasoningEffort: 'medium',
       approvalPolicy: 'never',
       approvalsReviewer: 'user',
-      sandbox: 'danger-full-access',
+      sandboxPolicy: { type: 'dangerFullAccess' },
       attachments: [
         {
           type: 'image',
@@ -582,7 +582,7 @@ describe('CodexComposer', () => {
       reasoningEffort: 'medium',
       approvalPolicy: 'never',
       approvalsReviewer: 'user',
-      sandbox: 'danger-full-access',
+      sandboxPolicy: { type: 'dangerFullAccess' },
       attachments: [
         {
           type: 'mention',

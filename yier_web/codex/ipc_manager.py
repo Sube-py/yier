@@ -557,7 +557,7 @@ class CodexIpcManager:
         attachments: list[JsonDict] | None = None,
         approval_policy: str | None = None,
         approvals_reviewer: str | None = None,
-        sandbox: str | None = None,
+        sandbox_policy: JsonDict | None = None,
     ) -> None:
         managed = await self._ensure_thread(thread_id)
         input_items = self._prompt_input_items(prompt.strip(), attachments or [])
@@ -568,7 +568,7 @@ class CodexIpcManager:
             input_items=input_items if attachments else None,
             approval_policy=approval_policy,
             approvals_reviewer=approvals_reviewer,
-            sandbox=sandbox,
+            sandbox=sandbox_policy,
         )
         if collaboration_mode is not None:
             await self._apply_latest_collaboration_mode(

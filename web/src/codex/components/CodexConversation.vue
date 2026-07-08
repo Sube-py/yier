@@ -106,6 +106,7 @@ const workItemTypes = new Set([
 const responseItemTypes = new Set(['agentMessage', 'plan'])
 const userItemTypes = new Set(['userMessage'])
 const turnVirtualizationThreshold = 30
+const initialHydratedTurnCount = 12
 const estimatedTurnHeightPx = 720
 const virtualTurnGapPx = 24
 const virtualOverscanPx = 2400
@@ -113,10 +114,18 @@ const virtualOverscanPx = 2400
 const turns = computed<CodexTurnState[]>(() =>
   Array.isArray(props.state?.turns) ? props.state.turns : [],
 )
+const hydratedTurnStartIndex = ref(0)
 const turnViews = computed<TurnView[]>(() =>
-  turns.value.map((turn, index) => turnView(turn, index)),
+  turns.value
+    .slice(hydratedTurnStartIndex.value)
+    .map((turn, offset) => turnView(turn, hydratedTurnStartIndex.value + offset)),
 )
-const isTurnVirtualized = computed(() => turnViews.value.length > turnVirtualizationThreshold)
+const hiddenHydratedTurnHeight = computed(() =>
+  hydratedTurnStartIndex.value > 0
+    ? hydratedTurnStartIndex.value * (estimatedTurnHeightPx + virtualTurnGapPx)
+    : 0,
+)
+const isTurnVirtualized = computed(() => turns.value.length > turnVirtualizationThreshold)
 const { renderMarkdown, onMarkdownClick } = useCodexMarkdown()
 const conversationBody = ref<HTMLElement | null>(null)
 const shouldStickToBottom = ref(true)
@@ -129,6 +138,7 @@ const virtualViewportHeight = ref(900)
 const bottomThreshold = 72
 let measureFrame: number | null = null
 let resizeObserver: ResizeObserver | null = null
+let hydrationTimer: number | null = null
 
 function turnMeasuredHeight(turnView: TurnView) {
   return measuredTurnHeights.value[turnView.key] ?? estimatedTurnHeightPx
@@ -149,7 +159,7 @@ const virtualTurnMetrics = computed(() => {
   })
   return {
     metrics,
-    totalHeight: offset,
+    totalHeight: hiddenHydratedTurnHeight.value + offset,
   }
 })
 
@@ -186,11 +196,14 @@ const virtualTurnWindow = computed(() => {
     endIndex = Math.max(endIndex - 1, startIndex)
   }
 
-  return {
-    startIndex,
-    endIndex,
-    topSpacerHeight: metrics[startIndex]?.start ?? 0,
-    bottomSpacerHeight: Math.max(totalHeight - (metrics[endIndex]?.end ?? totalHeight), 0),
+    return {
+      startIndex,
+      endIndex,
+      topSpacerHeight: hiddenHydratedTurnHeight.value + (metrics[startIndex]?.start ?? 0),
+      bottomSpacerHeight: Math.max(
+        totalHeight - (hiddenHydratedTurnHeight.value + (metrics[endIndex]?.end ?? totalHeight)),
+        0,
+      ),
   }
 })
 
@@ -206,7 +219,10 @@ const visibleTurnViews = computed<VirtualTurnView[]>(() => {
 
   return turnViews.value
     .slice(startIndex, endIndex + 1)
-    .map((turnView, offset) => ({ turnView, originalIndex: startIndex + offset }))
+    .map((turnView, offset) => ({
+      turnView,
+      originalIndex: hydratedTurnStartIndex.value + startIndex + offset,
+    }))
 })
 
 const virtualTopSpacerHeight = computed(() => virtualTurnWindow.value.topSpacerHeight)
@@ -266,6 +282,37 @@ function measureVisibleTurns() {
 
 function resetTurnMeasurements() {
   measuredTurnHeights.value = {}
+}
+
+function cancelTurnHydration() {
+  if (hydrationTimer != null && typeof window !== 'undefined') {
+    window.clearTimeout(hydrationTimer)
+  }
+  hydrationTimer = null
+}
+
+function scheduleFullTurnHydration() {
+  cancelTurnHydration()
+  if (hydratedTurnStartIndex.value === 0 || typeof window === 'undefined') {
+    return
+  }
+  const hydrate = async () => {
+    hydrationTimer = null
+    hydratedTurnStartIndex.value = 0
+    await scrollToBottomIfNeeded()
+  }
+  hydrationTimer = window.setTimeout(() => {
+    void hydrate()
+  }, 900)
+}
+
+function resetProgressiveTurnHydration() {
+  cancelTurnHydration()
+  hydratedTurnStartIndex.value =
+    turns.value.length > turnVirtualizationThreshold
+      ? Math.max(turns.value.length - initialHydratedTurnCount, 0)
+      : 0
+  scheduleFullTurnHydration()
 }
 
 function onConversationScroll() {
@@ -1426,9 +1473,18 @@ onBeforeUnmount(() => {
     window.cancelAnimationFrame(measureFrame)
     measureFrame = null
   }
+  cancelTurnHydration()
   resizeObserver?.disconnect()
   resizeObserver = null
 })
+
+watch(
+  () => props.state?.id,
+  () => {
+    resetProgressiveTurnHydration()
+  },
+  { immediate: true, flush: 'sync' },
+)
 
 watch(
   () => props.state?.id,

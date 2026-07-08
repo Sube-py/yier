@@ -21,6 +21,7 @@ const workspace = {
   forkingThreadId: ref(''),
   forkThread: vi.fn(),
   isActiveTurnInProgress: ref(false),
+  isActiveThreadLoading: ref(false),
   isArchiving: ref(false),
   isBooting: ref(false),
   isCommandBusy: ref(false),
@@ -81,6 +82,7 @@ describe('CodexEmbedView', () => {
     workspace.activeThreadState.value = null
     workspace.activeUserInputRequest.value = null
     workspace.activeStatus.value = 'idle'
+    workspace.isActiveThreadLoading.value = false
     workspace.errorMessage.value = ''
     workspace.successMessage.value = ''
     workspace.status.value = 'idle'

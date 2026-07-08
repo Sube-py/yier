@@ -18,6 +18,7 @@ const baseProps: {
   activeMode: CodexWorkMode
   queuedFollowups: CodexQueuedFollowup[]
   socketStatus: CodexSocketStatus
+  isThreadLoading: boolean
 } = {
   activeThreadId: 'thread-1',
   activeThreadState: { id: 'thread-1', turns: [] },
@@ -26,6 +27,7 @@ const baseProps: {
   activeMode: 'build',
   queuedFollowups: [],
   socketStatus: 'open',
+  isThreadLoading: false,
 }
 
 function mountPane(activeUserInputRequest: CodexPendingRequest | null = null) {
@@ -65,6 +67,28 @@ describe('CodexChatPane', () => {
 
     expect(wrapper.findComponent({ name: 'CodexRequestPanel' }).exists()).toBe(true)
     expect(wrapper.findComponent({ name: 'CodexComposer' }).exists()).toBe(true)
+  })
+
+  it('shows a conversation loading overlay and disables the composer while loading a thread', () => {
+    const wrapper = shallowMount(CodexChatPane, {
+      props: {
+        ...baseProps,
+        isThreadLoading: true,
+      },
+      global: {
+        stubs: {
+          CodexComposer: true,
+          CodexConversation: true,
+          CodexRequestPanel: true,
+          CodexThreadToolbar: true,
+        },
+      },
+    })
+
+    expect(wrapper.get('[data-codex-thread-loading]').text()).toContain(
+      'Loading conversation',
+    )
+    expect(wrapper.getComponent({ name: 'CodexComposer' }).props('disabled')).toBe(true)
   })
 
   it('passes workspace run locations through to the composer', async () => {

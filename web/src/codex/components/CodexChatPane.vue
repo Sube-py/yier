@@ -33,6 +33,7 @@ const props = defineProps<{
   isCommandBusy?: boolean
   isRenaming?: boolean
   isArchiving?: boolean
+  isThreadLoading?: boolean
   isActiveTurnInProgress?: boolean
   emptyEyebrow?: string
   emptyTitle?: string
@@ -137,11 +138,25 @@ function stringValue(value: unknown) {
       </span>
     </div>
 
-    <CodexConversation
-      :state="activeThreadState"
-      @fork-thread="emit('forkThread', $event)"
-      @copy-error="emit('copyError', $event)"
-    />
+    <div class="relative flex min-h-0 min-w-0 flex-1 flex-col">
+      <CodexConversation
+        :state="activeThreadState"
+        @fork-thread="emit('forkThread', $event)"
+        @copy-error="emit('copyError', $event)"
+      />
+      <div
+        v-if="isThreadLoading"
+        class="absolute inset-0 z-10 grid place-items-center bg-[rgba(255,253,247,0.58)] backdrop-blur-[2px]"
+        data-codex-thread-loading
+      >
+        <div
+          class="inline-flex items-center gap-2 rounded-lg border border-[color:var(--app-border)] bg-[rgba(255,252,245,0.96)] px-3 py-2 text-sm font-semibold text-[color:var(--app-text-soft)] shadow-[0_14px_34px_rgba(24,44,48,0.10)]"
+        >
+          <i class="pi pi-spinner pi-spin text-[0.8rem]"></i>
+          <span>Loading conversation</span>
+        </div>
+      </div>
+    </div>
 
     <CodexRequestPanel
       :request="activeUserInputRequest"
@@ -152,7 +167,7 @@ function stringValue(value: unknown) {
     <CodexComposer
       v-if="!activeUserInputRequest"
       v-model="composerText"
-      :disabled="!activeThreadId || socketStatus !== 'open'"
+      :disabled="!activeThreadId || socketStatus !== 'open' || isThreadLoading"
       :busy="isCommandBusy"
       :is-working="isActiveTurnInProgress"
       :mode="activeMode"

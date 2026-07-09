@@ -674,28 +674,12 @@ function workUnitsForBlock(block: TurnBlockView) {
   return block.workUnits ?? workRenderUnits(block.items)
 }
 
-function hasWorkBlock(turnView: TurnView) {
-  return turnView.blocks.some((block) => block.kind === 'work')
-}
-
 function hasFinalAssistantResponse(turnView: TurnView) {
   return turnView.finalResponseItems.some((item) => itemText(item.item))
 }
 
 function shouldShowStandaloneThinking(turnView: TurnView) {
-  return (
-    isTurnInProgress(turnView.turn) &&
-    !hasFinalAssistantResponse(turnView) &&
-    !hasWorkBlock(turnView)
-  )
-}
-
-function shouldShowThinkingInWork(turnView: TurnView, block: TurnBlockView) {
-  return (
-    isTurnInProgress(turnView.turn) &&
-    !hasFinalAssistantResponse(turnView) &&
-    workUnitsForBlock(block).length === 0
-  )
+  return isTurnInProgress(turnView.turn) && !hasFinalAssistantResponse(turnView)
 }
 
 function activityHasInProgress(items: ConversationItemView[]) {
@@ -1702,10 +1686,8 @@ const justDebug = false
                 data-codex-work-toggle
                 @click="toggleWork(turnView)"
               >
-                <CodexThinkingShimmer v-if="isTurnInProgress(turnView.turn)" />
                 <CodexWorkedLabel
                   class="truncate"
-                  :class="isTurnInProgress(turnView.turn) ? 'text-[0.72rem] font-normal opacity-75' : ''"
                   :status="turnView.turn.status"
                   :work-started-at-ms="
                     turnView.turn.firstTurnWorkItemStartedAtMs
@@ -1728,12 +1710,6 @@ const justDebug = false
               class="grid min-w-0 gap-1.5 border-l border-[rgba(34,66,72,0.12)] pl-3 max-sm:pl-2"
               data-codex-work-items
             >
-              <CodexThinkingShimmer
-                v-if="shouldShowThinkingInWork(turnView, block)"
-                class="py-1 text-sm"
-                data-codex-thinking-fallback
-              />
-
               <template v-for="unit in workUnitsForBlock(block)" :key="unit.id">
                 <div
                   v-if="unit.kind === 'message'"

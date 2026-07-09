@@ -474,10 +474,16 @@ describe('CodexConversation', () => {
     expect(wrapper.text()).toContain('Working for 3s')
     expect(wrapper.text()).toContain('Thinking')
     expect(wrapper.find('[data-codex-thinking-shimmer]').exists()).toBe(true)
-    expect(wrapper.find('[data-codex-thinking-fallback]').exists()).toBe(true)
-    expect(wrapper.get('[data-codex-work-toggle]').attributes('aria-expanded')).toBe('true')
+    expect(wrapper.find('[data-codex-thinking-placeholder]').exists()).toBe(true)
+    expect(wrapper.find('[data-codex-thinking-fallback]').exists()).toBe(false)
+    const workToggle = wrapper.get('[data-codex-work-toggle]')
+    expect(workToggle.text()).not.toContain('Thinking')
+    expect(workToggle.attributes('aria-expanded')).toBe('true')
     expect(wrapper.find('[data-codex-work-item]').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('Inspecting the code')
+    expect(wrapper.html().indexOf('data-codex-work-section')).toBeLessThan(
+      wrapper.html().indexOf('data-codex-thinking-placeholder'),
+    )
 
     vi.useRealTimers()
   })

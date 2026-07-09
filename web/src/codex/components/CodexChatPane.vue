@@ -10,6 +10,7 @@ import type {
   CodexPendingRequest,
   CodexPromptSubmission,
   CodexQueuedFollowup,
+  CodexSkillSummary,
   CodexSocketStatus,
   CodexThreadGoalStatus,
   CodexWorkMode,
@@ -38,6 +39,7 @@ const props = defineProps<{
   emptyEyebrow?: string
   emptyTitle?: string
   showEmptyHeader?: boolean
+  listSkills?: () => Promise<CodexSkillSummary[]>
 }>()
 
 const emit = defineEmits<{
@@ -174,6 +176,7 @@ function stringValue(value: unknown) {
       :queued-followups="queuedFollowups"
       :state="activeThreadState"
       :workspace="workspace"
+      :list-skills="listSkills"
       @send-prompt="emit('sendPrompt', $event)"
       @steer-prompt="emit('steerPrompt', $event)"
       @enqueue-followup="emit('enqueueFollowup', $event)"
@@ -183,6 +186,8 @@ function stringValue(value: unknown) {
       @set-thread-goal="(objective, tokenBudget) => emit('setThreadGoal', objective, tokenBudget)"
       @update-thread-goal-status="emit('updateThreadGoalStatus', $event)"
       @clear-thread-goal="emit('clearThreadGoal')"
+      @compact-thread="emit('compactThread')"
+      @fork-thread="activeThreadId ? emit('forkThread', activeThreadId) : undefined"
       @remote-connection-changed="emit('remoteConnectionChanged')"
     />
   </section>

@@ -248,6 +248,18 @@ export interface CodexThreadForkResponse {
   state?: CodexConversationState | null
 }
 
+export interface CodexSkillSummary {
+  name: string
+  display_name?: string | null
+  description?: string | null
+  short_description?: string | null
+  path: string
+  scope?: string | null
+  enabled?: boolean
+  interface?: JsonRecord | null
+  cwd?: string | null
+}
+
 export type CodexClientCommand =
   | 'list_threads'
   | 'subscribe_thread'
@@ -269,6 +281,7 @@ export type CodexClientCommand =
   | 'fork_thread'
   | 'unarchive_thread'
   | 'activate_remote_connection'
+  | 'list_skills'
 
 export type CodexServerEventType =
   | 'connection_ready'

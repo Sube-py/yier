@@ -28,6 +28,7 @@ from codex_app_server.generated.v2_all import (
     NotLoadedThreadStatus,
     SessionSource,
     SessionSourceValue,
+    SkillsListResponse,
     SubAgentSessionSource,
     SystemErrorThreadStatus,
     Thread,
@@ -477,6 +478,39 @@ class CodexIpcManager:
             }
         )
 
+    async def list_skills(
+        self,
+        *,
+        thread_id: str | None = None,
+        cwd: str | None = None,
+        force_reload: bool = False,
+    ) -> list[JsonDict]:
+        session: CodexIpcSession
+        resolved_cwd = cwd.strip() if isinstance(cwd, str) and cwd.strip() else ""
+        if thread_id:
+            managed = await self._ensure_thread(thread_id)
+            session = managed.session
+            if not resolved_cwd:
+                state = managed.state or managed.session.state
+                state_cwd = state.get("cwd") if isinstance(state, dict) else None
+                if isinstance(state_cwd, str) and state_cwd.strip():
+                    resolved_cwd = state_cwd.strip()
+        else:
+            session = await self._ensure_workspace_session()
+
+        codex = await session._ensure_codex()
+        params: JsonDict = {}
+        if resolved_cwd:
+            params["cwds"] = [resolved_cwd]
+        if force_reload:
+            params["forceReload"] = True
+        response = await codex._client.request(
+            "skills/list",
+            params or None,
+            response_model=SkillsListResponse,
+        )
+        return self._flatten_skills_response(response)
+
     async def start_thread(self, *, project_path: str | None = None) -> JsonDict:
         params = self._thread_start_params(project_path=project_path)
         session = self._new_session(self._config())
@@ -615,6 +649,23 @@ class CodexIpcManager:
                                 else Path(clean_path).name
                             ),
                             "path": clean_path,
+                        }
+                    )
+                continue
+            if item_type == "skill":
+                path = attachment.get("path") or attachment.get("fsPath")
+                name = attachment.get("name") or attachment.get("label")
+                if (
+                    isinstance(path, str)
+                    and path.strip()
+                    and isinstance(name, str)
+                    and name.strip()
+                ):
+                    items.append(
+                        {
+                            "type": "skill",
+                            "name": name.strip(),
+                            "path": path.strip(),
                         }
                     )
         return items
@@ -756,6 +807,51 @@ class CodexIpcManager:
             self._workspace_session = self._new_session(self._config())
             await self._workspace_session.start()
         return self._workspace_session
+
+    def _flatten_skills_response(self, response: SkillsListResponse) -> list[JsonDict]:
+        skills: list[JsonDict] = []
+        seen_paths: set[str] = set()
+        for entry in response.data:
+            for skill in entry.skills:
+                if not skill.enabled:
+                    continue
+                path = str(skill.path.root if hasattr(skill.path, "root") else skill.path)
+                if not path or path in seen_paths:
+                    continue
+                seen_paths.add(path)
+                interface = (
+                    skill.interface.model_dump(mode="json", by_alias=True)
+                    if skill.interface is not None
+                    else None
+                )
+                short_description = skill.short_description
+                if not short_description and skill.interface is not None:
+                    short_description = skill.interface.short_description
+                display_name = skill.name
+                if skill.interface is not None and skill.interface.display_name:
+                    display_name = skill.interface.display_name
+                skills.append(
+                    {
+                        "name": skill.name,
+                        "display_name": display_name,
+                        "description": skill.description,
+                        "short_description": short_description,
+                        "path": path,
+                        "scope": skill.scope.value
+                        if hasattr(skill.scope, "value")
+                        else str(skill.scope),
+                        "enabled": skill.enabled,
+                        "interface": interface,
+                        "cwd": entry.cwd,
+                    }
+                )
+        skills.sort(
+            key=lambda item: (
+                str(item.get("scope") or ""),
+                str(item.get("display_name") or item.get("name") or "").lower(),
+            )
+        )
+        return skills
 
     async def _ensure_thread(self, thread_id: str) -> ManagedCodexThread:
         normalized_thread_id = thread_id.strip()

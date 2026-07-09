@@ -9,6 +9,7 @@ import type {
   CodexQueuedFollowup,
   CodexRemoteConnection,
   CodexRemoteConnectionsResponse,
+  CodexSkillSummary,
   CodexThreadGoal,
   CodexThreadGoalStatus,
   CodexWorkMode,
@@ -16,8 +17,19 @@ import type {
   JsonRecord,
 } from '../types'
 import { isRecord } from '../lib/format'
+import {
+  buildSlashCommands,
+  clearSlashQuery,
+  CODEX_INIT_PROMPT,
+  filterSlashCommands,
+  isSlashOnlyComposerText,
+  parseSlashQuery,
+  type CodexSlashCommandDefinition,
+  type CodexSlashQueryMatch,
+} from '../lib/slashCommands'
 import { apiPost } from '../../lib/api'
 import CodexHostPathPicker from './CodexHostPathPicker.vue'
+import CodexSlashCommandMenu from './CodexSlashCommandMenu.vue'
 
 const draft = defineModel<string>({ required: true })
 
@@ -52,6 +64,7 @@ const props = defineProps<{
   queuedFollowups: CodexQueuedFollowup[]
   state: CodexConversationState | null
   workspace?: CodexWorkspaceResponse | null
+  listSkills?: () => Promise<CodexSkillSummary[]>
 }>()
 
 const emit = defineEmits<{
@@ -65,6 +78,8 @@ const emit = defineEmits<{
   updateThreadGoalStatus: [status: CodexThreadGoalStatus]
   clearThreadGoal: []
   remoteConnectionChanged: []
+  compactThread: []
+  forkThread: []
 }>()
 
 const baseModelOptions = ['gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.2']
@@ -76,12 +91,25 @@ const goalTokenBudgetDraft = ref('')
 const isGoalComposeMode = ref(false)
 const imageAttachments = ref<JsonRecord[]>([])
 const fileAttachments = ref<JsonRecord[]>([])
+const skillAttachments = ref<JsonRecord[]>([])
+const availableSkills = ref<CodexSkillSummary[]>([])
+const skillsLoading = ref(false)
+const skillsLoadedFor = ref('')
 const filePickerOpen = ref(false)
 const addMenuTrigger = ref<HTMLElement | null>(null)
+const composerShell = ref<HTMLElement | null>(null)
+const composerTextarea = ref<HTMLTextAreaElement | null>(null)
 const intelligencePopover = ref<PopoverRef | null>(null)
 const permissionPopover = ref<PopoverRef | null>(null)
 const addMenuOpen = ref(false)
 const addMenuStyle = ref<Record<string, string>>({})
+const slashMenuStyle = ref<Record<string, string>>({})
+const slashMenuOpen = ref(false)
+const slashSelectedIndex = ref(0)
+const slashMatch = ref<CodexSlashQueryMatch | null>(null)
+/** After Esc, keep the menu closed for the current `/…` token until it is removed. */
+const slashMenuSuppressed = ref(false)
+const statusPanelOpen = ref(false)
 const selectedPermissionMode = ref<PermissionMode>('full')
 const remoteSwitchingId = ref<string | null>(null)
 const remoteSwitchError = ref('')
@@ -152,7 +180,11 @@ const activePermissionOption = computed<PermissionOption>(
 )
 const hasDraft = computed(() => draft.value.trim().length > 0)
 const hasPromptInput = computed(
-  () => hasDraft.value || imageAttachments.value.length > 0 || fileAttachments.value.length > 0,
+  () =>
+    hasDraft.value ||
+    imageAttachments.value.length > 0 ||
+    fileAttachments.value.length > 0 ||
+    skillAttachments.value.length > 0,
 )
 const canSubmitText = computed(() => hasPromptInput.value && !props.disabled && !props.busy)
 const primaryAction = computed(() => {
@@ -262,6 +294,43 @@ const composerPlaceholder = computed(() => {
   }
   return props.isWorking ? 'Add a follow-up for the queue...' : 'Ask Codex to work in this thread...'
 })
+const slashCommands = computed(() =>
+  buildSlashCommands({
+    mode: props.mode,
+    isWorking: Boolean(props.isWorking),
+    hasThreadGoal: hasThreadGoal.value,
+    hasThread: Boolean(props.state?.id),
+    contextPercent: context.value.percent,
+    activeModel: activeModel.value,
+    activeReasoningEffort: activeReasoningEffort.value,
+    threadId: typeof props.state?.id === 'string' ? props.state.id : null,
+    cwd: typeof props.state?.cwd === 'string' ? props.state.cwd : null,
+    skills: availableSkills.value,
+  }),
+)
+const filteredSlashCommands = computed(() => {
+  const match = slashMatch.value
+  if (!match) {
+    return [] as CodexSlashCommandDefinition[]
+  }
+  return filterSlashCommands(slashCommands.value, match.query, {
+    composerIsEmptyLike: isSlashOnlyComposerText(draft.value),
+  })
+})
+const statusDetails = computed(() => {
+  const threadId = typeof props.state?.id === 'string' ? props.state.id : ''
+  const cwd = typeof props.state?.cwd === 'string' ? props.state.cwd : ''
+  return {
+    threadId,
+    cwd,
+    model: activeModel.value,
+    reasoning: activeReasoningEffort.value,
+    mode: props.mode,
+    contextLabel: context.value.label,
+    contextDetail: context.value.detail,
+    contextPercent: context.value.percent,
+  }
+})
 
 watch(
   () => props.state?.id,
@@ -270,6 +339,8 @@ watch(
     selectedReasoningEffort.value = ''
     addMenuOpen.value = false
     todoExpanded.value = false
+    closeSlashMenu()
+    statusPanelOpen.value = false
   },
 )
 
@@ -280,15 +351,33 @@ watch(
     isGoalComposeMode.value = false
     imageAttachments.value = []
     fileAttachments.value = []
+    skillAttachments.value = []
+    availableSkills.value = []
+    skillsLoadedFor.value = ''
     addMenuOpen.value = false
   },
 )
+
+watch(draft, () => {
+  syncSlashMenuFromDraft()
+})
+
+watch(filteredSlashCommands, (commands) => {
+  if (!commands.length) {
+    slashSelectedIndex.value = 0
+    return
+  }
+  if (slashSelectedIndex.value >= commands.length) {
+    slashSelectedIndex.value = 0
+  }
+})
 
 function sendSubmission() {
   if (!canSubmitText.value || props.isWorking) {
     return
   }
   const attachments = [
+    ...skillAttachments.value.map((attachment) => ({ ...attachment })),
     ...fileAttachments.value.map((attachment) => ({ ...attachment })),
     ...imageAttachments.value.map((attachment) => ({ ...attachment })),
   ]
@@ -304,6 +393,7 @@ function sendSubmission() {
   draft.value = ''
   imageAttachments.value = []
   fileAttachments.value = []
+  skillAttachments.value = []
 }
 
 function submitGoal() {
@@ -370,7 +460,8 @@ function startPlanMode() {
     return
   }
   isGoalComposeMode.value = false
-  emit('setMode', 'plan')
+  // Match slash `/plan-mode`: toggle plan on/off from the add menu too.
+  emit('setMode', props.mode === 'plan' ? 'build' : 'plan')
   addMenuOpen.value = false
 }
 
@@ -397,26 +488,53 @@ function onDocumentClick(event: MouseEvent) {
   const target = event.target
   if (!(target instanceof Element)) {
     closeFloatingMenus()
+    closeSlashMenu()
+    statusPanelOpen.value = false
     return
   }
   if (
     target.closest('[data-codex-add-menu]') ||
     target.closest('[data-codex-add-menu-trigger]')
   ) {
-    return
+    // keep add menu
+  } else {
+    closeFloatingMenus()
   }
-  closeFloatingMenus()
+  if (
+    !target.closest('[data-codex-slash-menu]') &&
+    !target.closest('[data-codex-composer-textarea]')
+  ) {
+    closeSlashMenu()
+  }
+  if (
+    !target.closest('[data-codex-status-panel]') &&
+    !target.closest('[data-codex-context-window]')
+  ) {
+    // status panel closes only via its own control or Escape unless opened from slash
+  }
 }
 
 function onDocumentKeydown(event: KeyboardEvent) {
-  if (event.key === 'Escape') {
+  if (handleSlashMenuKeydown(event)) {
+    return
+  }
+  if (event.key === 'Escape' || event.code === 'Escape') {
+    // Fallback path when the slash menu already closed itself mid-handler.
+    if (slashMenuOpen.value) {
+      event.preventDefault()
+      dismissSlashMenu()
+    }
     closeFloatingMenus()
+    statusPanelOpen.value = false
   }
 }
 
 function repositionOpenMenus() {
   if (addMenuOpen.value) {
     updateFloatingMenuPosition(addMenuTrigger.value, addMenuStyle, 320)
+  }
+  if (slashMenuOpen.value) {
+    updateSlashMenuPosition()
   }
 }
 
@@ -508,6 +626,10 @@ async function activateRunLocation(connectionId: string) {
 }
 
 function onKeydown(event: KeyboardEvent) {
+  if (handleSlashMenuKeydown(event)) {
+    return
+  }
+
   if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
     submitPrimary()
     return
@@ -521,6 +643,325 @@ function onKeydown(event: KeyboardEvent) {
     event.preventDefault()
     toggleGoalComposeMode()
   }
+}
+
+function handleSlashMenuKeydown(event: KeyboardEvent) {
+  if (event.isComposing) {
+    return false
+  }
+
+  const key = event.key
+  const code = event.code
+  const isArrowDown = key === 'ArrowDown' || code === 'ArrowDown'
+  const isArrowUp = key === 'ArrowUp' || code === 'ArrowUp'
+  const isEnter =
+    (key === 'Enter' || code === 'Enter') && !event.metaKey && !event.ctrlKey && !event.shiftKey
+  const isTab = key === 'Tab' || code === 'Tab'
+  const isEscape = key === 'Escape' || code === 'Escape'
+
+  // Esc should dismiss even if a concurrent handler already flipped open=false.
+  if (isEscape && (slashMenuOpen.value || slashMatch.value)) {
+    event.preventDefault()
+    event.stopPropagation()
+    dismissSlashMenu()
+    return true
+  }
+
+  if (!slashMenuOpen.value) {
+    return false
+  }
+
+  if (isArrowDown) {
+    event.preventDefault()
+    event.stopPropagation()
+    moveSlashSelection(1)
+    return true
+  }
+  if (isArrowUp) {
+    event.preventDefault()
+    event.stopPropagation()
+    moveSlashSelection(-1)
+    return true
+  }
+  if (isEnter || isTab) {
+    const command = filteredSlashCommands.value[slashSelectedIndex.value]
+    if (command) {
+      event.preventDefault()
+      event.stopPropagation()
+      void selectSlashCommand(command)
+      return true
+    }
+  }
+  return false
+}
+
+function syncSlashMenuFromDraft(caret?: number) {
+  if (props.disabled || props.busy) {
+    closeSlashMenu()
+    return
+  }
+  const selectionStart = resolveSlashCaret(caret)
+  const match = parseSlashQuery(draft.value, selectionStart)
+  if (!match) {
+    // Only clear Esc-suppression once the current `/…` token is gone.
+    // Match Codex: after Esc, continue typing in the same token must not reopen.
+    if (!draftHasSlashToken(draft.value)) {
+      slashMenuSuppressed.value = false
+    }
+    closeSlashMenu()
+    return
+  }
+  if (slashMenuSuppressed.value) {
+    slashMenuOpen.value = false
+    slashMatch.value = match
+    return
+  }
+  const wasOpen = slashMenuOpen.value
+  slashMatch.value = match
+  slashMenuOpen.value = true
+  if (!wasOpen) {
+    slashSelectedIndex.value = 0
+  }
+  void ensureSkillsLoaded()
+  void nextTick(() => updateSlashMenuPosition())
+}
+
+function resolveSlashCaret(caret?: number) {
+  if (typeof caret === 'number') {
+    return caret
+  }
+  const selectionStart = composerTextarea.value?.selectionStart
+  if (typeof selectionStart === 'number') {
+    // jsdom/setValue often leaves the caret at 0; if the draft itself is a slash
+    // token, treat the caret as being at the end so filtering keeps working.
+    if (selectionStart === 0 && draft.value.length > 0 && draftHasSlashToken(draft.value)) {
+      return draft.value.length
+    }
+    return selectionStart
+  }
+  return draft.value.length
+}
+
+function draftHasSlashToken(value: string) {
+  return parseSlashQuery(value, value.length) != null
+}
+
+async function ensureSkillsLoaded(force = false) {
+  if (!props.listSkills || props.disabled) {
+    return
+  }
+  const threadId = typeof props.state?.id === 'string' ? props.state.id : ''
+  const cwd = typeof props.state?.cwd === 'string' ? props.state.cwd : ''
+  const cacheKey = `${threadId}::${cwd}`
+  if (!force && skillsLoadedFor.value === cacheKey) {
+    return
+  }
+  if (skillsLoading.value) {
+    return
+  }
+  skillsLoading.value = true
+  try {
+    const skills = await props.listSkills()
+    availableSkills.value = Array.isArray(skills) ? skills : []
+    skillsLoadedFor.value = cacheKey
+    if (slashMenuOpen.value) {
+      await nextTick()
+      updateSlashMenuPosition()
+    }
+  } catch {
+    if (force || skillsLoadedFor.value !== cacheKey) {
+      availableSkills.value = []
+    }
+  } finally {
+    skillsLoading.value = false
+  }
+}
+
+function dismissSlashMenu() {
+  slashMenuSuppressed.value = true
+  closeSlashMenu()
+}
+
+function closeSlashMenu() {
+  slashMenuOpen.value = false
+  slashMatch.value = null
+  slashSelectedIndex.value = 0
+}
+
+function moveSlashSelection(delta: number) {
+  const total = filteredSlashCommands.value.length
+  if (!total) {
+    slashSelectedIndex.value = 0
+    return
+  }
+  const next = (slashSelectedIndex.value + delta + total) % total
+  if (next === slashSelectedIndex.value) {
+    return
+  }
+  slashSelectedIndex.value = next
+}
+
+function updateSlashMenuPosition() {
+  if (!slashMenuOpen.value || typeof window === 'undefined') {
+    slashMenuStyle.value = {}
+    return
+  }
+  const anchor =
+    (composerShell.value?.querySelector('[data-codex-composer]') as HTMLElement | null) ??
+    composerTextarea.value ??
+    composerShell.value
+  if (!anchor) {
+    slashMenuStyle.value = {}
+    return
+  }
+  const rect = anchor.getBoundingClientRect()
+  const viewportPadding = 12
+  // Match the composer card width so the popup sits flush above the input.
+  const width = Math.min(Math.max(rect.width, 240), window.innerWidth - viewportPadding * 2)
+  const left = Math.min(
+    Math.max(rect.left, viewportPadding),
+    Math.max(viewportPadding, window.innerWidth - width - viewportPadding),
+  )
+  slashMenuStyle.value = {
+    left: `${left}px`,
+    bottom: `${Math.max(viewportPadding, window.innerHeight - rect.top + 8)}px`,
+    width: `${width}px`,
+  }
+}
+
+function clearActiveSlashToken() {
+  const match = slashMatch.value
+  if (!match) {
+    return
+  }
+  draft.value = clearSlashQuery(draft.value, match)
+  closeSlashMenu()
+}
+
+async function selectSlashCommand(command: CodexSlashCommandDefinition) {
+  if (props.disabled || props.busy) {
+    return
+  }
+  clearActiveSlashToken()
+  addMenuOpen.value = false
+
+  switch (command.action.type) {
+    case 'compact':
+      if (props.isWorking) {
+        return
+      }
+      emit('compactThread')
+      return
+    case 'fork':
+      emit('forkThread')
+      return
+    case 'goal':
+      if (!hasThreadGoal.value && !props.isWorking) {
+        isGoalComposeMode.value = true
+        emit('setMode', 'build')
+        await nextTick()
+        composerTextarea.value?.focus()
+      }
+      return
+    case 'init':
+      if (props.isWorking) {
+        return
+      }
+      emit('sendPrompt', {
+        prompt: CODEX_INIT_PROMPT,
+        model: activeModel.value,
+        reasoningEffort: activeReasoningEffort.value,
+        approvalPolicy: activePermissionOption.value.approvalPolicy,
+        approvalsReviewer: activePermissionOption.value.approvalsReviewer,
+        sandboxPolicy: { ...activePermissionOption.value.sandboxPolicy },
+      })
+      return
+    case 'model':
+      await openIntelligenceMenu('model')
+      return
+    case 'plan-mode':
+      emit('setMode', props.mode === 'plan' ? 'build' : 'plan')
+      return
+    case 'reasoning':
+      await openIntelligenceMenu('reasoning')
+      return
+    case 'status':
+      statusPanelOpen.value = !statusPanelOpen.value
+      return
+    case 'skill':
+      addSkillAttachment(command.action.skill)
+      return
+  }
+}
+
+function addSkillAttachment(skill: {
+  name: string
+  path: string
+  displayName?: string | null
+  description?: string | null
+  scope?: string | null
+}) {
+  const path = skill.path.trim()
+  const name = skill.name.trim()
+  if (!path || !name) {
+    return
+  }
+  const attachment = {
+    type: 'skill',
+    name,
+    path,
+    display_name: skill.displayName?.trim() || name,
+    description: skill.description?.trim() || '',
+    scope: skill.scope?.trim() || '',
+  }
+  skillAttachments.value = [
+    ...skillAttachments.value.filter((item) => item.path !== path && item.name !== name),
+    attachment,
+  ]
+}
+
+function removeSkillAttachment(index: number) {
+  skillAttachments.value = skillAttachments.value.filter((_, itemIndex) => itemIndex !== index)
+}
+
+function skillAttachmentLabel(attachment: JsonRecord) {
+  const displayName = attachment.display_name
+  if (typeof displayName === 'string' && displayName.trim()) {
+    return displayName.trim()
+  }
+  const name = attachment.name
+  return typeof name === 'string' && name.trim() ? name.trim() : 'Skill'
+}
+
+function skillAttachmentScope(attachment: JsonRecord) {
+  const scope = attachment.scope
+  return typeof scope === 'string' ? scope.trim() : ''
+}
+
+async function openIntelligenceMenu(section: 'model' | 'reasoning') {
+  await nextTick()
+  const trigger = composerShell.value?.querySelector(
+    '[data-codex-intelligence-trigger]',
+  ) as HTMLElement | null
+  if (trigger) {
+    intelligencePopover.value?.toggle({ currentTarget: trigger } as unknown as Event)
+  }
+  await nextTick()
+  const selector =
+    section === 'model' ? '[data-codex-model-section]' : '[data-codex-reasoning-section]'
+  document.body.querySelector(selector)?.scrollIntoView?.({ block: 'nearest' })
+}
+
+function onComposerInput() {
+  syncSlashMenuFromDraft()
+}
+
+function onComposerClick() {
+  syncSlashMenuFromDraft()
+}
+
+function onComposerSelect() {
+  syncSlashMenuFromDraft()
 }
 
 function openFileAttachmentPicker() {
@@ -555,14 +996,14 @@ onMounted(() => {
   window.addEventListener('resize', repositionOpenMenus)
   window.addEventListener('scroll', repositionOpenMenus, true)
   document.addEventListener('click', onDocumentClick)
-  document.addEventListener('keydown', onDocumentKeydown)
+  document.addEventListener('keydown', onDocumentKeydown, true)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', repositionOpenMenus)
   window.removeEventListener('scroll', repositionOpenMenus, true)
   document.removeEventListener('click', onDocumentClick)
-  document.removeEventListener('keydown', onDocumentKeydown)
+  document.removeEventListener('keydown', onDocumentKeydown, true)
 })
 
 async function onPaste(event: ClipboardEvent) {
@@ -937,6 +1378,7 @@ function goalProgressText(goal: CodexThreadGoal | null) {
 <template>
   <section
     class="sticky bottom-0 z-10 mt-auto w-full pb-[calc(1rem+env(safe-area-inset-bottom))] pt-4"
+    ref="composerShell"
     data-codex-composer-shell
   >
     <div class="pointer-events-none absolute inset-x-0 bottom-0 z-0 h-full bg-gradient-to-t from-[rgba(255,253,247,1)] via-[rgba(255,253,247,0.96)] to-transparent"></div>
@@ -1137,6 +1579,38 @@ function goalProgressText(goal: CodexThreadGoal | null) {
         </div>
 
         <div
+          v-if="skillAttachments.length"
+          class="grid min-w-0 gap-1 px-1 pb-1"
+          data-codex-skill-attachments
+        >
+          <article
+            v-for="(attachment, index) in skillAttachments"
+            :key="`${skillAttachmentLabel(attachment)}-${index}`"
+            class="group grid min-w-0 grid-cols-[1.25rem_minmax(0,1fr)_1.5rem] items-center gap-2 rounded-lg border border-[rgba(34,66,72,0.1)] bg-[rgba(255,253,247,0.82)] px-2 py-1.5 text-sm"
+            data-codex-skill-attachment
+          >
+            <i class="pi pi-sparkles text-[0.72rem] text-[color:var(--app-text-soft)]"></i>
+            <span class="min-w-0">
+              <span class="block truncate font-semibold text-[color:var(--app-text)]">
+                {{ skillAttachmentLabel(attachment) }}
+              </span>
+              <span class="block truncate text-[0.68rem] text-[color:var(--app-text-soft)]">
+                {{ skillAttachmentScope(attachment) || 'Skill' }}
+              </span>
+            </span>
+            <button
+              type="button"
+              class="inline-flex h-6 w-6 items-center justify-center rounded-md text-[0.6rem] text-[color:var(--app-text-soft)] opacity-80 transition hover:bg-red-50 hover:text-red-700 group-hover:opacity-100"
+              :aria-label="`Remove ${skillAttachmentLabel(attachment)}`"
+              data-codex-skill-remove
+              @click="removeSkillAttachment(index)"
+            >
+              <i class="pi pi-times"></i>
+            </button>
+          </article>
+        </div>
+
+        <div
           v-if="fileAttachments.length"
           class="grid min-w-0 gap-1 px-1 pb-1"
           data-codex-file-attachments
@@ -1194,13 +1668,68 @@ function goalProgressText(goal: CodexThreadGoal | null) {
         </div>
 
         <textarea
+          ref="composerTextarea"
           v-model="draft"
           class="max-h-52 min-h-16 w-full min-w-0 resize-none rounded-lg border-0 bg-transparent px-2 py-2 text-sm leading-6 text-[color:var(--app-text)] outline-none placeholder:text-[color:var(--app-text-soft)] max-sm:min-h-14"
           :disabled="disabled"
           :placeholder="composerPlaceholder"
+          data-codex-composer-textarea
           @keydown="onKeydown"
+          @input="onComposerInput"
+          @click="onComposerClick"
+          @select="onComposerSelect"
+          @keyup="onComposerSelect"
           @paste="onPaste"
         ></textarea>
+
+        <div
+          v-if="statusPanelOpen"
+          class="mx-2 mb-2 grid gap-1 rounded-lg border border-[color:var(--app-border)] bg-[rgba(255,253,247,0.96)] px-3 py-2 text-xs text-[color:var(--app-text-soft)]"
+          data-codex-status-panel
+        >
+          <div class="flex items-center justify-between gap-2">
+            <p class="m-0 text-sm font-semibold text-[color:var(--app-text)]">Thread status</p>
+            <button
+              type="button"
+              class="inline-flex h-6 w-6 items-center justify-center rounded-md text-[color:var(--app-text-soft)] transition hover:bg-[rgba(21,94,99,0.06)] hover:text-[color:var(--app-text)]"
+              aria-label="Close status"
+              data-codex-status-close
+              @click="statusPanelOpen = false"
+            >
+              <i class="pi pi-times text-[0.65rem]"></i>
+            </button>
+          </div>
+          <p class="m-0" data-codex-status-thread>
+            <span class="font-semibold text-[color:var(--app-text)]">Thread</span>
+            {{ statusDetails.threadId || '—' }}
+          </p>
+          <p class="m-0" data-codex-status-cwd>
+            <span class="font-semibold text-[color:var(--app-text)]">Cwd</span>
+            {{ statusDetails.cwd || '—' }}
+          </p>
+          <p class="m-0" data-codex-status-model>
+            <span class="font-semibold text-[color:var(--app-text)]">Model</span>
+            {{ statusDetails.model }} · {{ statusDetails.reasoning }} · {{ statusDetails.mode }}
+          </p>
+          <p class="m-0" data-codex-status-context>
+            <span class="font-semibold text-[color:var(--app-text)]">Context</span>
+            {{ statusDetails.contextLabel }} · {{ statusDetails.contextDetail }}
+            <span v-if="statusDetails.contextPercent != null">
+              ({{ statusDetails.contextPercent }}%)
+            </span>
+          </p>
+        </div>
+
+        <CodexSlashCommandMenu
+          :open="slashMenuOpen"
+          :commands="filteredSlashCommands"
+          :selected-index="slashSelectedIndex"
+          :query="slashMatch?.query ?? ''"
+          :loading="skillsLoading"
+          :anchor-style="slashMenuStyle"
+          @select="selectSlashCommand"
+          @hover="slashSelectedIndex = $event"
+        />
 
         <div
           class="composer-footer flex min-w-0 items-center justify-between gap-2 max-sm:gap-1"
@@ -1267,7 +1796,7 @@ function goalProgressText(goal: CodexThreadGoal | null) {
                   <span>
                     <span class="block">Plan mode</span>
                     <span class="block text-[0.68rem] leading-4 text-[color:var(--app-text-soft)]">
-                      Turn plan mode on
+                      {{ mode === 'plan' ? 'Turn plan mode off' : 'Turn plan mode on' }}
                     </span>
                   </span>
                 </button>

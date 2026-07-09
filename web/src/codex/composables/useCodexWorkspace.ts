@@ -1,7 +1,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { CodexSocket } from '../lib/codexSocket'
-import { isWorkingStatus } from '../lib/format'
+import { isRecord, isWorkingStatus } from '../lib/format'
 import type {
   CodexCollaborationMode,
   CodexConversationState,
@@ -9,6 +9,7 @@ import type {
   CodexPendingRequest,
   CodexPromptSubmission,
   CodexQueuedFollowup,
+  CodexSkillSummary,
   CodexSocketStatus,
   CodexThreadGoal,
   CodexThreadGoalStatus,
@@ -714,6 +715,40 @@ export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
     })
   }
 
+  async function listSkills(options?: {
+    threadId?: string | null
+    cwd?: string | null
+    forceReload?: boolean
+  }) {
+    const threadId = options?.threadId ?? activeThreadId.value
+    const cwd =
+      options?.cwd ??
+      (typeof activeThreadState.value?.cwd === 'string' ? activeThreadState.value.cwd : null)
+    const response = await socket.sendCommand<{ skills?: CodexSkillSummary[] }>('list_skills', {
+      ...(threadId ? { thread_id: threadId } : {}),
+      ...(cwd ? { cwd } : {}),
+      ...(options?.forceReload ? { force_reload: true } : {}),
+    })
+    const skills = Array.isArray(response?.skills) ? response.skills : []
+    return skills
+      .filter((skill) => typeof skill?.name === 'string' && typeof skill?.path === 'string')
+      .map((skill) => ({
+        name: skill.name,
+        display_name:
+          typeof skill.display_name === 'string' && skill.display_name.trim()
+            ? skill.display_name
+            : skill.name,
+        description: typeof skill.description === 'string' ? skill.description : '',
+        short_description:
+          typeof skill.short_description === 'string' ? skill.short_description : '',
+        path: skill.path,
+        scope: typeof skill.scope === 'string' ? skill.scope : '',
+        enabled: skill.enabled !== false,
+        interface: isRecord(skill.interface) ? skill.interface : null,
+        cwd: typeof skill.cwd === 'string' ? skill.cwd : null,
+      }))
+  }
+
   async function hydrateThreadGoal(threadId: string) {
     try {
       const response = await socket.sendCommand<{ goal?: CodexThreadGoal | null }>(
@@ -1084,6 +1119,7 @@ export function useCodexWorkspace(options: UseCodexWorkspaceOptions = {}) {
     flatThreads,
     forkingThreadId,
     forkThread,
+    listSkills,
     isActiveThreadLoading,
     isActiveTurnInProgress,
     isArchiving,

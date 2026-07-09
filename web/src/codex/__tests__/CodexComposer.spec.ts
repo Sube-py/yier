@@ -377,9 +377,279 @@ describe('CodexComposer', () => {
     expect(wrapper.find('[data-codex-menu-goal]').exists()).toBe(false)
 
     await wrapper.get('[data-codex-add-menu-trigger]').trigger('click')
+    expect(wrapper.get('[data-codex-menu-plan]').text()).toContain('Turn plan mode on')
     await wrapper.get('[data-codex-menu-plan]').trigger('click')
 
     expect(wrapper.emitted('setMode')?.[0]).toEqual(['plan'])
+
+    await wrapper.setProps({ mode: 'plan' })
+    await wrapper.get('[data-codex-add-menu-trigger]').trigger('click')
+    expect(wrapper.get('[data-codex-menu-plan]').text()).toContain('Turn plan mode off')
+    await wrapper.get('[data-codex-menu-plan]').trigger('click')
+    expect(wrapper.emitted('setMode')?.[1]).toEqual(['build'])
+  })
+
+  it('opens slash command autocomplete from the composer input', async () => {
+    const wrapper = mountCodexComposer({
+      modelValue: '',
+      disabled: false,
+      busy: false,
+      isWorking: false,
+      mode: buildMode,
+      queuedFollowups: [],
+      state: {
+        id: 'thread-1',
+        turns: [],
+        cwd: '/tmp/demo',
+        latestModel: 'gpt-5.4',
+        latestReasoningEffort: 'medium',
+      },
+    })
+
+    const textarea = wrapper.get('textarea')
+    await textarea.setValue('/')
+    await textarea.trigger('input')
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('[data-codex-slash-menu]').exists()).toBe(true)
+    expect(wrapper.find('[data-codex-slash-option="plan-mode"]').exists()).toBe(true)
+    expect(wrapper.find('[data-codex-slash-option="compact"]').exists()).toBe(true)
+
+    await textarea.setValue('/plan')
+    await textarea.trigger('input')
+    await wrapper.vm.$nextTick()
+
+    await wrapper.get('[data-codex-slash-option="plan-mode"]').trigger('mousedown')
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.emitted('setMode')?.[0]).toEqual(['plan'])
+    expect(wrapper.find('[data-codex-slash-menu]').exists()).toBe(false)
+  })
+
+  it('keeps slash menu closed after Esc until the slash token is retyped', async () => {
+    const wrapper = mountCodexComposer({
+      modelValue: '',
+      disabled: false,
+      busy: false,
+      isWorking: false,
+      mode: buildMode,
+      queuedFollowups: [],
+      state: {
+        id: 'thread-1',
+        turns: [],
+        latestModel: 'gpt-5.4',
+        latestReasoningEffort: 'medium',
+      },
+    })
+
+    const textarea = wrapper.get('textarea')
+    const textareaEl = textarea.element as HTMLTextAreaElement
+    await textarea.setValue('/')
+    textareaEl.setSelectionRange(1, 1)
+    await textarea.trigger('input')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-codex-slash-menu]').exists()).toBe(true)
+
+    textareaEl.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'Escape',
+        code: 'Escape',
+        bubbles: true,
+        cancelable: true,
+      }),
+    )
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-codex-slash-menu]').exists()).toBe(false)
+
+    // Continue typing in the same slash token should not reopen the menu.
+    await textarea.setValue('/pl')
+    textareaEl.setSelectionRange(3, 3)
+    await textarea.trigger('input')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-codex-slash-menu]').exists()).toBe(false)
+
+    // Remove the slash token, then type a fresh `/` to reopen.
+    await textarea.setValue('')
+    textareaEl.setSelectionRange(0, 0)
+    await textarea.trigger('input')
+    await wrapper.vm.$nextTick()
+    await textarea.setValue('/')
+    textareaEl.setSelectionRange(1, 1)
+    await textarea.trigger('input')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-codex-slash-menu]').exists()).toBe(true)
+  })
+
+  it('navigates slash commands with arrow keys and confirms with enter', async () => {
+    const wrapper = mountCodexComposer({
+      modelValue: '',
+      disabled: false,
+      busy: false,
+      isWorking: false,
+      mode: buildMode,
+      queuedFollowups: [],
+      state: {
+        id: 'thread-1',
+        turns: [],
+        latestModel: 'gpt-5.4',
+        latestReasoningEffort: 'medium',
+      },
+    })
+
+    const textarea = wrapper.get('textarea')
+    await textarea.setValue('/')
+    await textarea.trigger('input')
+    await wrapper.vm.$nextTick()
+
+    const firstSelected = wrapper.get('[data-codex-slash-selected]')
+    expect(firstSelected.attributes('data-codex-slash-option')).toBeTruthy()
+
+    await textarea.trigger('keydown', { key: 'ArrowDown', code: 'ArrowDown' })
+    await wrapper.vm.$nextTick()
+    const secondSelected = wrapper.get('[data-codex-slash-selected]')
+    expect(secondSelected.attributes('data-codex-slash-option')).not.toBe(
+      firstSelected.attributes('data-codex-slash-option'),
+    )
+
+    await textarea.trigger('keydown', { key: 'ArrowUp', code: 'ArrowUp' })
+    await wrapper.vm.$nextTick()
+    expect(wrapper.get('[data-codex-slash-selected]').attributes('data-codex-slash-option')).toBe(
+      firstSelected.attributes('data-codex-slash-option'),
+    )
+
+    // Move to plan-mode via filtering, then confirm with Enter.
+    await textarea.setValue('/plan')
+    await textarea.trigger('input')
+    await wrapper.vm.$nextTick()
+    await textarea.trigger('keydown', { key: 'Enter', code: 'Enter' })
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.emitted('setMode')?.[0]).toEqual(['plan'])
+    expect(wrapper.find('[data-codex-slash-menu]').exists()).toBe(false)
+  })
+
+  it('runs compact and status slash commands from the menu', async () => {
+    const wrapper = mountCodexComposer({
+      modelValue: '',
+      disabled: false,
+      busy: false,
+      isWorking: false,
+      mode: buildMode,
+      queuedFollowups: [],
+      state: {
+        id: 'thread-1',
+        turns: [],
+        cwd: '/tmp/demo',
+        latestModel: 'gpt-5.4',
+        latestReasoningEffort: 'high',
+        latestTokenUsageInfo: {
+          tokenUsage: {
+            last: { totalTokens: 1200 },
+            modelContextWindow: 4000,
+          },
+        },
+      },
+    })
+
+    const textarea = wrapper.get('textarea')
+    await textarea.setValue('/compact')
+    await textarea.trigger('input')
+    await wrapper.vm.$nextTick()
+    await wrapper.get('[data-codex-slash-option="compact"]').trigger('mousedown')
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.emitted('compactThread')).toHaveLength(1)
+
+    await textarea.setValue('/status')
+    await textarea.trigger('input')
+    await wrapper.vm.$nextTick()
+    await wrapper.get('[data-codex-slash-option="status"]').trigger('mousedown')
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.get('[data-codex-status-panel]').text()).toContain('thread-1')
+    expect(wrapper.get('[data-codex-status-panel]').text()).toContain('/tmp/demo')
+    expect(wrapper.get('[data-codex-status-panel]').text()).toContain('30%')
+  })
+
+  it('hides empty-composer slash commands when the draft has other text', async () => {
+    const wrapper = mountCodexComposer({
+      modelValue: '',
+      disabled: false,
+      busy: false,
+      isWorking: false,
+      mode: buildMode,
+      queuedFollowups: [],
+      state: { id: 'thread-1', turns: [] },
+    })
+
+    const textarea = wrapper.get('textarea')
+    await textarea.setValue('keep working /c')
+    await textarea.trigger('input')
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('[data-codex-slash-menu]').exists()).toBe(true)
+    expect(wrapper.find('[data-codex-slash-option="compact"]').exists()).toBe(false)
+    expect(wrapper.find('[data-codex-slash-option="goal"]').exists()).toBe(true)
+  })
+
+  it('loads skills into the slash menu and attaches them on select', async () => {
+    const listSkills = vi.fn().mockResolvedValue([
+      {
+        name: 'deep-research',
+        display_name: 'Deep Research',
+        description: 'Research thoroughly',
+        short_description: 'Research thoroughly',
+        path: '/skills/deep-research',
+        scope: 'user',
+        enabled: true,
+      },
+    ])
+    const wrapper = mountCodexComposer({
+      modelValue: '',
+      disabled: false,
+      busy: false,
+      isWorking: false,
+      mode: buildMode,
+      queuedFollowups: [],
+      state: { id: 'thread-1', turns: [], cwd: '/tmp/demo' },
+      listSkills,
+    })
+
+    const textarea = wrapper.get('textarea')
+    await textarea.setValue('/')
+    await textarea.trigger('input')
+    await wrapper.vm.$nextTick()
+    await Promise.resolve()
+    await wrapper.vm.$nextTick()
+
+    expect(listSkills).toHaveBeenCalled()
+    expect(wrapper.find('[data-codex-slash-group="Skills"]').exists()).toBe(true)
+    expect(
+      wrapper.find('[data-codex-slash-option="skill:/skills/deep-research"]').exists(),
+    ).toBe(true)
+
+    await wrapper
+      .get('[data-codex-slash-option="skill:/skills/deep-research"]')
+      .trigger('mousedown')
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.get('[data-codex-skill-attachment]').text()).toContain('Deep Research')
+
+    await textarea.setValue('Use this skill')
+    await wrapper.get('[data-codex-primary-submit]').trigger('click')
+
+    expect(wrapper.emitted('sendPrompt')?.[0]).toEqual([
+      expect.objectContaining({
+        prompt: 'Use this skill',
+        attachments: [
+          expect.objectContaining({
+            type: 'skill',
+            name: 'deep-research',
+            path: '/skills/deep-research',
+          }),
+        ],
+      }),
+    ])
   })
 
   it('closes the add popover when clicking outside or pressing escape', async () => {

@@ -236,6 +236,19 @@ class UnarchiveThreadCommandStrategy(ThreadCommandStrategy):
         return {"thread_id": thread_id}
 
 
+class ListSkillsCommandStrategy(CodexWsCommandStrategy):
+    async def execute(self, context: CodexWsCommandContext) -> dict[str, Any]:
+        thread_id = _payload_text(context.payload, "thread_id") or None
+        cwd = _payload_text(context.payload, "cwd") or None
+        force_reload = bool(context.payload.get("force_reload") or context.payload.get("forceReload"))
+        skills = await context.manager.list_skills(
+            thread_id=thread_id,
+            cwd=cwd,
+            force_reload=force_reload,
+        )
+        return {"skills": skills}
+
+
 class CodexWsCommandStrategyFactory:
     def __init__(self) -> None:
         self.strategies: dict[str, CodexWsCommandStrategy] = {
@@ -258,6 +271,7 @@ class CodexWsCommandStrategyFactory:
             "archive_thread": ArchiveThreadCommandStrategy(),
             "fork_thread": ForkThreadCommandStrategy(),
             "unarchive_thread": UnarchiveThreadCommandStrategy(),
+            "list_skills": ListSkillsCommandStrategy(),
         }
 
     def get(self, message_type: str) -> CodexWsCommandStrategy:

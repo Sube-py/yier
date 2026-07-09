@@ -95,11 +95,37 @@ class FakeCodexIpcSession:
         self.unarchive_calls: list[str | None] = []
         self.fork_calls: list[str | None] = []
         self.list_threads_calls: list[dict[str, Any] | None] = []
+        self.skills_list_calls: list[dict[str, Any] | None] = []
         self._state_queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
         self.list_threads_response = ThreadListResponse(
             data=[
                 fake_thread("thread-a", "/tmp/project-a", name="Alpha", preview="one"),
                 fake_thread("thread-b", "/tmp/project-b", name="Beta", preview="two"),
+            ]
+        )
+        self.skills_list_response = SimpleNamespace(
+            data=[
+                SimpleNamespace(
+                    cwd="/tmp/project-a",
+                    skills=[
+                        SimpleNamespace(
+                            name="deep-research",
+                            description="Research thoroughly",
+                            enabled=True,
+                            interface=SimpleNamespace(
+                                display_name="Deep Research",
+                                short_description="Research thoroughly",
+                                model_dump=lambda mode="python", by_alias=False: {
+                                    "displayName": "Deep Research",
+                                    "shortDescription": "Research thoroughly",
+                                },
+                            ),
+                            path=SimpleNamespace(root="/skills/deep-research"),
+                            scope=SimpleNamespace(value="user"),
+                            short_description=None,
+                        )
+                    ],
+                )
             ]
         )
 
@@ -162,6 +188,19 @@ class FakeCodexIpcSession:
     ) -> ThreadListResponse:
         self.list_threads_calls.append(params)
         return self.list_threads_response
+
+    async def _ensure_codex(self) -> SimpleNamespace:
+        async def request(
+            method: str,
+            params: dict[str, Any] | None,
+            *,
+            response_model: Any = None,
+        ) -> Any:
+            assert method == "skills/list"
+            self.skills_list_calls.append(params)
+            return self.skills_list_response
+
+        return SimpleNamespace(_client=SimpleNamespace(request=request))
 
     async def run_prompt(
         self,
@@ -1109,6 +1148,90 @@ def test_codex_controller_http_and_websocket_contract(tmp_path: Path) -> None:
                 None,
                 None,
             )
+
+            ws.send_json(
+                {
+                    "id": "prompt-skill",
+                    "type": "send_prompt",
+                    "payload": {
+                        "thread_id": "thread-a",
+                        "prompt": "use this skill",
+                        "attachments": [
+                            {
+                                "type": "skill",
+                                "name": "deep-research",
+                                "path": "/skills/deep-research",
+                            }
+                        ],
+                    },
+                }
+            )
+            receive_until(
+                lambda message: (
+                    message.get("type") == "ack"
+                    and message.get("id") == "prompt-skill"
+                )
+            )
+            assert factory.by_thread_id("thread-a").run_prompt_calls[-1] == (
+                "use this skill",
+                False,
+                None,
+                [
+                    {
+                        "type": "text",
+                        "text": "use this skill",
+                        "text_elements": [],
+                    },
+                    {
+                        "type": "skill",
+                        "name": "deep-research",
+                        "path": "/skills/deep-research",
+                    },
+                ],
+                None,
+                None,
+                None,
+            )
+
+            ws.send_json(
+                {
+                    "id": "skills-1",
+                    "type": "list_skills",
+                    "payload": {
+                        "thread_id": "thread-a",
+                        "cwd": "/tmp/project-a",
+                    },
+                }
+            )
+            skills_messages = receive_until(
+                lambda message: (
+                    message.get("type") == "ack" and message.get("id") == "skills-1"
+                )
+            )
+            skills_ack = next(
+                message
+                for message in skills_messages
+                if message.get("type") == "ack" and message.get("id") == "skills-1"
+            )
+            assert skills_ack["payload"]["skills"] == [
+                {
+                    "name": "deep-research",
+                    "display_name": "Deep Research",
+                    "description": "Research thoroughly",
+                    "short_description": "Research thoroughly",
+                    "path": "/skills/deep-research",
+                    "scope": "user",
+                    "enabled": True,
+                    "interface": {
+                        "displayName": "Deep Research",
+                        "shortDescription": "Research thoroughly",
+                    },
+                    "cwd": "/tmp/project-a",
+                }
+            ]
+            assert factory.by_thread_id("thread-a").skills_list_calls[-1] == {
+                "cwds": ["/tmp/project-a"],
+            }
 
             ws.send_json(
                 {

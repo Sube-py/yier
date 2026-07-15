@@ -1,35 +1,27 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, proxyRefs, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { computed, onBeforeUnmount, onMounted, proxyRefs, ref } from 'vue'
+import { useRoute } from 'vue-router'
 
 import CodexChatPane from '../codex/components/CodexChatPane.vue'
+import { useCodexEmbedStateEvents } from '../codex/composables/useCodexEmbedStateEvents'
 import { useCodexWorkspace } from '../codex/composables/useCodexWorkspace'
 import { codexSocketUrl } from '../codex/lib/codexSocket'
+import {
+  cloneEmbedMessage,
+  embedPositiveInteger,
+  embedRecord,
+  embedText,
+  normalizeEmbedMode,
+  normalizeGoalStatus,
+  parseEmbedCommand,
+  promptSubmissionFromCommand,
+  type EmbedCommand,
+  type EmbedMessageType,
+} from '../codex/lib/embedProtocol'
 import { activeThreadTitle } from '../codex/lib/format'
 import type { CodexWorkMode, JsonRecord } from '../codex/types'
 
-type EmbedMessageType =
-  | 'yier:codex-ready'
-  | 'yier:codex-thread-created'
-  | 'yier:codex-thread-resumed'
-  | 'yier:codex-prompt-sent'
-  | 'yier:codex-status'
-  | 'yier:codex-error'
-
-type EmbedCommandType = 'yier:codex-start' | 'yier:codex-resume'
-type EmbedWorkStatus = 'idle' | 'planning' | 'running' | 'awaiting_approval' | 'done' | 'failed'
-
-type EmbedCommand = {
-  type?: unknown
-  cwd?: unknown
-  threadId?: unknown
-  thread_id?: unknown
-  mode?: unknown
-  prompt?: unknown
-}
-
 const route = useRoute()
-const router = useRouter()
 const embedToken = queryText('embed_token')
 const codex = proxyRefs(
   useCodexWorkspace({
@@ -42,10 +34,10 @@ const codex = proxyRefs(
 const initError = ref('')
 const isInitializing = ref(false)
 const hasStarted = ref(false)
+const hasConnected = ref(false)
 
 const displayError = computed(() => initError.value || codex.errorMessage)
 const pageTitle = computed(() => activeThreadTitle(codex.activeThreadState) || 'Codex embed')
-const lastStatusMessageKey = ref('')
 
 function queryText(key: string) {
   const value = route.query[key]
@@ -55,277 +47,309 @@ function queryText(key: string) {
   return typeof value === 'string' ? value.trim() : ''
 }
 
-function postEmbedMessage(type: EmbedMessageType, payload: JsonRecord) {
+function postEmbedMessage(type: EmbedMessageType, payload: JsonRecord = {}) {
   if (typeof window === 'undefined') {
     return
   }
-  window.parent.postMessage({ type, ...payload }, '*')
+  window.parent.postMessage(cloneEmbedMessage(type, payload), '*')
 }
 
-function normalizeEmbedWorkStatus(): EmbedWorkStatus {
-  if (displayError.value) {
-    return 'failed'
-  }
-  if (codex.activeUserInputRequest) {
-    return 'awaiting_approval'
-  }
-  if (isInitializing.value || codex.isCommandBusy) {
-    return 'running'
-  }
+useCodexEmbedStateEvents({
+  source: codex,
+  hasStarted,
+  isInitializing,
+  displayError,
+  postMessage: postEmbedMessage,
+})
 
-  const status = codex.activeStatus
-  if (status === 'inProgress' || status === 'active' || status === 'working') {
-    return 'running'
+function commandMetadata(command: EmbedCommand) {
+  return {
+    command: command.type,
+    commandId: embedText(command.commandId),
   }
-  if (
-    status === 'completed' ||
-    status === 'complete' ||
-    status === 'succeeded' ||
-    status === 'success'
-  ) {
-    return 'done'
-  }
-  if (status === 'error' || status === 'failed') {
-    return 'failed'
-  }
-  if (status === 'planning') {
-    return 'planning'
-  }
-  return 'idle'
 }
 
-function postStatusMessage() {
-  if (!hasStarted.value && !codex.activeThreadId && !displayError.value) {
-    return
-  }
-
-  const status = normalizeEmbedWorkStatus()
-  const request = codex.activeUserInputRequest
-  const messageKey = JSON.stringify({
-    status,
-    threadId: codex.activeThreadId,
-    rawStatus: codex.activeStatus,
-    requestId: request?.id ?? '',
-    error: displayError.value,
-  })
-  if (messageKey === lastStatusMessageKey.value) {
-    return
-  }
-  lastStatusMessageKey.value = messageKey
-  postEmbedMessage('yier:codex-status', {
-    status,
+function postCommandResult(command: EmbedCommand, ok: boolean, payload: JsonRecord = {}) {
+  postEmbedMessage('yier:codex-command-result', {
+    ...commandMetadata(command),
+    ok,
     threadId: codex.activeThreadId,
     mode: codex.activeMode,
-    codexStatus: codex.activeStatus,
-    requestId: request?.id ?? '',
-    requestMethod: request?.method ?? '',
-    message: displayError.value,
+    ...payload,
   })
 }
 
-function failEmbedInit(message: string) {
+function postCommandError(command: EmbedCommand, message: string) {
   initError.value = message
-  postEmbedMessage('yier:codex-error', { message })
+  postEmbedMessage('yier:codex-error', {
+    ...commandMetadata(command),
+    message,
+  })
+  postCommandResult(command, false, { message })
 }
 
-function normalizeMode(value: unknown): { mode: CodexWorkMode | null; error: string } {
-  const mode = typeof value === 'string' ? value.trim().toLowerCase() : ''
-  if (!mode) {
-    return { mode: null, error: '' }
+function ensureEmbedToken() {
+  if (embedToken) {
+    return true
   }
-  if (mode === 'build' || mode === 'plan') {
-    return { mode, error: '' }
+  initError.value = 'embed_token is required.'
+  postEmbedMessage('yier:codex-error', { message: initError.value })
+  return false
+}
+
+async function ensureConnected() {
+  if (hasConnected.value) {
+    return
   }
-  return { mode: null, error: 'mode must be build or plan.' }
+  await codex.connect()
+  if (codex.errorMessage) {
+    throw new Error(codex.errorMessage)
+  }
+  hasConnected.value = true
+}
+
+function requireActiveThread() {
+  if (!codex.activeThreadId) {
+    throw new Error('An active thread is required.')
+  }
+  return codex.activeThreadId
+}
+
+async function callWorkspace(action: () => Promise<unknown>) {
+  initError.value = ''
+  codex.errorMessage = ''
+  await action()
+  if (codex.errorMessage) {
+    throw new Error(codex.errorMessage)
+  }
+}
+
+function goalRequest(command: EmbedCommand) {
+  const goal = embedRecord(command.goal)
+  const objective = embedText(
+    typeof command.goal === 'string' ? command.goal : null,
+    goal?.objective,
+    command.objective,
+  )
+  const tokenBudget = embedPositiveInteger(
+    goal?.tokenBudget,
+    goal?.token_budget,
+    command.tokenBudget,
+    command.token_budget,
+  )
+  return { objective, tokenBudget }
 }
 
 async function applyRequestedMode(mode: CodexWorkMode | null) {
   if (!mode) {
-    return true
+    return
   }
-  return await codex.setMode(mode)
+  await callWorkspace(() => codex.setMode(mode))
 }
 
-async function ensureEmbedToken() {
-  if (!embedToken) {
-    failEmbedInit('embed_token is required.')
+async function applyRequestedGoal(command: EmbedCommand) {
+  const { objective, tokenBudget } = goalRequest(command)
+  if (!objective) {
+    if (
+      command.goal !== undefined ||
+      command.objective !== undefined ||
+      command.tokenBudget !== undefined ||
+      command.token_budget !== undefined
+    ) {
+      throw new Error('goal objective is required.')
+    }
+    return
+  }
+  await callWorkspace(() => codex.setThreadGoal(objective, tokenBudget))
+}
+
+async function sendCommandPrompt(command: EmbedCommand) {
+  const submission = promptSubmissionFromCommand(command)
+  if (!submission.prompt && !submission.attachments?.length) {
     return false
   }
+  await callWorkspace(() => codex.sendPrompt(submission))
+  postEmbedMessage('yier:codex-prompt-sent', {
+    threadId: codex.activeThreadId,
+    cwd: codex.activeThreadState?.cwd ?? '',
+    mode: codex.activeMode,
+  })
   return true
 }
 
-async function startFromPayload({
-  cwd,
-  threadId,
-  mode,
-  prompt,
-}: {
-  cwd: string
-  threadId: string
-  mode: CodexWorkMode | null
-  prompt: string
-}) {
-  if (!(await ensureEmbedToken())) {
-    return
+async function startOrResume(command: EmbedCommand) {
+  const isStart = command.type === 'yier:codex-start'
+  const cwd = isStart ? embedText(command.cwd) : ''
+  const threadId = isStart ? '' : embedText(command.threadId, command.thread_id)
+  const modeResult = normalizeEmbedMode(command.mode)
+  if (modeResult.error) {
+    throw new Error(modeResult.error)
   }
-  if (cwd && threadId) {
-    failEmbedInit('Pass either cwd or thread_id, not both.')
-    return
-  }
-  if (!cwd && !threadId) {
-    failEmbedInit('cwd or thread_id is required.')
-    return
+  if ((isStart && !cwd) || (!isStart && !threadId)) {
+    throw new Error(isStart ? 'cwd is required.' : 'thread_id is required.')
   }
 
-  initError.value = ''
   hasStarted.value = true
   isInitializing.value = true
   try {
-    await codex.connect()
-    if (cwd) {
+    await ensureConnected()
+    if (isStart) {
       const payload = await codex.startEmbedThread(cwd)
       if (!payload?.thread_id) {
-        failEmbedInit(codex.errorMessage || 'Codex thread could not be created.')
-        return
+        throw new Error(codex.errorMessage || 'Codex thread could not be created.')
       }
-      if (!(await applyRequestedMode(mode))) {
-        failEmbedInit(codex.errorMessage || `Codex mode could not be set to ${mode}.`)
-        return
-      }
+      await applyRequestedMode(modeResult.mode)
+      await applyRequestedGoal(command)
       postEmbedMessage('yier:codex-thread-created', {
         threadId: payload.thread_id,
         cwd: codex.activeThreadState?.cwd ?? cwd,
-        mode: mode ?? codex.activeMode,
+        mode: codex.activeMode,
       })
-      if (prompt) {
-        await codex.sendPrompt(prompt)
-        if (codex.errorMessage) {
-          failEmbedInit(codex.errorMessage || 'Initial prompt could not be sent.')
-          return
-        }
-        postEmbedMessage('yier:codex-prompt-sent', {
-          threadId: payload.thread_id,
-          cwd: codex.activeThreadState?.cwd ?? cwd,
-          mode: mode ?? codex.activeMode,
-        })
+    } else {
+      const resumed = await codex.resumeEmbedThread(threadId)
+      if (!resumed) {
+        throw new Error(codex.errorMessage || 'Codex thread could not be resumed.')
       }
-      return
-    }
-
-    const resumed = await codex.resumeEmbedThread(threadId)
-    if (!resumed) {
-      failEmbedInit(codex.errorMessage || 'Codex thread could not be resumed.')
-      return
-    }
-    if (!(await applyRequestedMode(mode))) {
-      failEmbedInit(codex.errorMessage || `Codex mode could not be set to ${mode}.`)
-      return
-    }
-    postEmbedMessage('yier:codex-thread-resumed', {
-      threadId,
-      cwd: codex.activeThreadState?.cwd ?? '',
-      mode: mode ?? codex.activeMode,
-    })
-    if (prompt) {
-      await codex.sendPrompt(prompt)
-      if (codex.errorMessage) {
-        failEmbedInit(codex.errorMessage || 'Follow-up prompt could not be sent.')
-        return
-      }
-      postEmbedMessage('yier:codex-prompt-sent', {
+      await applyRequestedMode(modeResult.mode)
+      await applyRequestedGoal(command)
+      postEmbedMessage('yier:codex-thread-resumed', {
         threadId,
         cwd: codex.activeThreadState?.cwd ?? '',
-        mode: mode ?? codex.activeMode,
+        mode: codex.activeMode,
       })
     }
+    await sendCommandPrompt(command)
   } finally {
     isInitializing.value = false
   }
 }
 
-function consumeQueryMode() {
-  if (!queryText('mode')) {
+async function executeParentCommand(command: EmbedCommand) {
+  if (!ensureEmbedToken()) {
+    postCommandResult(command, false, { message: initError.value })
     return
   }
-  const nextQuery = { ...route.query }
-  delete nextQuery.mode
-  void router.replace({ query: nextQuery })
+  initError.value = ''
+  codex.errorMessage = ''
+  const previousThreadId = codex.activeThreadId
+  try {
+    if (command.type === 'yier:codex-start' || command.type === 'yier:codex-resume') {
+      await startOrResume(command)
+    } else {
+      requireActiveThread()
+      await executeActiveThreadCommand(command)
+    }
+    postCommandResult(command, true, {
+      threadId: codex.activeThreadId || previousThreadId,
+    })
+  } catch (error) {
+    postCommandError(command, error instanceof Error ? error.message : String(error))
+  }
 }
 
-async function initializeFromQuery() {
-  const cwd = queryText('cwd')
-  const threadId = queryText('thread_id')
-  const prompt = queryText('prompt')
-  const { mode, error } = normalizeMode(queryText('mode'))
-  if (error) {
-    failEmbedInit(error)
-    return
-  }
-  if (!cwd && !threadId && !prompt && !queryText('mode')) {
-    if (!(await ensureEmbedToken())) {
+async function executeActiveThreadCommand(command: EmbedCommand) {
+  switch (command.type) {
+    case 'yier:codex-send-prompt':
+      if (!(await sendCommandPrompt(command))) {
+        throw new Error('prompt or attachments are required.')
+      }
+      return
+    case 'yier:codex-steer-prompt': {
+      const prompt = embedText(command.prompt)
+      if (!prompt) throw new Error('prompt is required.')
+      await callWorkspace(() => codex.steerPrompt(prompt))
       return
     }
-    postEmbedMessage('yier:codex-ready', {})
-    return
+    case 'yier:codex-enqueue-followup': {
+      const prompt = embedText(command.prompt)
+      if (!prompt) throw new Error('prompt is required.')
+      await callWorkspace(() => codex.enqueueFollowup(prompt))
+      return
+    }
+    case 'yier:codex-remove-followup': {
+      const messageId = embedText(command.messageId, command.message_id)
+      if (!messageId) throw new Error('message_id is required.')
+      await callWorkspace(() => codex.removeFollowup(messageId))
+      return
+    }
+    case 'yier:codex-interrupt-turn':
+      await callWorkspace(() => codex.interruptTurn())
+      return
+    case 'yier:codex-compact-thread':
+      await callWorkspace(() => codex.compactThread())
+      return
+    case 'yier:codex-set-mode': {
+      const result = normalizeEmbedMode(command.mode)
+      if (result.error || !result.mode) throw new Error(result.error || 'mode is required.')
+      await applyRequestedMode(result.mode)
+      return
+    }
+    case 'yier:codex-set-goal': {
+      const { objective, tokenBudget } = goalRequest(command)
+      if (!objective) throw new Error('goal objective is required.')
+      await callWorkspace(() => codex.setThreadGoal(objective, tokenBudget))
+      return
+    }
+    case 'yier:codex-update-goal-status': {
+      const result = normalizeGoalStatus(command.status)
+      if (result.error || !result.status) throw new Error(result.error)
+      const status = result.status
+      await callWorkspace(() => codex.updateThreadGoalStatus(status))
+      return
+    }
+    case 'yier:codex-clear-goal':
+      await callWorkspace(() => codex.clearThreadGoal())
+      return
+    case 'yier:codex-submit-user-input': {
+      const requestId = embedText(command.requestId, command.request_id)
+      const response = embedRecord(command.response)
+      if (!requestId) throw new Error('request_id is required.')
+      if (!response) throw new Error('response must be an object.')
+      await callWorkspace(() => codex.submitUserInputResponse(requestId, response))
+      return
+    }
+    case 'yier:codex-rename-thread': {
+      const name = embedText(command.name)
+      if (!name) throw new Error('name is required.')
+      await callWorkspace(() => codex.renameThread(name))
+      return
+    }
+    case 'yier:codex-archive-thread':
+      await callWorkspace(() => codex.archiveThread())
+      return
+    case 'yier:codex-fork-thread':
+      await callWorkspace(() => codex.forkThread())
+      return
+    default:
+      throw new Error(`Unsupported iframe command: ${command.type}.`)
   }
-  await startFromPayload({ cwd, threadId, mode, prompt })
-  consumeQueryMode()
-}
-
-function textFromCommand(value: unknown) {
-  return typeof value === 'string' ? value.trim() : ''
 }
 
 function handleParentMessage(event: MessageEvent<unknown>) {
-  if (!event.data || typeof event.data !== 'object' || Array.isArray(event.data)) {
+  if (event.source && event.source !== window.parent) {
     return
   }
-  const command = event.data as EmbedCommand
-  if (command.type !== 'yier:codex-start' && command.type !== 'yier:codex-resume') {
-    return
+  const command = parseEmbedCommand(event.data)
+  if (command) {
+    void executeParentCommand(command)
   }
-  const modeResult = normalizeMode(command.mode)
-  if (modeResult.error) {
-    failEmbedInit(modeResult.error)
-    return
-  }
-  const cwd = command.type === 'yier:codex-start' ? textFromCommand(command.cwd) : ''
-  const threadId =
-    command.type === 'yier:codex-resume'
-      ? textFromCommand(command.threadId) || textFromCommand(command.thread_id)
-      : ''
-  void startFromPayload({
-    cwd,
-    threadId,
-    mode: modeResult.mode,
-    prompt: textFromCommand(command.prompt),
-  })
 }
 
 function submitUserInputResponse(requestId: string, response: JsonRecord) {
   void codex.submitUserInputResponse(requestId, response)
 }
 
+function showEmbedError(message: string) {
+  initError.value = message
+  postEmbedMessage('yier:codex-error', { message })
+}
+
 onMounted(() => {
   window.addEventListener('message', handleParentMessage)
-  void initializeFromQuery()
+  if (ensureEmbedToken()) {
+    postEmbedMessage('yier:codex-ready')
+  }
 })
-
-watch(
-  () => [
-    codex.activeThreadId,
-    codex.activeStatus,
-    codex.activeMode,
-    codex.activeUserInputRequest?.id ?? '',
-    codex.activeUserInputRequest?.method ?? '',
-    codex.isCommandBusy,
-    isInitializing.value,
-    displayError.value,
-  ],
-  () => {
-    postStatusMessage()
-  },
-)
 
 onBeforeUnmount(() => {
   window.removeEventListener('message', handleParentMessage)
@@ -390,12 +414,17 @@ onBeforeUnmount(() => {
       @compact-thread="codex.compactThread"
       @interrupt-turn="codex.interruptTurn"
       @set-mode="codex.setMode"
+      @set-thread-goal="codex.setThreadGoal"
+      @update-thread-goal-status="codex.updateThreadGoalStatus"
+      @clear-thread-goal="codex.clearThreadGoal"
       @refresh="codex.refreshWorkspace"
       @submit-user-input-response="submitUserInputResponse"
       @send-prompt="codex.sendPrompt"
       @steer-prompt="codex.steerPrompt"
       @enqueue-followup="codex.enqueueFollowup"
       @remove-followup="codex.removeFollowup"
+      @fork-thread="codex.forkThread"
+      @copy-error="showEmbedError"
     />
   </main>
 </template>

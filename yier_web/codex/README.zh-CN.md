@@ -26,16 +26,37 @@
 Codex iframe 路由是 `/codex/embed?embed_token=...`。它复用 Codex
 WebSocket，未登录访问需要配置 `YIER_CODEX_EMBED_TOKEN`。
 
-- 新建会话：父窗口发送 `postMessage({ type: 'yier:codex-start', cwd, mode, prompt })`
-- 恢复会话：父窗口发送 `postMessage({ type: 'yier:codex-resume', threadId, mode })`
+- 新建会话：父窗口发送 `postMessage({ type: 'yier:codex-start', cwd, mode, goal, prompt })`
+- 恢复会话：父窗口发送 `postMessage({ type: 'yier:codex-resume', threadId, mode, goal, prompt })`
 
-`mode` 是可选参数，支持 `build` 或 `plan`；不传时使用会话当前/默认模式。
-`prompt` 是可选参数，并且只能和 `yier:codex-start` 一起用于新建会话；
-iframe 会先创建会话、应用 `mode`，再发送这个初始 prompt。成功后 iframe
-会向父窗口发送 `postMessage` 事件：
+URL 只传 `embed_token`，`cwd`、`threadId`、`mode`、`goal` 和 `prompt` 都通过
+iframe message 传递。`mode` 支持 `build` 或 `plan`；`goal` 支持
+`{ objective, tokenBudget }`。可选的 `commandId` 会原样返回到命令结果事件。
+
+激活会话后，父窗口还可以发送：
+
+- `yier:codex-send-prompt`、`yier:codex-steer-prompt`
+- `yier:codex-enqueue-followup`、`yier:codex-remove-followup`
+- `yier:codex-interrupt-turn`、`yier:codex-compact-thread`
+- `yier:codex-set-mode`
+- `yier:codex-set-goal`、`yier:codex-update-goal-status`、`yier:codex-clear-goal`
+- `yier:codex-submit-user-input`
+- `yier:codex-rename-thread`、`yier:codex-archive-thread`、`yier:codex-fork-thread`
+
+iframe 会向父窗口发送：
 
 - `yier:codex-ready`
 - `yier:codex-thread-created`
 - `yier:codex-thread-resumed`
 - `yier:codex-prompt-sent`
+- `yier:codex-command-result`
+- `yier:codex-status`
+- `yier:codex-turn-state`
+- `yier:codex-goal-state`
+- `yier:codex-mode-changed`
+- `yier:codex-user-input-request`
+- `yier:codex-followups-changed`
 - `yier:codex-error`
+
+turn 完成和 goal 完成是两个独立事件，分别通过 `yier:codex-turn-state` 和
+`yier:codex-goal-state` 通知。

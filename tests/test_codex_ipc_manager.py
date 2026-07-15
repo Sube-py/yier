@@ -452,6 +452,52 @@ def build_app(
     return config_service, TestClient(app)
 
 
+def test_manager_materializes_canonical_history_for_web(tmp_path: Path) -> None:
+    config_service = AppConfigService(
+        project_root=tmp_path,
+        home_dir=tmp_path / "home",
+    )
+    manager = CodexIpcManager(
+        config_service=config_service,
+        event_broker=EventStreamBroker(),
+        session_factory=FakeSessionFactory(),
+    )
+    turn = {
+        "turnId": "turn-1",
+        "status": "completed",
+        "items": [{"type": "agentMessage", "id": "agent-1", "text": "done"}],
+    }
+    state = {
+        "id": "thread-1",
+        "turnHistory": {
+            "kind": "canonical",
+            "history": {
+                "entitiesByKey": {"turn:turn-1": turn},
+                "generation": 0,
+                "isComplete": True,
+                "islands": [
+                    {
+                        "id": "tail:0",
+                        "entries": [
+                            {"key": "turn:turn-1", "value": "turn:turn-1"}
+                        ],
+                        "olderBoundary": {"status": "exhausted"},
+                        "newerBoundary": {"status": "exhausted"},
+                    }
+                ],
+            },
+        },
+        "turns": [],
+    }
+
+    materialized = manager._state_with_host_id(state, "local")
+
+    assert materialized is not state
+    assert materialized["turns"] == [turn]
+    assert materialized["hostId"] == "local"
+    assert state["turns"] == []
+
+
 async def _wait_for_event(
     queue: asyncio.Queue[dict[str, Any]], predicate: Callable[[dict[str, Any]], bool]
 ) -> dict[str, Any]:

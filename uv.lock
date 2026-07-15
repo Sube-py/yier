@@ -119,14 +119,14 @@ wheels = [
 
 [[package]]
 name = "codex-ipc"
-version = "0.1.2"
+version = "0.1.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c2/2f/b585b8991ca9cfdf8af92176f2b93b627bf7b27c5b3dec66e59a09c4fd4c/codex_ipc-0.1.2.tar.gz", hash = "sha256:6bfbc530b82ac244c8d33be5c770ed7641d80f9e9a8d701c262d28b26dcee0d0", size = 137755, upload-time = "2026-07-08T15:11:31.488Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/2f/83/b0e17898f1d9ed1bc21d1616a2da407cd40212d1c2b77d545f1796e22096/codex_ipc-0.1.4.tar.gz", hash = "sha256:a8934e74f989d0d882e22141e97c503a9c98b361159931bba16fc1793fb8f86b", size = 141415, upload-time = "2026-07-15T16:17:34.998Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/8c/ab/182ef1c379a72f3e702bb0968e0e312b81468af19381ab4e431c3025f83c/codex_ipc-0.1.2-py3-none-any.whl", hash = "sha256:74aee644bb5e6404db8d0e1d196382a4e3e39df87a7fa77923f59df2b5b6ca3a", size = 110458, upload-time = "2026-07-08T15:11:29.921Z" },
+    { url = "https://files.pythonhosted.org/packages/23/ff/ca6c3cd96c60c6d53fde29d2d970d05f99fd82c325b6179259c33f5b1deb/codex_ipc-0.1.4-py3-none-any.whl", hash = "sha256:dc7935bbb7fff228356eecec7120efc96680526e16401cb65a82534fc5443915", size = 112603, upload-time = "2026-07-15T16:17:33.526Z" },
 ]
 
 [[package]]
@@ -1240,7 +1240,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "codex-ipc", specifier = ">=0.1.2" },
+    { name = "codex-ipc", specifier = ">=0.1.4" },
     { name = "granian", extras = ["reload"], specifier = ">=2.7.2" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "litestar", specifier = ">=2.21.1" },

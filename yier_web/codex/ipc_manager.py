@@ -18,6 +18,7 @@ from codex_ipc import (
     JsonDict,
     SshConnectionConfig,
     SshWebsocketAppServerConfig,
+    materialize_conversation_state,
 )
 from codex_app_server import AsyncAppServerClient
 from codex_app_server.generated.v2_all import (
@@ -1073,9 +1074,12 @@ class CodexIpcManager:
     ) -> JsonDict | None:
         if not isinstance(state, dict):
             return state
-        if isinstance(state.get("hostId"), str) and state["hostId"]:
-            return state
-        return {**state, "hostId": host_id or "local"}
+        materialized = materialize_conversation_state(state)
+        if not isinstance(materialized, dict):
+            return materialized
+        if isinstance(materialized.get("hostId"), str) and materialized["hostId"]:
+            return materialized
+        return {**materialized, "hostId": host_id or "local"}
 
     async def _apply_latest_collaboration_mode(
         self,

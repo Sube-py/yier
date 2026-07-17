@@ -171,7 +171,7 @@ describe('CodexConversation', () => {
       expect.arrayContaining(['min-w-0', 'max-sm:pl-2']),
     )
     expect(wrapper.get('[data-codex-work-detail]').classes()).toEqual(
-      expect.arrayContaining(['min-w-0']),
+      expect.arrayContaining(['min-w-0', 'max-h-56', 'overflow-y-auto']),
     )
     expect(wrapper.get('[data-codex-command-output]').classes()).toContain('min-w-0')
   })
@@ -312,7 +312,7 @@ describe('CodexConversation', () => {
       'I will inspect the relevant files first.',
     )
     expect(wrapper.get('[data-codex-work-message]').text()).not.toContain('Message')
-    expect(wrapper.get('[data-codex-activity-toggle]').text()).toContain('Searched code')
+    expect(wrapper.get('[data-codex-activity-toggle]').text()).toContain('Read files')
     expect(wrapper.find('[data-codex-command-output]').exists()).toBe(false)
   })
 
@@ -552,7 +552,8 @@ describe('CodexConversation', () => {
 
     await wrapper.get('[data-codex-work-toggle]').trigger('click')
 
-    expect(wrapper.get('[data-codex-activity-toggle]').text()).toContain('Called a tool')
+    expect(wrapper.get('[data-codex-activity-toggle]').text()).toContain('Called Generate Diagram')
+    expect(wrapper.get('[data-codex-activity-icon]').classes()).toContain('pi-wrench')
     expect(wrapper.find('[data-codex-raw]').exists()).toBe(false)
 
     await wrapper.get('[data-codex-activity-toggle]').trigger('click')
@@ -581,7 +582,8 @@ describe('CodexConversation', () => {
     )
 
     const activityToggle = wrapper.get('[data-codex-activity-toggle]')
-    expect(activityToggle.text()).toContain('Running a command')
+    expect(activityToggle.text()).toContain('Running pnpm build')
+    expect(activityToggle.get('[data-codex-activity-icon]').classes()).toContain('pi-terminal')
     expect(activityToggle.find('[data-codex-thinking-shimmer]').exists()).toBe(true)
 
     await activityToggle.trigger('click')
@@ -626,10 +628,10 @@ describe('CodexConversation', () => {
 
     await wrapper.get('[data-codex-work-toggle]').trigger('click')
     const activity = wrapper.get('[data-codex-work-activity]')
-    expect(activity.text()).toContain('Ran a command')
-    expect(activity.text()).toContain('created a file')
-    expect(activity.text()).toContain('edited a file')
-    expect(activity.text()).toContain('called a tool')
+    expect(activity.text()).toContain('Used Figma integration')
+    expect(activity.text()).toContain('edited files')
+    expect(activity.text()).toContain('ran a command')
+    expect(activity.text()).not.toMatch(/created a file|called a tool/i)
     expect(wrapper.findAll('[data-codex-work-row]')).toHaveLength(0)
 
     await wrapper.get('[data-codex-activity-toggle]').trigger('click')
@@ -645,7 +647,7 @@ describe('CodexConversation', () => {
     expect(rows[3]?.text()).toContain('Called figma / Get Design Context')
   })
 
-  it('summarizes multiple shell commands with a counted command label', async () => {
+  it('summarizes multiple shell commands without exposing a count', async () => {
     const wrapper = mountConversation([
       {
         id: 'command-1',
@@ -675,7 +677,7 @@ describe('CodexConversation', () => {
 
     await wrapper.get('[data-codex-work-toggle]').trigger('click')
 
-    expect(wrapper.get('[data-codex-activity-toggle]').text()).toContain('Ran 3 commands')
+    expect(wrapper.get('[data-codex-activity-toggle]').text()).toContain('Ran commands')
 
     await wrapper.get('[data-codex-activity-toggle]').trigger('click')
 
@@ -1212,21 +1214,21 @@ describe('CodexConversation', () => {
 
   it('virtualizes long conversations at the turn level', async () => {
     const turns = Array.from({ length: 80 }, (_, index): CodexTurnState => ({
-      turnId: `turn-${index + 1}`,
-      status: 'completed',
-      turnStartedAtMs: 1_700_000_000_000 + index,
-      items: [
-        {
-          id: `user-${index + 1}`,
-          type: 'userMessage',
-          content: `Prompt ${index + 1}`,
-        },
-        {
-          id: `agent-${index + 1}`,
-          type: 'agentMessage',
-          text: `Answer ${index + 1}`,
-        },
-      ],
+        turnId: `turn-${index + 1}`,
+        status: 'completed',
+        turnStartedAtMs: 1_700_000_000_000 + index,
+        items: [
+          {
+            id: `user-${index + 1}`,
+            type: 'userMessage',
+            content: `Prompt ${index + 1}`,
+          },
+          {
+            id: `agent-${index + 1}`,
+            type: 'agentMessage',
+            text: `Answer ${index + 1}`,
+          },
+        ],
     }))
     const wrapper = mount(CodexConversation, {
       props: {

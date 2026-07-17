@@ -13,6 +13,7 @@ import {
   textFromInput,
 } from '../lib/format'
 import { useCodexMarkdown } from '../lib/markdown'
+import { summarizeToolActivity, type ToolActivitySummary } from '../lib/toolActivitySummary'
 import CodexThinkingShimmer from './CodexThinkingShimmer.vue'
 import CodexWorkedLabel from './CodexWorkedLabel.vue'
 
@@ -46,6 +47,7 @@ interface WorkRenderUnit {
   id: string
   kind: WorkRenderUnitKind
   items: ConversationItemView[]
+  summary?: ToolActivitySummary
 }
 
 interface TurnView {
@@ -198,14 +200,14 @@ const virtualTurnWindow = computed(() => {
     endIndex = Math.max(endIndex - 1, startIndex)
   }
 
-    return {
-      startIndex,
-      endIndex,
-      topSpacerHeight: hiddenHydratedTurnHeight.value + (metrics[startIndex]?.start ?? 0),
-      bottomSpacerHeight: Math.max(
-        totalHeight - (hiddenHydratedTurnHeight.value + (metrics[endIndex]?.end ?? totalHeight)),
-        0,
-      ),
+  return {
+    startIndex,
+    endIndex,
+    topSpacerHeight: hiddenHydratedTurnHeight.value + (metrics[startIndex]?.start ?? 0),
+    bottomSpacerHeight: Math.max(
+      totalHeight - (hiddenHydratedTurnHeight.value + (metrics[endIndex]?.end ?? totalHeight)),
+      0,
+    ),
   }
 })
 
@@ -636,6 +638,7 @@ function workRenderUnits(items: ConversationItemView[]): WorkRenderUnit[] {
       id: `${activityItems[0]?.id ?? 'activity'}-activity-${activityIndex}`,
       kind: 'activity',
       items: activityItems,
+      summary: summarizeToolActivity(activityItems.map((item) => item.item)),
     })
     activityItems = []
     activityIndex += 1
@@ -680,10 +683,6 @@ function hasFinalAssistantResponse(turnView: TurnView) {
 
 function shouldShowStandaloneThinking(turnView: TurnView) {
   return isTurnInProgress(turnView.turn) && !hasFinalAssistantResponse(turnView)
-}
-
-function activityHasInProgress(items: ConversationItemView[]) {
-  return items.some((item) => isItemInProgress(item.item))
 }
 
 function isTodoListItem(item: JsonRecord) {
@@ -876,10 +875,10 @@ function absoluteTime(value: number | null | undefined) {
 function isGoalUserMessage(item: JsonRecord) {
   return Boolean(
     item.goal === true ||
-      item.sentAsGoal === true ||
-      item.isGoal === true ||
-      item.asGoal === true ||
-      isGoalCommandText(rawUserMessageText(item)),
+    item.sentAsGoal === true ||
+    item.isGoal === true ||
+    item.asGoal === true ||
+    isGoalCommandText(rawUserMessageText(item)),
   )
 }
 
@@ -1216,110 +1215,6 @@ function gitDetail(item: JsonRecord) {
     firstString(item.diff) ? firstString(item.diff) : '',
   ]
   return parts.filter(Boolean).join('\n')
-}
-
-function activitySummary(items: ConversationItemView[]) {
-  const counts = {
-    runningCommands: 0,
-    completedCommands: 0,
-    searchedCode: 0,
-    createdFiles: 0,
-    editedFiles: 0,
-    deletedFiles: 0,
-    webSearches: 0,
-    runningWebSearches: 0,
-    toolCalls: 0,
-    runningToolCalls: 0,
-    agentCalls: 0,
-    viewedImages: 0,
-    generatedImages: 0,
-    steers: 0,
-  }
-
-  for (const view of items) {
-    const item = view.item
-    const type = itemType(item)
-    if (type === 'commandExecution') {
-      if (isCodeSearchCommand(commandText(item))) {
-        counts.searchedCode += 1
-      } else if (isItemInProgress(item)) {
-        counts.runningCommands += 1
-      } else {
-        counts.completedCommands += 1
-      }
-    } else if (type === 'fileChange') {
-      for (const change of fileChangeViews(item)) {
-        if (change.action === 'created') {
-          counts.createdFiles += 1
-        } else if (change.action === 'deleted') {
-          counts.deletedFiles += 1
-        } else {
-          counts.editedFiles += 1
-        }
-      }
-    } else if (type === 'webSearch' || type === 'search') {
-      if (isItemInProgress(item)) {
-        counts.runningWebSearches += 1
-      } else {
-        counts.webSearches += 1
-      }
-    } else if (type === 'dynamicToolCall' || type === 'mcpToolCall') {
-      if (isItemInProgress(item)) {
-        counts.runningToolCalls += 1
-      } else {
-        counts.toolCalls += 1
-      }
-    } else if (type === 'collabAgentToolCall') {
-      counts.agentCalls += 1
-    } else if (type === 'subAgentActivity') {
-      counts.agentCalls += 1
-    } else if (type === 'imageView') {
-      counts.viewedImages += 1
-    } else if (type === 'imageGeneration') {
-      counts.generatedImages += 1
-    } else if (isSteeringMessageType(type) || type === 'steered') {
-      counts.steers += 1
-    }
-  }
-
-  const segments = [
-    countSegment(counts.searchedCode, 'Searched code', 'searched code'),
-    countSegment(counts.runningCommands, 'Running a command', 'running # commands'),
-    countSegment(counts.completedCommands, 'Ran a command', 'ran # commands'),
-    countSegment(counts.createdFiles, 'Created a file', 'created # files'),
-    countSegment(counts.editedFiles, 'Edited a file', 'edited # files'),
-    countSegment(counts.deletedFiles, 'Deleted a file', 'deleted # files'),
-    countSegment(counts.runningWebSearches, 'Searching the web', 'searching the web'),
-    countSegment(counts.webSearches, 'Searched the web', 'searched the web'),
-    countSegment(counts.runningToolCalls, 'Calling a tool', 'calling # tools'),
-    countSegment(counts.toolCalls, 'Called a tool', 'called # tools'),
-    countSegment(counts.agentCalls, 'Used an agent', 'used # agents'),
-    countSegment(counts.viewedImages, 'Viewed an image', 'viewed # images'),
-    countSegment(counts.generatedImages, 'Generated an image', 'generated # images'),
-    countSegment(counts.steers, 'Steered conversation', 'steered conversation # times'),
-  ].filter((segment): segment is string => Boolean(segment))
-
-  if (!segments.length) {
-    return 'Worked'
-  }
-  return segments
-    .map((segment, index) =>
-      index === 0
-        ? segment.charAt(0).toUpperCase() + segment.slice(1)
-        : segment.charAt(0).toLowerCase() + segment.slice(1),
-    )
-    .join(', ')
-}
-
-function countSegment(count: number, singular: string, plural: string) {
-  if (count <= 0) {
-    return ''
-  }
-  return count === 1 ? singular : plural.replace('#', String(count))
-}
-
-function isCodeSearchCommand(command: string) {
-  return /\b(rg|grep|ag|fd|find)\b/.test(command)
 }
 
 function todoItems(item: JsonRecord) {
@@ -1731,12 +1626,20 @@ const justDebug = false
                     data-codex-activity-toggle
                     @click="toggleItem(unit.id)"
                   >
+                    <i
+                      class="pi shrink-0 text-[0.72rem] opacity-70"
+                      :class="unit.summary?.icon ?? 'pi-sparkles'"
+                      aria-hidden="true"
+                      data-codex-activity-icon
+                    ></i>
                     <CodexThinkingShimmer
-                      v-if="activityHasInProgress(unit.items)"
+                      v-if="unit.summary?.active"
                       class="min-w-0"
-                      :message="activitySummary(unit.items)"
+                      :message="unit.summary.text"
                     />
-                    <span v-else class="min-w-0 truncate">{{ activitySummary(unit.items) }}</span>
+                    <span v-else class="min-w-0 truncate">
+                      {{ unit.summary?.text ?? 'Worked' }}
+                    </span>
                     <i
                       class="pi pi-chevron-right shrink-0 text-[0.56rem] opacity-50 transition-transform"
                       :class="isItemExpanded(unit.id) ? 'rotate-90' : ''"
@@ -1745,7 +1648,7 @@ const justDebug = false
 
                   <div
                     v-if="isItemExpanded(unit.id)"
-                    class="grid min-w-0 gap-1 pl-2"
+                    class="grid max-h-56 min-w-0 gap-1 overflow-y-auto pr-1 pl-2"
                     data-codex-work-detail
                   >
                     <div

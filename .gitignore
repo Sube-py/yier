@@ -10,6 +10,10 @@ wheels/
 # Virtual environments
 .venv
 
+# Local agent skills
+.agents/skills/
+debug/
+
 # macOS
 .DS_Store
 .playwright-cli/

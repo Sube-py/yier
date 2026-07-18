@@ -26,20 +26,25 @@ class CodexSessionEventHub:
         self,
         thread_id: str,
         queue: CodexSessionEventQueue,
-    ) -> None:
-        self._thread_subscribers.setdefault(thread_id, set()).add(queue)
+    ) -> bool:
+        subscribers = self._thread_subscribers.setdefault(thread_id, set())
+        was_empty = not subscribers
+        subscribers.add(queue)
+        return was_empty
 
     def unsubscribe_thread(
         self,
         thread_id: str,
         queue: CodexSessionEventQueue,
-    ) -> None:
+    ) -> bool:
         subscribers = self._thread_subscribers.get(thread_id)
-        if subscribers is None:
-            return
+        if subscribers is None or queue not in subscribers:
+            return False
         subscribers.discard(queue)
         if not subscribers:
             self._thread_subscribers.pop(thread_id, None)
+            return True
+        return False
 
     def clear_thread(self, thread_id: str) -> None:
         self._thread_subscribers.pop(thread_id, None)

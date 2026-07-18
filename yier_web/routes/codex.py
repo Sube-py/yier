@@ -251,7 +251,10 @@ class CodexController(Controller):
         current_active_id = (
             manager.config_service.load_web_settings().codex.active_remote_connection_id
         )
-        if current_active_id != previous_active_id or current_active_id == connection.id:
+        if (
+            current_active_id != previous_active_id
+            or current_active_id == connection.id
+        ):
             await manager.activate_remote_connection(current_active_id)
         return CodexRemoteConnectionResponse(connection=connection)
 
@@ -470,7 +473,7 @@ class CodexController(Controller):
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
             for thread_id in subscribed_thread_ids:
-                manager.unsubscribe(thread_id, outbox)
+                await manager.unsubscribe(thread_id, outbox)
 
     async def _handle_ws_message(
         self,

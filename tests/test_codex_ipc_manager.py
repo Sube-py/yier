@@ -94,6 +94,8 @@ class FakeCodexIpcSession:
         self.archive_calls: list[tuple[str | None, str | None, bool]] = []
         self.unarchive_calls: list[str | None] = []
         self.fork_calls: list[str | None] = []
+        self.following_calls: list[bool] = []
+        self.lifecycle_calls: list[str] = []
         self.list_threads_calls: list[dict[str, Any] | None] = []
         self.skills_list_calls: list[dict[str, Any] | None] = []
         self._state_queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
@@ -131,9 +133,15 @@ class FakeCodexIpcSession:
 
     async def start(self) -> None:
         self.started = True
+        self.lifecycle_calls.append("start")
 
     async def stop(self) -> None:
         self.stopped = True
+        self.lifecycle_calls.append("stop")
+
+    async def set_following(self, following: bool) -> None:
+        self.following_calls.append(following)
+        self.lifecycle_calls.append(f"following:{following}")
 
     async def start_new_thread(
         self, params: dict[str, Any] | None = None
@@ -150,6 +158,7 @@ class FakeCodexIpcSession:
         return SimpleNamespace(id=self.thread_id)
 
     async def hydrate_initial_state(self, *, owner_wait_seconds: float = 0.4) -> None:
+        self.lifecycle_calls.append("hydrate")
         if self.thread_id == "thread-plan":
             self.state = {
                 "id": "thread-plan",
@@ -478,9 +487,7 @@ def test_manager_materializes_canonical_history_for_web(tmp_path: Path) -> None:
                 "islands": [
                     {
                         "id": "tail:0",
-                        "entries": [
-                            {"key": "turn:turn-1", "value": "turn:turn-1"}
-                        ],
+                        "entries": [{"key": "turn:turn-1", "value": "turn:turn-1"}],
                         "olderBoundary": {"status": "exhausted"},
                         "newerBoundary": {"status": "exhausted"},
                     }
@@ -600,9 +607,13 @@ def test_codex_manager_keeps_separate_sessions_alive(tmp_path: Path) -> None:
         assert state_b["payload"]["thread_id"] == "thread-created"
         assert state_b["payload"]["state"]["hostId"] == "local"
 
-        manager.unsubscribe("thread-a", queue_a)
-        manager.unsubscribe("thread-created", queue_b)
-        manager.unsubscribe("thread-plan", queue_plan)
+        await manager.unsubscribe("thread-a", queue_a)
+        await manager.unsubscribe("thread-created", queue_b)
+        await manager.unsubscribe("thread-plan", queue_plan)
+
+        assert factory.by_thread_id("thread-a").following_calls == [True, False]
+        assert factory.by_thread_id("thread-created").following_calls == [True, False]
+        assert factory.by_thread_id("thread-plan").following_calls == [True, False]
 
         assert factory.by_thread_id("thread-a").stopped is False
         assert factory.by_thread_id("thread-created").stopped is False
@@ -614,6 +625,47 @@ def test_codex_manager_keeps_separate_sessions_alive(tmp_path: Path) -> None:
         assert factory.by_thread_id("thread-created").stopped is True
         assert factory.by_thread_id("thread-plan").stopped is True
         assert factory.workspace_session().stopped is True
+
+    asyncio.run(scenario())
+
+
+def test_codex_manager_tracks_first_and_last_thread_subscribers(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        config_service = AppConfigService(
+            project_root=tmp_path / "project",
+            home_dir=tmp_path / "home",
+        )
+        factory = FakeSessionFactory()
+        manager = CodexIpcManager(
+            config_service=config_service,
+            event_broker=EventStreamBroker(),
+            session_factory=factory,
+        )
+        first_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        second_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+        await manager.start()
+        await manager.subscribe("thread-a", first_queue)
+        session = factory.by_thread_id("thread-a")
+
+        assert session.lifecycle_calls[:3] == [
+            "start",
+            "following:True",
+            "hydrate",
+        ]
+
+        await manager.subscribe("thread-a", second_queue)
+        assert session.following_calls == [True]
+
+        await manager.unsubscribe("thread-a", first_queue)
+        assert session.following_calls == [True]
+
+        await manager.unsubscribe("thread-a", second_queue)
+        assert session.following_calls == [True, False]
+
+        await manager.stop()
 
     asyncio.run(scenario())
 
@@ -874,7 +926,7 @@ def test_codex_manager_updates_cached_mode_for_future_snapshots(tmp_path: Path) 
             == default_collaboration_mode
         )
 
-        manager.unsubscribe("thread-plan", queue)
+        await manager.unsubscribe("thread-plan", queue)
         refreshed_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         await manager.subscribe("thread-plan", refreshed_queue)
         refreshed_snapshot = await _wait_for_event(
@@ -1130,8 +1182,7 @@ def test_codex_controller_http_and_websocket_contract(tmp_path: Path) -> None:
             )
             receive_until(
                 lambda message: (
-                    message.get("type") == "ack"
-                    and message.get("id") == "prompt-image"
+                    message.get("type") == "ack" and message.get("id") == "prompt-image"
                 )
             )
             assert factory.by_thread_id("thread-a").run_prompt_calls[-1] == (
@@ -1170,8 +1221,7 @@ def test_codex_controller_http_and_websocket_contract(tmp_path: Path) -> None:
             )
             receive_until(
                 lambda message: (
-                    message.get("type") == "ack"
-                    and message.get("id") == "prompt-file"
+                    message.get("type") == "ack" and message.get("id") == "prompt-file"
                 )
             )
             assert factory.by_thread_id("thread-a").run_prompt_calls[-1] == (
@@ -1214,8 +1264,7 @@ def test_codex_controller_http_and_websocket_contract(tmp_path: Path) -> None:
             )
             receive_until(
                 lambda message: (
-                    message.get("type") == "ack"
-                    and message.get("id") == "prompt-skill"
+                    message.get("type") == "ack" and message.get("id") == "prompt-skill"
                 )
             )
             assert factory.by_thread_id("thread-a").run_prompt_calls[-1] == (

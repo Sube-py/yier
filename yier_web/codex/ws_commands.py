@@ -95,7 +95,7 @@ class SubscribeThreadCommandStrategy(ThreadCommandStrategy):
 class UnsubscribeThreadCommandStrategy(ThreadCommandStrategy):
     async def execute(self, context: CodexWsCommandContext) -> dict[str, Any]:
         thread_id = self.thread_id(context)
-        context.manager.unsubscribe(thread_id, context.outbox)
+        await context.manager.unsubscribe(thread_id, context.outbox)
         context.subscribed_thread_ids.discard(thread_id)
         return {"thread_id": thread_id}
 
@@ -113,7 +113,8 @@ class SendPromptCommandStrategy(ThreadCommandStrategy):
             collaboration_mode=_payload_dict(context.payload, "collaboration_mode"),
             attachments=attachments,
             approval_policy=_payload_text(context.payload, "approval_policy") or None,
-            approvals_reviewer=_payload_text(context.payload, "approvals_reviewer") or None,
+            approvals_reviewer=_payload_text(context.payload, "approvals_reviewer")
+            or None,
             sandbox_policy=_payload_dict(context.payload, "sandbox_policy"),
         )
         return {"thread_id": thread_id}
@@ -240,7 +241,9 @@ class ListSkillsCommandStrategy(CodexWsCommandStrategy):
     async def execute(self, context: CodexWsCommandContext) -> dict[str, Any]:
         thread_id = _payload_text(context.payload, "thread_id") or None
         cwd = _payload_text(context.payload, "cwd") or None
-        force_reload = bool(context.payload.get("force_reload") or context.payload.get("forceReload"))
+        force_reload = bool(
+            context.payload.get("force_reload") or context.payload.get("forceReload")
+        )
         skills = await context.manager.list_skills(
             thread_id=thread_id,
             cwd=cwd,

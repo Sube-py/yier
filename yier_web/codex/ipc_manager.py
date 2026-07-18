@@ -555,8 +555,15 @@ class CodexIpcManager:
         thread_id: str,
         queue: CodexSubscriberQueue,
     ) -> JsonDict | None:
-        managed = await self._ensure_thread(thread_id)
-        self._session_events.subscribe_thread(thread_id, queue)
+        first_subscription = self._session_events.subscribe_thread(thread_id, queue)
+        try:
+            managed = await self._ensure_thread(
+                thread_id,
+                following=first_subscription,
+            )
+        except Exception:
+            self._session_events.unsubscribe_thread(thread_id, queue)
+            raise
         state = self._state_with_host_id(
             managed.state or managed.session.state,
             managed.session.config.host_id,
@@ -580,8 +587,22 @@ class CodexIpcManager:
         )
         return state
 
-    def unsubscribe(self, thread_id: str, queue: CodexSubscriberQueue) -> None:
-        self._session_events.unsubscribe_thread(thread_id, queue)
+    async def unsubscribe(
+        self,
+        thread_id: str,
+        queue: CodexSubscriberQueue,
+    ) -> None:
+        last_subscription = self._session_events.unsubscribe_thread(thread_id, queue)
+        managed = self._threads.get(thread_id)
+        if last_subscription and managed is not None:
+            try:
+                await managed.session.set_following(False)
+            except Exception as exc:
+                logger.warning(
+                    "Unable to stop following Codex thread %s: %s",
+                    thread_id,
+                    exc,
+                )
 
     async def send_prompt(
         self,
@@ -816,7 +837,9 @@ class CodexIpcManager:
             for skill in entry.skills:
                 if not skill.enabled:
                     continue
-                path = str(skill.path.root if hasattr(skill.path, "root") else skill.path)
+                path = str(
+                    skill.path.root if hasattr(skill.path, "root") else skill.path
+                )
                 if not path or path in seen_paths:
                     continue
                 seen_paths.add(path)
@@ -854,21 +877,32 @@ class CodexIpcManager:
         )
         return skills
 
-    async def _ensure_thread(self, thread_id: str) -> ManagedCodexThread:
+    async def _ensure_thread(
+        self,
+        thread_id: str,
+        *,
+        following: bool = False,
+    ) -> ManagedCodexThread:
         normalized_thread_id = thread_id.strip()
         if not normalized_thread_id:
             raise ValueError("thread_id is required.")
         managed = self._threads.get(normalized_thread_id)
         if managed is not None:
+            if following:
+                await managed.session.set_following(True)
             return managed
 
         async with self._lock:
             managed = self._threads.get(normalized_thread_id)
             if managed is not None:
+                if following:
+                    await managed.session.set_following(True)
                 return managed
             session = self._new_session(self._config(thread_id=normalized_thread_id))
             await session.start()
             try:
+                if following:
+                    await session.set_following(True)
                 await session.hydrate_initial_state()
             except Exception:
                 await session.stop()
